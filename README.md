@@ -2,11 +2,11 @@
 
 Scripts to set up and retrain [Taiga-S1](https://github.com/shhivv/taiga-s1) from scratch. Taiga-S1 is a 1.2M-parameter model that predicts the next FreeCAD PartDesign command. Each script sets up the environment, generates synthetic data in headless FreeCAD, trains the model, and evaluates it against the published `shhivv/taiga-s1`. They all use upstream's own pipeline, pinned to commit `a6e81d3`, with the flags from upstream's `train_final.sh`.
 
-| Script | Machine | OS | FreeCAD source | GPU |
-|---|---|---|---|---|
-| `taiga_repro_DGX.sh` | NVIDIA DGX Spark (aarch64) | DGX OS / Ubuntu 24.04 | conda-forge via micromamba (or your own build) | GB10, CUDA 13 |
-| `taiga_repro_5060ti.sh` | mochi | Ubuntu 26.04 (resolute) | `ppa:bleedingedge/resolute-bleed` (1.1.x) | RTX 5060 Ti (Blackwell, sm_120) |
-| `taiga_repro_Quadro6000.sh` | dual Quadro RTX 6000 workstation | Ubuntu 24.04 or 26.04 | `ppa:bleedingedge/noble-bleed` or `resolute-bleed`, picked automatically | 2 × Quadro RTX 6000 (Turing, sm_75) |
+| Script | Machine | CPU / RAM | OS | FreeCAD source | GPU |
+|---|---|---|---|---|---|
+| `taiga_repro_DGX.sh` | NVIDIA DGX Spark (aarch64) | GB10 Grace, 20 Arm cores / 128 GB unified | DGX OS / Ubuntu 24.04 | conda-forge via micromamba (or your own build) | GB10, CUDA 13 |
+| `taiga_repro_5060ti.sh` | PowerSpec G467 | Intel Core i7-8700K @ 3.70 GHz (12 cores) / 40 GB | Ubuntu 26.04 (resolute) | `ppa:bleedingedge/resolute-bleed` (1.1.x) | RTX 5060 Ti (Blackwell, sm_120) |
+| `taiga_repro_Quadro6000.sh` | Dell Precision 7920 Tower | Intel Xeon Gold 6230 @ 2.10 GHz (40 cores) / 64 GB | Ubuntu 24.04 or 26.04 | `ppa:bleedingedge/noble-bleed` or `resolute-bleed`, picked automatically | 2 × Quadro RTX 6000 (Turing, sm_75) |
 
 All three scripts use the same stages, environment variables and output layout. The only differences are in `setup`, plus the `pair` stage, which only the Quadro script has.
 
@@ -15,10 +15,10 @@ All three scripts use the same stages, environment variables and output layout. 
 ## Prerequisites
 
 - `git` and `curl` (and `tar` and `bzip2` on the DGX).
-- An NVIDIA driver on the GPU machines. Mochi and the Quadro machine are tested with `nvidia-drivers-595-open`.
-  - **RTX 5060 Ti:** needs driver ≥ 570, and ≥ 580 for the CUDA 13 PyTorch build.
-  - **Quadro:** works with any recent driver; the script picks a PyTorch build that runs on the card.
-- `sudo` access on mochi and the Quadro machine. It's used only by `setup` (to add the PPA and install FreeCAD) and by `uninstall`.
+- An NVIDIA driver on the GPU machines. The PowerSpec G467 and the Dell Precision 7920 use `nvidia-drivers-595-open`.
+  - **RTX 5060 Ti (PowerSpec G467):** needs driver ≥ 570, and ≥ 580 for the CUDA 13 PyTorch build.
+  - **Quadro RTX 6000 (Dell Precision 7920):** works with any recent driver; the script picks a PyTorch build that runs on the card.
+- `sudo` access on the PowerSpec G467 and the Dell Precision 7920. It's used only by `setup` (to add the PPA and install FreeCAD) and by `uninstall`.
 - About 20 GB of free disk space in the working directory (default `~/taiga`).
 
 The scripts install everything else themselves: uv, Python 3.11, PyTorch, the upstream repo and FreeCAD.
@@ -40,14 +40,14 @@ To use an existing FreeCAD instead of conda, such as your `noble-spark-bleed` 1.
 FREECAD_PYTHON=/usr/bin/python3 FREECAD_LIB=/usr/lib/freecad-python3/lib ./taiga_repro_DGX.sh all
 ```
 
-### mochi (RTX 5060 Ti)
+### PowerSpec G467 (RTX 5060 Ti)
 ```bash
 chmod +x taiga_repro_5060ti.sh
 ./taiga_repro_5060ti.sh setup             # interactive (sudo)
 ./taiga_repro_5060ti.sh data train export eval calib
 ```
 
-### Quadro RTX 6000 workstation
+### Dell Precision 7920 Tower (2 × Quadro RTX 6000)
 ```bash
 chmod +x taiga_repro_Quadro6000.sh
 ./taiga_repro_Quadro6000.sh setup         # interactive (sudo)
@@ -110,14 +110,14 @@ tmux new -s taiga
 
 ### nohup
 ```bash
-# DGX / mochi
+# DGX / PowerSpec G467
 nohup ./taiga_repro_DGX.sh data train export eval calib > ~/taiga/logs/run.log 2>&1 &
 nohup ./taiga_repro_5060ti.sh data train export eval calib > ~/taiga/logs/run.log 2>&1 &
 
-# Quadro: both seeds
+# Dell Precision 7920: both seeds
 nohup ./taiga_repro_Quadro6000.sh pair > ~/taiga/logs/pair.log 2>&1 &
 
-# Quadro: one seed on one GPU
+# Dell Precision 7920: one seed on one GPU
 GPU=1 SEED=12 nohup ./taiga_repro_Quadro6000.sh data train export eval calib > ~/taiga/logs/run_seed12.log 2>&1 &
 ```
 
@@ -193,7 +193,7 @@ Only installs made by these script versions are recorded. Anything installed by 
 
 ## Notes and troubleshooting
 
-- **The FreeCAD version matters.** Upstream evaluated on FreeCAD 1.1. Mochi (1.1.3) is the closest match. With the defaults (`SEED=2`, `DATA_WORKERS=8`) it has the best chance of regenerating upstream's exact training data. Other versions give slightly different data and success rates. The `reference_hf` evaluation gives a baseline measured on the same machine.
+- **The FreeCAD version matters.** Upstream evaluated on FreeCAD 1.1. The PowerSpec G467 (FreeCAD 1.1.3) is the closest match. With the defaults (`SEED=2`, `DATA_WORKERS=8`) it has the best chance of regenerating upstream's exact training data. Other versions give slightly different data and success rates. The `reference_hf` evaluation gives a baseline measured on the same machine.
 - **"FreeCAD import failed".** Setup creates a PartDesign Body and a Sketch headless before running the tests. Upstream's tests silently *skip* when FreeCAD is missing, so a passing pytest alone proves nothing. If automatic detection fails, set `FREECAD_PYTHON` and `FREECAD_LIB` yourself.
 - **"GPU present but torch can't use it"** (5060ti) or **"no PyTorch build ran on these GPUs"** (Quadro). Check the driver version with `nvidia-smi`, then force a different build with `TORCH_INDEX`, for example `cu128` or `cu126`.
 - **The GPU is not the bottleneck.** The model is small, so most of the time goes into the FreeCAD steps (data generation, DAgger and evaluation), which run on the CPU. Upstream reports about 25 minutes of training on an Apple M-series Mac.
