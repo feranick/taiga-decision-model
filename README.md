@@ -206,6 +206,58 @@ Only installs made by these script versions are recorded. Anything installed by 
 
 ---
 
+## Known issues
+
+### `No module named 'PartDesign'` during setup (PowerSpec G467, Dell Precision 7920)
+
+**Symptom.** `setup` prints a traceback right after the `FreeCAD lib:` line:
+
+```
+[12:11:52] FreeCAD lib: /usr/lib/freecad-python3/lib | interpreter: /usr/bin/python3.14 (linked: python3.14)
+Traceback (most recent call last):
+  File "<stdin>", line 3, in <module>
+ModuleNotFoundError: <stdin>(3)<class 'ModuleNotFoundError'>: No module named 'PartDesign'
+```
+
+**Cause.** When FreeCAD is imported as a Python library, its home path is `/usr/lib/freecad-python3/`, so it looks for modules in `/usr/lib/freecad-python3/Mod`. The `resolute-bleed` packages install them in `/usr/share/freecad/Mod`. `Part` and `Sketcher` still load because they are compiled modules in `/usr/lib/freecad-python3/lib`. PartDesign is a Python package under `Mod/`, so it doesn't.
+
+**Impact.** The traceback comes from the first headless check (`fc_check`). The script then retries with the Mod directories on `PYTHONPATH` and writes them into the `~/taiga/bin/freecad-python` launcher. If the log continues with `Retrying with Mod dirs on PYTHONPATH` and then `FreeCAD 1.1.x OK`, the run is valid. If the retry also fails, `setup` stops with `FreeCAD still fails headless`. Plain `python3` outside the launcher still can't load PartDesign.
+
+**Fix.** Link the module directory to where FreeCAD expects it. The `ls` check avoids overwriting an existing directory.
+
+```bash
+ls /usr/lib/freecad-python3/Mod 2>/dev/null || sudo ln -s /usr/share/freecad/Mod /usr/lib/freecad-python3/Mod
+```
+
+Then rerun `setup` (e.g. `./taiga_repro_5060ti.sh setup`) with `FREECAD_PYTHON` and `FREECAD_LIB` unset in your shell, so discovery runs again. The first check now passes, and the launcher is regenerated without the extra Mod paths. Runs made before the fix don't need to be redone if the retry succeeded.
+
+**Verify.** Both lines must print:
+
+```bash
+PYTHONPATH=/usr/lib/freecad-python3/lib python3 -c "
+import FreeCAD, Part, Sketcher
+d = FreeCAD.newDocument()
+b = d.addObject('PartDesign::Body', 'Body')
+print('OK', FreeCAD.Version()[:3], b.TypeId)
+import PartDesign; print('PartDesign import OK')"
+```
+
+Then run upstream's FreeCAD integration tests through the launcher. They must **pass**, not skip, because they skip silently when FreeCAD is missing:
+
+```bash
+cd ~/taiga/taiga-s1
+source ~/taiga/freecad.env
+.venv/bin/python -m pytest -q tests/test_runtime.py
+```
+
+**Undo.** `.installed_by_taiga` doesn't record the link, so `uninstall` won't remove it. Remove it by hand, with no trailing slash, so only the link is deleted:
+
+```bash
+sudo rm /usr/lib/freecad-python3/Mod
+```
+
+---
+
 ## Versions
 
 Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header and in each run's `manifest.json`.
