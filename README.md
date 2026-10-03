@@ -64,7 +64,7 @@ Run them one at a time or several in sequence, for example `./script.sh train ex
 | `data` | Generates synthetic training data (4k/8k/12k episodes, about 590k labeled states) and the test set (300/600/900 episodes, seed 3). Skips generation if the data already exists. |
 | `train` | Supervised training for 4 epochs, then 2 DAgger rounds, with all of upstream's generalization options enabled. |
 | `export` | Converts the checkpoint to Hugging Face format (`model.safetensors` + `config.json`). |
-| `eval` | Evaluates your model **and** the published `shhivv/taiga-s1` on the same suites (`iid comp comp2 comp3 len len2 len3`), once normally and once with 20% random actions injected. |
+| `eval` | Evaluates your model **and** the published `shhivv/taiga-s1` on the same suites, once normally (`eval.json`) and once with 20% random actions injected (`eval_perturb.json`). Suites: `iid` (1–5 features, like training), `comp comp2 comp3` (feature combinations held out of training), `len len2 len3` (6–7, 8–9 and 11 features) and the stress suites `len4 len5 len6` (13, 15 and 17 features). |
 | `calib` | Fits a softmax temperature on held-out states and writes it into the exported `config.json`. |
 | `all` | Runs `setup data train export eval calib` in that order. |
 | `pair` | *(Quadro only)* Runs two seeds in parallel, one per GPU, splitting the CPU workers between them. Requires `setup` to have been run first. |
@@ -198,7 +198,8 @@ Only installs made by these script versions are recorded. Anything installed by 
   - `data` skips generation if shards exist. If data generation was interrupted, delete `data/gen_train_seed<N>` first.
   - The Quadro script marks the test set complete only after a full generation.
   - `train` does not resume from a checkpoint; it starts over.
-  - The published-model baseline is computed once per machine and then reused.
+  - The published-model baseline is computed once per machine and then reused. If it lacks any suite in the current suite list (e.g. after the stress suites were added), `eval` evaluates the published model again.
+  - To add the stress suites to an existing run, rerun only `eval` (e.g. `./taiga_repro_5060ti.sh eval`); data and training are not redone.
 - **Using both GPUs.** Splitting a 1.2M-parameter model across GPUs gains nothing. Running one seed per GPU (`pair`), or one seed per Spark, measures seed-to-seed variance in the same wall time.
 
 ---
@@ -277,6 +278,6 @@ Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header 
 
 | Script | Version |
 |---|---|
-| `taiga_repro_DGX.sh` | 2026.10.03.1 |
-| `taiga_repro_5060ti.sh` | 2026.10.02.5 |
-| `taiga_repro_Quadro6000.sh` | 2026.10.02.3 |
+| `taiga_repro_DGX.sh` | 2026.10.03.2 |
+| `taiga_repro_5060ti.sh` | 2026.10.03.1 |
+| `taiga_repro_Quadro6000.sh` | 2026.10.03.1 |

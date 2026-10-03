@@ -2,7 +2,7 @@
 # =============================================================================
 # taiga_repro_DGX.sh — reproduce Taiga-S1 from scratch on an NVIDIA DGX Spark
 # (DGX OS / Ubuntu 24.04 noble), with FreeCAD 1.0.x from ppa:bleedingedge/noble-spark-bleed
-# Version: 2026.10.03.1
+# Version: 2026.10.03.2
 #
 # Pipeline (mirrors upstream scripts/train_final.sh + final_eval.sh):
 #   setup   : uv + Python 3.11 venv, PyTorch (CUDA 13, aarch64), FreeCAD from
@@ -55,7 +55,7 @@ FREECAD_PKG=${FREECAD_PKG:-freecad}
 PPA=${PPA:-ppa:bleedingedge/noble-spark-bleed}
 FREECAD_EXPECT=${FREECAD_EXPECT:-1.0}
 TEST_WORKERS=8          # fixed so the test set is identical across machines
-SUITES="iid comp comp2 comp3 len len2 len3"
+SUITES="iid comp comp2 comp3 len len2 len3 len4 len5 len6"   # len4-6: 13/15/17-feature stress suites
 
 REPO=$WORK/taiga-s1
 VENV=$REPO/.venv
@@ -272,11 +272,24 @@ save_pretrained('$RUN/hf', load_checkpoint('$RUN/last.pt'))"
 }
 
 # ----------------------------------------------------------------------------- eval
+ref_complete() {  # ref_complete <dir> — published-model baseline exists and covers every suite in $SUITES
+  [[ -f $1/eval.json && -f $1/eval_perturb.json ]] || return 1
+  "$PY" - "$1" $SUITES <<'EOF'
+import json, sys
+ref, suites = sys.argv[1], set(sys.argv[2:])
+for f in ("eval.json", "eval_perturb.json"):
+    have = {k.split("-")[0] for k in json.load(open(f"{ref}/{f}")).get("episodes", {})}
+    if not suites <= have:
+        print(f"baseline {f} lacks suites {sorted(suites - have)}; re-evaluating the published model")
+        sys.exit(1)
+EOF
+}
+
 stage_eval() {
   load_fc; cd "$REPO"
   [[ -d $RUN/hf ]] || die "no exported model at $RUN/hf; run export"
   local ref=runs/reference_hf
-  if [[ ! -f $ref/eval.json ]]; then   # published model, once per machine
+  if ! ref_complete "$ref"; then   # published model, once per machine
     mkdir -p "$ref"
     timed eval_ref "$PY" -m freecad_s1.evaluate --ckpt shhivv/taiga-s1 --data data/gen_test \
       --episodes 100 --suites $SUITES --workers "$WORKERS" --out "$ref/eval.json"
@@ -379,7 +392,7 @@ def sh(c):
     try: return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
     except Exception: return None
 json.dump({
-  "script_version": "2026.10.03.1", "script": "taiga_repro_DGX.sh", "seed": $SEED, "data_workers": $DATA_WORKERS, "workers": $WORKERS,
+  "script_version": "2026.10.03.2", "script": "taiga_repro_DGX.sh", "seed": $SEED, "data_workers": $DATA_WORKERS, "workers": $WORKERS,
   "repo_commit": sh("git -C '$REPO' rev-parse HEAD"), "host": platform.node(), "arch": platform.machine(),
   "python": sys.version.split()[0], "torch": torch.__version__, "cuda": torch.version.cuda,
   "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
