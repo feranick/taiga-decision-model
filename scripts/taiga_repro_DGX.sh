@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # =============================================================================
 # taiga_repro_DGX.sh — reproduce Taiga-S1 from scratch on an NVIDIA DGX Spark
-# Version: 2026.10.02.3
+# (DGX OS / Ubuntu 24.04 noble), with FreeCAD 1.0.x from ppa:bleedingedge/noble-spark-bleed
+# Version: 2026.10.03.1
 #
 # Pipeline (mirrors upstream scripts/train_final.sh + final_eval.sh):
-#   setup   : uv + Python 3.11 venv, PyTorch (CUDA 13, aarch64), FreeCAD via
-#             conda-forge (micromamba), clone + install shhivv/taiga-s1, tests
+#   setup   : uv + Python 3.11 venv, PyTorch (CUDA 13, aarch64), FreeCAD from
+#             the noble PPA via apt (forced; no conda, no development builds),
+#             clone + install shhivv/taiga-s1, tests
 #   data    : synthetic datagen in headless FreeCAD (train 4k/8k/12k, test 300/600/900)
 #   train   : SFT (4 epochs) + 2 DAgger rounds, all generalization tricks on
 #   export  : checkpoint -> HF layout (model.safetensors + config.json)
@@ -32,9 +34,12 @@
 #                       (episode RNG = seed*1000 + shard). Raise to ~18 for speed.
 #   WORKERS=18          FreeCAD workers for DAgger / eval / calibration
 #   REPO_REF=a6e81d3    upstream commit to pin (verified 2026-10-02)
-#   FREECAD_SPEC="freecad>=1.0"   conda-forge spec (upstream evaluated on 1.1)
-#   FREECAD_PYTHON / FREECAD_LIB  set both to use an existing FreeCAD instead
+#   PPA=ppa:bleedingedge/noble-spark-bleed   FREECAD_PKG=freecad
+#   FREECAD_EXPECT=1.0  FreeCAD series expected from the PPA (warns if different)
 #   TORCH_INDEX=https://download.pytorch.org/whl/cu130
+# FreeCAD always comes from the PPA: FREECAD_PYTHON / FREECAD_LIB are ignored by
+# setup, and FreeCAD development builds (calendar versions such as 26.x) are
+# rejected. setup uses sudo for apt (PPA + FreeCAD).
 # =============================================================================
 set -euo pipefail
 
@@ -44,19 +49,18 @@ DATA_WORKERS=${DATA_WORKERS:-8}
 WORKERS=${WORKERS:-$(( $(nproc) > 4 ? $(nproc) - 2 : 2 ))}
 REPO_URL=${REPO_URL:-https://github.com/shhivv/taiga-s1.git}
 REPO_REF=${REPO_REF:-a6e81d3}
-FREECAD_SPEC=${FREECAD_SPEC:-"freecad>=1.0"}
 TORCH_INDEX=${TORCH_INDEX:-https://download.pytorch.org/whl/cu130}
 TEST_SEED=3
 FREECAD_PKG=${FREECAD_PKG:-freecad}
-PPA=${PPA:-}
+PPA=${PPA:-ppa:bleedingedge/noble-spark-bleed}
+FREECAD_EXPECT=${FREECAD_EXPECT:-1.0}
 TEST_WORKERS=8          # fixed so the test set is identical across machines
 SUITES="iid comp comp2 comp3 len len2 len3"
 
 REPO=$WORK/taiga-s1
 VENV=$REPO/.venv
 PY=$VENV/bin/python
-FCENV=$WORK/fcenv
-MAMBA=$WORK/bin/micromamba
+FCWRAP=$WORK/bin/freecad-python
 RUN=$REPO/runs/seed${SEED}
 LOGDIR=$WORK/logs
 ENVFILE=$WORK/freecad.env
@@ -82,9 +86,100 @@ timed() {  # timed <name> <cmd...>   — logs to file and records wall time
 load_fc() { [[ -f $ENVFILE ]] && source "$ENVFILE"; [[ -n ${FREECAD_PYTHON:-} && -n ${FREECAD_LIB:-} ]] || die "FreeCAD not configured; run setup"; }
 
 # ----------------------------------------------------------------------------- setup
+fc_check() {  # fc_check <python> <lib>  — can it build a PartDesign body headless?
+  PYTHONPATH=$2 "$1" - <<'EOF' 2>&1
+import FreeCAD, Part, Sketcher
+doc = FreeCAD.newDocument("t")
+body = doc.addObject("PartDesign::Body", "B")
+sk = body.newObject("Sketcher::SketchObject", "S")
+doc.recompute()
+print("FreeCAD", ".".join(FreeCAD.Version()[:3]), "OK")
+EOF
+}
+
+install_freecad() {
+  local SUDO=""; [[ $EUID -ne 0 ]] && SUDO=sudo
+  if dpkg-query -W -f='${Status}' "$FREECAD_PKG" 2>/dev/null | grep -q "install ok installed"; then
+    log "$FREECAD_PKG already installed"
+  else
+    if ! grep -rqs "${PPA#ppa:}" /etc/apt/sources.list /etc/apt/sources.list.d/; then
+      log "Adding $PPA"
+      command -v add-apt-repository >/dev/null || { $SUDO apt-get update; $SUDO apt-get install -y software-properties-common; }
+      $SUDO add-apt-repository -y "$PPA"; mark ppa
+    fi
+    log "Installing $FREECAD_PKG"
+    $SUDO apt-get update
+    $SUDO apt-get install -y "$FREECAD_PKG"; mark freecad_pkg
+  fi
+  local ver origin
+  ver=$(dpkg-query -W -f='${Version}' "$FREECAD_PKG")
+  origin=$(apt-cache policy "$FREECAD_PKG" | grep -A1 '^ \*\*\*' | tail -1 | xargs || true)
+  log "Installed $FREECAD_PKG $ver  (from: ${origin:-unknown})"
+  [[ $ver == *"$FREECAD_EXPECT"* ]] || log "WARNING: expected FreeCAD $FREECAD_EXPECT.x; got $ver"
+  [[ $origin == *bleedingedge* ]] || log "WARNING: package does not appear to come from $PPA"
+}
+
+discover_freecad() {
+  # All files shipped by installed freecad* packages (Debian splits FreeCAD across several)
+  local pkgs files so libdir pyver sysp mods=""
+  pkgs=$(dpkg-query -W -f='${binary:Package}\n' '*freecad*' 2>/dev/null | tr '\n' ' ' || true)
+  # shellcheck disable=SC2086
+  files=$(dpkg -L $pkgs 2>/dev/null || true)
+  so=$(grep -E '/FreeCAD\.so$' <<<"$files" | head -1 || true)
+  [[ -n $so ]] || so=$(find /usr/lib /usr/local/lib /opt -name FreeCAD.so 2>/dev/null | head -1 || true)
+  [[ -n $so ]] || die "FreeCAD.so not found; is $FREECAD_PKG installed?"
+  libdir=$(dirname "$so")
+
+  # The interpreter must be the Python FreeCAD.so was linked against
+  pyver=$(ldd "$so" | grep -oE 'libpython3\.[0-9]+' | head -1 | sed 's/libpython//' || true)
+  sysp=/usr/bin/python${pyver:-3}
+  [[ -x $sysp ]] || sysp=/usr/bin/python3
+  log "FreeCAD lib: $libdir | interpreter: $sysp (linked: python${pyver:-?})"
+
+  local out
+  out=$(fc_check "$sysp" "$libdir" || true); echo "$out"
+  if [[ $out != *" OK"* ]]; then
+    # Packaged builds sometimes need the Mod dirs explicitly (as in the Debian/Android port)
+    local moddirs d
+    moddirs=$(grep -E '/Mod/PartDesign$' <<<"$files" | xargs -r -n1 dirname | sort -u || true)
+    [[ -n $moddirs ]] || moddirs=$(find /usr/lib /usr/share /usr/local -type d -path '*/Mod/PartDesign' \
+                                   -exec dirname {} \; 2>/dev/null | sort -u || true)
+    [[ -n $moddirs ]] || die "FreeCAD import failed and no Mod directories found"
+    while read -r d; do
+      [[ -n $d ]] || continue
+      mods="$mods:$d"
+      while read -r sub; do mods="$mods:$sub"; done < <(find "$d" -mindepth 1 -maxdepth 1 -type d)
+    done <<<"$moddirs"
+    log "Retrying with Mod dirs on PYTHONPATH"
+    out=$(fc_check "$sysp" "$libdir$mods" || true); echo "$out"
+    [[ $out == *" OK"* ]] || die "FreeCAD still fails headless; see output above"
+  fi
+
+  # Development builds use calendar versions (e.g. 26.3.0) and, from 26.x, FreeCAD's
+  # init deletes modules from the caller's __main__ namespace, which breaks the workers.
+  local fcver; fcver=$(grep -oE 'FreeCAD [0-9]+\.[0-9]+\.[0-9]+' <<<"$out" | tail -1 | cut -d' ' -f2)
+  [[ -n $fcver ]] || die "could not read the FreeCAD version from the check above"
+  (( ${fcver%%.*} < 2 )) || die "FreeCAD $fcver is a development build; install the release from $PPA"
+
+  # Launcher: the worker processes get FreeCAD's paths, the torch venv never does.
+  cat > "$FCWRAP" <<EOF
+#!/bin/sh
+# Generated by taiga_repro_DGX.sh — FreeCAD worker interpreter
+export QT_QPA_PLATFORM=offscreen
+export PYTHONPATH="\${PYTHONPATH:+\$PYTHONPATH:}${libdir}${mods}"
+exec $sysp "\$@"
+EOF
+  chmod +x "$FCWRAP"
+  FREECAD_PYTHON=$FCWRAP
+  FREECAD_LIB=$libdir
+}
+
 stage_setup() {
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  [[ ${VERSION_CODENAME:-} == noble ]] || die "this script is for Ubuntu 24.04 noble (DGX OS); found ${VERSION_CODENAME:-unknown}"
   [[ $(uname -m) == aarch64 ]] || log "Note: not aarch64 ($(uname -m)); script targets DGX Spark but should still work"
-  for c in git curl tar bzip2; do command -v $c >/dev/null || die "missing '$c' (sudo apt install $c)"; done
+  for c in git curl; do command -v $c >/dev/null || die "missing '$c' (sudo apt install $c)"; done
 
   # uv + Python 3.11
   command -v uv >/dev/null || { log "Installing uv"; curl -LsSf https://astral.sh/uv/install.sh | sh; mark uv; }
@@ -115,32 +210,20 @@ else:
     print("WARNING: training will run on CPU (fine for a 1.2M-param model, just slower)")
 EOF
 
-  # FreeCAD (headless) from conda-forge, unless the user supplied one
-  if [[ -z ${FREECAD_PYTHON:-} || -z ${FREECAD_LIB:-} ]]; then
-    if [[ ! -x $MAMBA ]]; then
-      log "Installing micromamba"
-      local arch; arch=$([[ $(uname -m) == aarch64 ]] && echo linux-aarch64 || echo linux-64)
-      curl -Ls "https://micro.mamba.pm/api/micromamba/$arch/latest" | tar -xj -C "$WORK" bin/micromamba
-    fi
-    if [[ ! -d $FCENV ]]; then
-      log "Creating FreeCAD env ($FREECAD_SPEC) — takes a few minutes"
-      MAMBA_ROOT_PREFIX=$WORK/mamba "$MAMBA" create -y -p "$FCENV" -c conda-forge "$FREECAD_SPEC"
-    fi
-    local so; so=$(find "$FCENV" -name 'FreeCAD.so' -path '*lib*' 2>/dev/null | head -1)
-    [[ -n $so ]] || die "FreeCAD.so not found under $FCENV"
-    FREECAD_PYTHON=$FCENV/bin/python
-    FREECAD_LIB=$(dirname "$so")
+  # FreeCAD: always the noble PPA release (never conda or a development build)
+  if [[ -n ${FREECAD_PYTHON:-}${FREECAD_LIB:-} ]]; then
+    log "Ignoring FREECAD_PYTHON/FREECAD_LIB: this script always uses FreeCAD from $PPA"
   fi
+  unset FREECAD_PYTHON FREECAD_LIB
+  [[ -d $WORK/fcenv ]] && log "Note: old conda FreeCAD env at $WORK/fcenv is no longer used (uninstall removes it)"
+  install_freecad
+  discover_freecad
   printf 'export FREECAD_PYTHON=%q\nexport FREECAD_LIB=%q\n' "$FREECAD_PYTHON" "$FREECAD_LIB" > "$ENVFILE"
   load_fc
 
-  log "Checking FreeCAD import (Part, Sketcher, PartDesign)"
-  PYTHONPATH=$FREECAD_LIB "$FREECAD_PYTHON" -c \
-    "import FreeCAD, Part, Sketcher; FreeCAD.newDocument('t').addObject('PartDesign::Body','B'); print('FreeCAD', '.'.join(FreeCAD.Version()[:3]))" \
-    || die "FreeCAD import failed"
-
   # Upstream tests silently SKIP the FreeCAD ones if FreeCAD isn't found, so we checked above first.
   cd "$REPO"
+  "$PY" -c "from freecad_s1.runtime.fcenv import freecad_python; print('repo sees FreeCAD at', freecad_python())"
   timed tests "$PY" -m pytest -q
 }
 
@@ -296,7 +379,7 @@ def sh(c):
     try: return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
     except Exception: return None
 json.dump({
-  "script_version": "2026.10.02.3", "script": "taiga_repro_DGX.sh", "seed": $SEED, "data_workers": $DATA_WORKERS, "workers": $WORKERS,
+  "script_version": "2026.10.03.1", "script": "taiga_repro_DGX.sh", "seed": $SEED, "data_workers": $DATA_WORKERS, "workers": $WORKERS,
   "repo_commit": sh("git -C '$REPO' rev-parse HEAD"), "host": platform.node(), "arch": platform.machine(),
   "python": sys.version.split()[0], "torch": torch.__version__, "cuda": torch.version.cuda,
   "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,

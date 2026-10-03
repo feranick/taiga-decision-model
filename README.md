@@ -4,9 +4,9 @@ Scripts to set up and retrain [Taiga-S1](https://github.com/shhivv/taiga-s1) fro
 
 | Script | Machine | CPU / RAM | OS | FreeCAD source | GPU |
 |---|---|---|---|---|---|
-| `taiga_repro_DGX.sh` | NVIDIA DGX Spark (aarch64) | GB10 Grace, 20 Arm cores / 128 GB unified | DGX OS / Ubuntu 24.04 | conda-forge via micromamba (or your own build) | GB10, CUDA 13 |
+| `taiga_repro_DGX.sh` | NVIDIA DGX Spark (aarch64) | GB10 Grace, 20 Arm cores / 128 GB unified | DGX OS / Ubuntu 24.04 (noble) | `ppa:bleedingedge/noble-spark-bleed` (1.0.x) | GB10, CUDA 13 |
 | `taiga_repro_5060ti.sh` | PowerSpec G467 | Intel Core i7-8700K @ 3.70 GHz (12 cores) / 40 GB | Ubuntu 26.04 (resolute) | `ppa:bleedingedge/resolute-bleed` (1.1.x) | RTX 5060 Ti (Blackwell, sm_120) |
-| `taiga_repro_Quadro6000.sh` | Dell Precision 7920 Tower | Intel Xeon Gold 6230 @ 2.10 GHz (40 cores) / 64 GB | Ubuntu 26.04 (resolute) | `ppa:bleedingedge/resolute-bleed (1.1.x) | 2 × Quadro RTX 6000 (Turing, sm_75) |
+| `taiga_repro_Quadro6000.sh` | Dell Precision 7920 Tower | Intel Xeon Gold 6230 @ 2.10 GHz (40 cores) / 64 GB | Ubuntu 26.04 (resolute) | `ppa:bleedingedge/resolute-bleed` (1.1.x) | 2 × Quadro RTX 6000 (Turing, sm_75) |
 
 All three scripts use the same stages, environment variables and output layout. The only differences are in `setup`, plus the `pair` stage, which only the Quadro script has.
 
@@ -14,11 +14,11 @@ All three scripts use the same stages, environment variables and output layout. 
 
 ## Prerequisites
 
-- `git` and `curl` (and `tar` and `bzip2` on the DGX).
+- `git` and `curl`.
 - An NVIDIA driver on the GPU machines. The PowerSpec G467 and the Dell Precision 7920 use `nvidia-drivers-595-open`.
   - **RTX 5060 Ti (PowerSpec G467):** needs driver ≥ 570, and ≥ 580 for the CUDA 13 PyTorch build.
   - **Quadro RTX 6000 (Dell Precision 7920):** works with any recent driver; the script picks a PyTorch build that runs on the card.
-- `sudo` access on the PowerSpec G467 and the Dell Precision 7920. It's used only by `setup` (to add the PPA and install FreeCAD) and by `uninstall`.
+- `sudo` access on all three machines. It's used only by `setup` (to add the PPA and install FreeCAD) and by `uninstall`.
 - About 20 GB of free disk space in the working directory (default `~/taiga`).
 
 The scripts install everything else themselves: uv, Python 3.11, PyTorch, the upstream repo and FreeCAD.
@@ -27,18 +27,16 @@ The scripts install everything else themselves: uv, Python 3.11, PyTorch, the up
 
 ## Quick start
 
-`setup` must run interactively because it may prompt for your sudo password. The long stages should run detached; see [Running detached](#running-detached).
+`setup` must run interactively on all machines because it may prompt for your sudo password. The long stages should run detached; see [Running detached](#running-detached).
 
 ### DGX Spark
 ```bash
 chmod +x taiga_repro_DGX.sh
-./taiga_repro_DGX.sh all                  # seed 2 (upstream's seed)
-SEED=12 ./taiga_repro_DGX.sh all          # on the second Spark: independent replicate
+./taiga_repro_DGX.sh setup                # interactive (sudo)
+./taiga_repro_DGX.sh data train export eval calib
+SEED=12 ./taiga_repro_DGX.sh data train export eval calib   # on the second Spark: independent replicate
 ```
-To use an existing FreeCAD instead of conda, such as your `noble-spark-bleed` 1.0.3 build, set both of these variables:
-```bash
-FREECAD_PYTHON=/usr/bin/python3 FREECAD_LIB=/usr/lib/freecad-python3/lib ./taiga_repro_DGX.sh all
-```
+The DGX script is specific to Ubuntu 24.04 (noble) and always installs FreeCAD 1.0.x from `ppa:bleedingedge/noble-spark-bleed`. It ignores `FREECAD_PYTHON`/`FREECAD_LIB`, doesn't use conda, and refuses FreeCAD development builds (see [Known issues](#known-issues)).
 
 ### PowerSpec G467 (RTX 5060 Ti)
 ```bash
@@ -84,9 +82,9 @@ Run them one at a time or several in sequence, for example `./script.sh train ex
 | `WORKERS` | `nproc − 2` | Number of FreeCAD workers for DAgger, eval and calibration |
 | `REPO_REF` | `a6e81d3` | Upstream commit to pin |
 | `TORCH_INDEX` | auto | Forces a specific PyTorch wheel index (e.g. `https://download.pytorch.org/whl/cu128`) |
-| `FREECAD_PYTHON`, `FREECAD_LIB` | auto | Set both to use an existing FreeCAD and skip installing or detecting one |
-| `FREECAD_SPEC` | `freecad>=1.0` | *(DGX)* conda-forge package spec for FreeCAD |
-| `PPA`, `FREECAD_PKG` | auto, `freecad` | *(5060ti, Quadro)* Which PPA and package to install |
+| `FREECAD_PYTHON`, `FREECAD_LIB` | auto | *(5060ti, Quadro)* Set both to use an existing FreeCAD and skip installing or detecting one. Ignored by the DGX script. |
+| `PPA`, `FREECAD_PKG` | per script, `freecad` | Which PPA and package to install (`noble-spark-bleed` on the DGX, `resolute-bleed` on the others) |
+| `FREECAD_EXPECT` | `1.0` | *(DGX)* FreeCAD series expected from the PPA; setup warns if the installed version differs |
 | `GPU` | all | *(Quadro)* Pins the run to one GPU (sets `CUDA_VISIBLE_DEVICES`) |
 | `PAIR_SEEDS` | `"2 12"` | *(Quadro)* Seeds used by `pair` |
 | `PURGE` | `0` | *(uninstall)* `1` also deletes trained models, evals and logs |
@@ -159,8 +157,7 @@ pkill -f taiga_repro_; pkill -f freecad_s1
 │   ├── <stage>_seed<N>.log
 │   └── timings_seed<N>.tsv           wall time per stage
 ├── freecad.env                       detected FreeCAD paths
-├── bin/                              micromamba (DGX) or freecad-python launcher (5060ti, Quadro)
-├── fcenv/                            (DGX) conda FreeCAD environment
+├── bin/                              freecad-python launcher (FreeCAD worker interpreter)
 └── .installed_by_taiga               record of system changes, used by uninstall
 ```
 
@@ -182,7 +179,7 @@ REMOVE_FREECAD=0 ./taiga_repro_5060ti.sh uninstall  # keeps FreeCAD and the PPA
 UNINSTALL_YES=1 ./taiga_repro_5060ti.sh uninstall   # no prompt
 ```
 
-- **Always removed:** the repo, venv, datasets, the conda FreeCAD environment (DGX), the FreeCAD launcher, the logs, and the cached Hugging Face weights.
+- **Always removed:** the repo, venv, datasets, the FreeCAD launcher, any conda FreeCAD environment left by older DGX script versions, the logs, and the cached Hugging Face weights.
 - **Kept by default:** trained models, evals, manifests and logs, which are moved to `~/taiga/results-<timestamp>/`.
 - **Removed only if this script installed them** (according to `.installed_by_taiga`): uv, the FreeCAD apt package and the PPA. Anything that was already present stays. The uninstaller does not run `apt autoremove`; review leftovers with `sudo apt autoremove --dry-run`.
 - **Refuses to run** if `WORK` is `/` or your home directory, or if any Taiga processes are still running.
@@ -193,7 +190,7 @@ Only installs made by these script versions are recorded. Anything installed by 
 
 ## Notes and troubleshooting
 
-- **The FreeCAD version matters.** Upstream evaluated on FreeCAD 1.1. The PowerSpec G467 (FreeCAD 1.1.3) is the closest match. With the defaults (`SEED=2`, `DATA_WORKERS=8`) it has the best chance of regenerating upstream's exact training data. Other versions give slightly different data and success rates. The `reference_hf` evaluation gives a baseline measured on the same machine.
+- **Each platform gets its own model.** Runs aren't meant to match upstream: each OS and FreeCAD version (noble with 1.0.x, resolute with 1.1.x) produces its own data and model. Compare models only within the same platform, using the FreeCAD and OS versions recorded in `manifest.json`. The `reference_hf` evaluation shows how the published model performs on each machine's FreeCAD.
 - **"FreeCAD import failed".** Setup creates a PartDesign Body and a Sketch headless before running the tests. Upstream's tests silently *skip* when FreeCAD is missing, so a passing pytest alone proves nothing. If automatic detection fails, set `FREECAD_PYTHON` and `FREECAD_LIB` yourself.
 - **"GPU present but torch can't use it"** (5060ti) or **"no PyTorch build ran on these GPUs"** (Quadro). Check the driver version with `nvidia-smi`, then force a different build with `TORCH_INDEX`, for example `cu128` or `cu126`.
 - **The GPU is not the bottleneck.** The model is small, so most of the time goes into the FreeCAD steps (data generation, DAgger and evaluation), which run on the CPU. Upstream reports about 25 minutes of training on an Apple M-series Mac.
@@ -208,7 +205,7 @@ Only installs made by these script versions are recorded. Anything installed by 
 
 ## Known issues
 
-### `No module named 'PartDesign'` during setup (PowerSpec G467, Dell Precision 7920)
+### `No module named 'PartDesign'` during setup (PPA FreeCAD builds)
 
 **Symptom.** `setup` prints a traceback right after the `FreeCAD lib:` line:
 
@@ -219,9 +216,9 @@ Traceback (most recent call last):
 ModuleNotFoundError: <stdin>(3)<class 'ModuleNotFoundError'>: No module named 'PartDesign'
 ```
 
-**Cause.** When FreeCAD is imported as a Python library, its home path is `/usr/lib/freecad-python3/`, so it looks for modules in `/usr/lib/freecad-python3/Mod`. The `resolute-bleed` packages install them in `/usr/share/freecad/Mod`. `Part` and `Sketcher` still load because they are compiled modules in `/usr/lib/freecad-python3/lib`. PartDesign is a Python package under `Mod/`, so it doesn't.
+**Cause.** When FreeCAD is imported as a Python library, its home path is `/usr/lib/freecad-python3/`, so it looks for modules in `/usr/lib/freecad-python3/Mod`. The PPA packages install them in `/usr/share/freecad/Mod`. `Part` and `Sketcher` still load because they are compiled modules in `/usr/lib/freecad-python3/lib`. PartDesign is a Python package under `Mod/`, so it doesn't.
 
-**Impact.** The traceback comes from the first headless check (`fc_check`). The script then retries with the Mod directories on `PYTHONPATH` and writes them into the `~/taiga/bin/freecad-python` launcher. If the log continues with `Retrying with Mod dirs on PYTHONPATH` and then `FreeCAD 1.1.x OK`, the run is valid. If the retry also fails, `setup` stops with `FreeCAD still fails headless`. Plain `python3` outside the launcher still can't load PartDesign.
+**Impact.** The traceback comes from the first headless check (`fc_check`). The script then retries with the Mod directories on `PYTHONPATH` and writes them into the `~/taiga/bin/freecad-python` launcher. If the log continues with `Retrying with Mod dirs on PYTHONPATH` and then `FreeCAD <version> OK`, the run is valid. If the retry also fails, `setup` stops with `FreeCAD still fails headless`. Plain `python3` outside the launcher still can't load PartDesign.
 
 **Fix.** Link the module directory to where FreeCAD expects it. The `ls` check avoids overwriting an existing directory.
 
@@ -229,7 +226,7 @@ ModuleNotFoundError: <stdin>(3)<class 'ModuleNotFoundError'>: No module named 'P
 ls /usr/lib/freecad-python3/Mod 2>/dev/null || sudo ln -s /usr/share/freecad/Mod /usr/lib/freecad-python3/Mod
 ```
 
-Then rerun `setup` (e.g. `./taiga_repro_5060ti.sh setup`) with `FREECAD_PYTHON` and `FREECAD_LIB` unset in your shell, so discovery runs again. The first check now passes, and the launcher is regenerated without the extra Mod paths. Runs made before the fix don't need to be redone if the retry succeeded.
+Then rerun `setup` (e.g. `./taiga_repro_5060ti.sh setup`). On the 5060ti and Quadro scripts, leave `FREECAD_PYTHON` and `FREECAD_LIB` unset in your shell so discovery runs again; the DGX script always rediscovers. The first check now passes, and the launcher is regenerated without the extra Mod paths. Runs made before the fix don't need to be redone if the retry succeeded.
 
 **Verify.** Both lines must print:
 
@@ -256,6 +253,22 @@ source ~/taiga/freecad.env
 sudo rm /usr/lib/freecad-python3/Mod
 ```
 
+### FreeCAD development builds (26.x): `NameError: name 'random' is not defined`
+
+**Symptom.** The FreeCAD import check passes, but `test_runtime.py` fails: `test_expert_rollouts_clean_and_noisy` with `KeyError: 'L1_noise0.0_n'` and `test_worker_protocol_roundtrip` with `FreeCAD worker exited (code 1)`. Running the scripts directly shows the real error, e.g. `NameError: name 'random' is not defined` in `scripts/smoke_expert.py` or `name 'json' is not defined` in `freecad_s1/runtime/worker.py`.
+
+**Cause.** FreeCAD development builds use calendar versions (seen with `26.3.0`, commit `a4ce44d33`, which conda-forge installed for `freecad>=1.0`). Their `src/App/FreeCADInit.py` ends with a "clean global namespace" step that deletes every module imported in the calling script's `__main__`, except `FreeCAD`, `App`, `os`, `sys`, `traceback` and `inspect`. Any script that imports other modules before FreeCAD loses them.
+
+**Fix.** Use the PPA release. The DGX script from version 2026.10.03.1 always installs FreeCAD from `ppa:bleedingedge/noble-spark-bleed` and stops if it finds a FreeCAD with a major version of 2 or higher. To switch an existing DGX installation from the old conda setup:
+
+```bash
+./taiga_repro_DGX.sh setup
+```
+
+`~/taiga/fcenv` and `~/taiga/mamba` are no longer used. Remove them to free space, or let `uninstall` do it.
+
+**Verify.** `setup` logs `FreeCAD 1.0.x OK` and `test_runtime.py` passes: `16 passed`, no failures or skips.
+
 ---
 
 ## Versions
@@ -264,6 +277,6 @@ Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header 
 
 | Script | Version |
 |---|---|
-| `taiga_repro_DGX.sh` | 2026.10.02.3 |
+| `taiga_repro_DGX.sh` | 2026.10.03.1 |
 | `taiga_repro_5060ti.sh` | 2026.10.02.5 |
 | `taiga_repro_Quadro6000.sh` | 2026.10.02.3 |
