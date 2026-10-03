@@ -6,7 +6,7 @@ Scripts to set up and retrain [Taiga-S1](https://github.com/shhivv/taiga-s1) fro
 |---|---|---|---|---|---|
 | `taiga_repro_DGX.sh` | NVIDIA DGX Spark (aarch64) | GB10 Grace, 20 Arm cores / 128 GB unified | DGX OS / Ubuntu 24.04 | conda-forge via micromamba (or your own build) | GB10, CUDA 13 |
 | `taiga_repro_5060ti.sh` | PowerSpec G467 | Intel Core i7-8700K @ 3.70 GHz (12 cores) / 40 GB | Ubuntu 26.04 (resolute) | `ppa:bleedingedge/resolute-bleed` (1.1.x) | RTX 5060 Ti (Blackwell, sm_120) |
-| `taiga_repro_Quadro6000.sh` | Dell Precision 7920 Tower | Intel Xeon Gold 6230 @ 2.10 GHz (40 cores) / 64 GB | Ubuntu 24.04 or 26.04 | `ppa:bleedingedge/noble-bleed` or `resolute-bleed`, picked automatically | 2 × Quadro RTX 6000 (Turing, sm_75) |
+| `taiga_repro_Quadro6000.sh` | Dell Precision 7920 Tower | Intel Xeon Gold 6230 @ 2.10 GHz (40 cores) / 64 GB | Ubuntu 26.04 (resolute) | `ppa:bleedingedge/resolute-bleed (1.1.x) | 2 × Quadro RTX 6000 (Turing, sm_75) |
 
 All three scripts use the same stages, environment variables and output layout. The only differences are in `setup`, plus the `pair` stage, which only the Quadro script has.
 
