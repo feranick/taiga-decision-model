@@ -24,7 +24,7 @@ The planner decides *what* to build; Taiga-S1 decides *how*, command by command.
 
 | Folder | Contents | Documentation |
 |---|---|---|
-| [`training/`](training/) | Setup, data generation, training, evaluation and calibration, one script per machine | [`README_training.md`](training/README_training.md) |
+| [`training/`](training/) | Setup, data generation, training, evaluation and calibration, one script per machine; multi-seed sweeps and variance analysis | [`README_training.md`](training/README_training.md) |
 | [`build/`](build/) | Building parts with a trained model (inference) and example goals | [`README_build_part.md`](build/README_build_part.md) |
 
 More folders will be added as the project grows.
@@ -33,7 +33,8 @@ More folders will be added as the project grows.
 taiga-decision-model/
 ├── README.md                     this file
 ├── training/
-│   ├── README_training.md        stages, environment variables, outputs, known issues
+│   ├── README_training.md        stages, environment variables, outputs, variance studies, known issues
+│   ├── taiga_aggregate.py        distribution of results across runs (used by sweep/aggregate)
 │   ├── taiga_repro_DGX.sh        NVIDIA DGX Spark, Ubuntu 24.04 (noble)
 │   ├── taiga_repro_5060ti.sh     PowerSpec G467 (RTX 5060 Ti), Ubuntu 26.04 (resolute)
 │   └── taiga_repro_Quadro6000.sh Dell Precision 7920 (2 × Quadro RTX 6000), Ubuntu 26.04 (resolute)

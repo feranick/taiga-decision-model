@@ -2,7 +2,7 @@
 # =============================================================================
 # taiga_repro_Quadro6000.sh — reproduce Taiga-S1 from scratch on a dual Quadro RTX 6000
 # (Turing, sm_75, 2 x 24 GB) workstation, Ubuntu 24.04 or 26.04, driver 595-open
-# Version: 2026.10.03.1
+# Version: 2026.10.04.1
 #
 # Same pipeline as the Spark/mochi scripts; differences:
 #   - FreeCAD from your PPA matching the release: noble -> bleedingedge/noble-bleed,
@@ -13,7 +13,7 @@
 #   - GPU=<n> pins a run to one GPU (CUDA_VISIBLE_DEVICES)
 #   - "pair": two independent seeds in parallel, one per GPU, CPU workers split
 #
-# Stages:  setup data train export eval calib | all | pair | uninstall
+# Stages:  setup data train export eval calib | all | pair | sweep | aggregate | uninstall
 # Usage:   ./taiga_repro_Quadro6000.sh setup              # interactive (sudo for apt)
 #          ./taiga_repro_Quadro6000.sh pair               # seeds 2 and 12 on GPU 0 / 1
 #          PAIR_SEEDS="2 22" ./taiga_repro_Quadro6000.sh pair
@@ -30,11 +30,32 @@
 #   PAIR_SEEDS="2 12"    PPA=(auto by release)   FREECAD_PKG=freecad
 #   TORCH_INDEX=...      force one PyTorch wheel index (skips probing)
 #   FREECAD_PYTHON / FREECAD_LIB   set both to skip FreeCAD discovery
+#
+# Run-to-run variance (see README_training.md, "Variance studies"):
+#   sweep      train + evaluate every seed in SEEDS, then aggregate
+#   aggregate  distribution (mean, sd, min, max) over the runs of an experiment
+#   SEEDS="2 12 22 32 42"  SWEEP_STAGES="data train export eval"  SWEEP_FORCE=0
+#   DATA_SEED=   unset: training data follows SEED; set: every run uses that data
+#   DATA_SCALE=1 multiplies the 4000/8000/12000 training episodes
+#   EPOCHS=4  DAGGER_ROUNDS=2  DAGGER_EPISODES=400  DAGGER_EPOCHS=2
+#   DETERMINISTIC=0  1: deterministic PyTorch (fails on non-deterministic ops),
+#                    warn: only warn; DAgger workers pinned to DAGGER_WORKERS=8
+#   EXP=         experiment name; default derived from the settings above
+#                (empty for the defaults, so plain runs stay in runs/seed<N>)
 # =============================================================================
 set -euo pipefail
 
 WORK=${WORK:-$HOME/taiga}
 SEED=${SEED:-2}
+DATA_SEED=${DATA_SEED:-}
+DATA_SCALE=${DATA_SCALE:-1}
+EPOCHS=${EPOCHS:-4}
+DAGGER_ROUNDS=${DAGGER_ROUNDS:-2}
+DAGGER_EPISODES=${DAGGER_EPISODES:-400}
+DAGGER_EPOCHS=${DAGGER_EPOCHS:-2}
+DETERMINISTIC=${DETERMINISTIC:-0}; export DETERMINISTIC
+SEEDS=${SEEDS:-"2 12 22 32 42"}
+SWEEP_STAGES=${SWEEP_STAGES:-"data train export eval"}
 DATA_WORKERS=${DATA_WORKERS:-8}
 WORKERS=${WORKERS:-$(( $(nproc) > 4 ? $(nproc) - 2 : 2 ))}
 REPO_URL=${REPO_URL:-https://github.com/shhivv/taiga-s1.git}
@@ -59,7 +80,22 @@ REPO=$WORK/taiga-s1
 VENV=$REPO/.venv
 PY=$VENV/bin/python
 FCWRAP=$WORK/bin/freecad-python
-RUN=$REPO/runs/seed${SEED}
+exp_tag() {  # experiment name from non-default settings; empty for the defaults
+  local t=()
+  [[ $EPOCHS != 4 ]] && t+=("e$EPOCHS")
+  [[ "$DAGGER_ROUNDS/$DAGGER_EPISODES/$DAGGER_EPOCHS" != 2/400/2 ]] && t+=("dg${DAGGER_ROUNDS}x${DAGGER_EPISODES}x${DAGGER_EPOCHS}")
+  [[ $DATA_SCALE != 1 ]] && t+=("x$DATA_SCALE")
+  [[ -n $DATA_SEED ]] && t+=("data$DATA_SEED")
+  [[ $DETERMINISTIC != 0 ]] && t+=("det")
+  local IFS=_; echo "${t[*]}"
+}
+EXP=${EXP:-$(exp_tag)}
+GROUP=$REPO/runs${EXP:+/$EXP}
+RUN=$GROUP/seed${SEED}
+TRAIN_DATA=data/gen_train_seed${DATA_SEED:-$SEED}; [[ $DATA_SCALE == 1 ]] || TRAIN_DATA+=_x$DATA_SCALE
+LOGTAG=${EXP:+${EXP}_}seed${SEED}
+SELF=$(realpath "$0")
+AGG=$(dirname "$SELF")/taiga_aggregate.py
 LOGDIR=$WORK/logs
 ENVFILE=$WORK/freecad.env
 MARKER=$WORK/.installed_by_taiga
@@ -74,11 +110,11 @@ timed() {  # timed <name> <cmd...>   — logs to file and records wall time
   local name=$1; shift; local t0=$SECONDS
   log "$name"
   set +e
-  "$@" 2>&1 | tee -a "$LOGDIR/${name}_seed${SEED}.log"
+  "$@" 2>&1 | tee -a "$LOGDIR/${name}_${LOGTAG}.log"
   local rc=${PIPESTATUS[0]}
   set -e
-  [[ $rc -eq 0 ]] || die "$name failed (exit $rc) — see $LOGDIR/${name}_seed${SEED}.log"
-  printf '%s\t%s\t%ds\n' "$(date -Is)" "$name" $((SECONDS - t0)) >> "$LOGDIR/timings_seed${SEED}.tsv"
+  [[ $rc -eq 0 ]] || die "$name failed (exit $rc) — see $LOGDIR/${name}_${LOGTAG}.log"
+  printf '%s\t%s\t%ds\n' "$(date -Is)" "$name" $((SECONDS - t0)) >> "$LOGDIR/timings_${LOGTAG}.tsv"
 }
 # shellcheck disable=SC1090
 load_fc() { [[ -f $ENVFILE ]] && source "$ENVFILE"; [[ -n ${FREECAD_PYTHON:-} && -n ${FREECAD_LIB:-} ]] || die "FreeCAD not configured; run setup"; }
@@ -252,13 +288,21 @@ stage_setup() {
 # ----------------------------------------------------------------------------- data
 stage_data() {
   load_fc; cd "$REPO"
-  local train=data/gen_train_seed${SEED} test=data/gen_test
-  if compgen -G "$train/*.jsonl.gz" >/dev/null; then
+  local train=$TRAIN_DATA test=data/gen_test eps
+  [[ $DATA_SCALE =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "DATA_SCALE must be a number (got '$DATA_SCALE')"
+  eps=$(awk -v s="$DATA_SCALE" 'BEGIN { printf "%d %d %d", 4000*s+0.5, 8000*s+0.5, 12000*s+0.5 }')
+  mkdir -p data
+  exec 7>"data/.$(basename "$train").lock"; flock 7   # runs sharing DATA_SEED generate it once
+  if compgen -G "$train/*.jsonl.gz" >/dev/null && [[ ! -f $train/.incomplete ]]; then
     log "Training data exists in $train — skipping (delete it to regenerate)"
   else
+    rm -rf "$train"; mkdir -p "$train"; touch "$train/.incomplete"
+    # shellcheck disable=SC2086
     timed datagen_train "$PY" -m freecad_s1.datagen --out "$train" \
-      --episodes 4000 8000 12000 --workers "$DATA_WORKERS" --seed "$SEED"
+      --episodes $eps --workers "$DATA_WORKERS" --seed "${DATA_SEED:-$SEED}"
+    rm -f "$train/.incomplete"
   fi
+  exec 7>&-
   mkdir -p data
   exec 9>"data/.gen_test.lock"; flock 9            # one generator; other runs wait
   if [[ -f $test/.complete ]]; then
@@ -271,12 +315,12 @@ stage_data() {
   fi
   exec 9>&-
   # per-run view of the test shards (hard links), so featurization caches don't collide
-  local mine=data/gen_test_seed${SEED}
+  local mine=data/gen_test_${LOGTAG}
   mkdir -p "$mine"; ln -f "$test"/*.jsonl.gz "$mine"/
   "$PY" - "$train" <<'EOF'
 import gzip, sys, pathlib
 n = sum(1 for p in pathlib.Path(sys.argv[1]).glob("*.jsonl.gz") for l in gzip.open(p, "rt") if '"state"' in l)
-print(f"labeled states: {n:,}  (upstream: ~590k)")
+print(f"labeled states: {n:,}  (upstream: ~590k at DATA_SCALE=1)")
 EOF
 }
 
@@ -284,12 +328,29 @@ EOF
 stage_train() {
   load_fc; cd "$REPO"
   mkdir -p "$RUN"
-  # Same flags as upstream train_final.sh, plus EXTRA="--type-dropout 0.15" from the README.
-  timed train "$PY" -m freecad_s1.train_sft --data "data/gen_train_seed${SEED}" --out "$RUN" \
-    --epochs 4 --pos-mode rand --ordinal --invariant-numerics --modular --pointer "done" \
+  [[ -d $TRAIN_DATA ]] || die "no training data at $TRAIN_DATA; run data"
+  local dw=${DAGGER_WORKERS:-$WORKERS} cmd=("$PY" -m freecad_s1.train_sft)
+  if [[ $DETERMINISTIC != 0 ]]; then
+    # Deterministic kernels + fixed cuBLAS workspace; DAgger collection order depends on the
+    # worker count, so it is pinned. Bit-identical results hold only on the same GPU/driver/torch.
+    export CUBLAS_WORKSPACE_CONFIG=:4096:8 PYTHONHASHSEED=0
+    dw=${DAGGER_WORKERS:-8}
+    cmd=("$PY" -c 'import os, runpy, sys, torch
+torch.use_deterministic_algorithms(True, warn_only=os.environ.get("DETERMINISTIC") == "warn")
+torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.deterministic = True
+sys.argv = ["train_sft"] + sys.argv[1:]
+runpy.run_module("freecad_s1.train_sft", run_name="__main__", alter_sys=True)')
+    log "Deterministic training (DETERMINISTIC=$DETERMINISTIC), DAgger workers pinned to $dw"
+  fi
+  log "Run $RUN | data $TRAIN_DATA | epochs $EPOCHS | DAgger ${DAGGER_ROUNDS}x${DAGGER_EPISODES}, ${DAGGER_EPOCHS} epochs"
+  # Upstream train_final.sh flags, plus EXTRA="--type-dropout 0.15" from the README; budgets are tunable.
+  timed train "${cmd[@]}" --data "$TRAIN_DATA" --out "$RUN" \
+    --epochs "$EPOCHS" --pos-mode rand --ordinal --invariant-numerics --modular --pointer "done" \
     --index-eval identity --type-dropout 0.15 \
-    --dagger-rounds 2 --dagger-episodes 400 --dagger-epochs 2 --dagger-workers "$WORKERS" \
-    --seed "$SEED" --device auto
+    --dagger-rounds "$DAGGER_ROUNDS" --dagger-episodes "$DAGGER_EPISODES" --dagger-epochs "$DAGGER_EPOCHS" \
+    --dagger-workers "$dw" --seed "$SEED" --device auto
+  cp "$LOGDIR/train_${LOGTAG}.log" "$RUN/train.log"   # read by taiga_aggregate.py
 }
 
 # ----------------------------------------------------------------------------- export
@@ -328,13 +389,13 @@ stage_eval() {
       --episodes 100 --perturb 0.2 --suites $SUITES --workers "$WORKERS" --out "$ref/eval_perturb.json"
   fi
   exec 8>&-
-  timed eval "$PY" -m freecad_s1.evaluate --ckpt "$RUN/hf" --data "data/gen_test_seed${SEED}" \
+  timed eval "$PY" -m freecad_s1.evaluate --ckpt "$RUN/hf" --data "data/gen_test_${LOGTAG}" \
     --episodes 100 --suites $SUITES --workers "$WORKERS" --out "$RUN/eval.json"
   timed eval_perturb "$PY" -m freecad_s1.evaluate --ckpt "$RUN/hf" \
     --episodes 100 --perturb 0.2 --suites $SUITES --workers "$WORKERS" --out "$RUN/eval_perturb.json"
 
   log "Published shhivv/taiga-s1"; "$PY" scripts/summarize.py "$ref/eval.json" "$ref/eval_perturb.json"
-  log "Your model (seed $SEED)";   "$PY" scripts/summarize.py "$RUN/eval.json" "$RUN/eval_perturb.json"
+  log "Your model (${EXP:+$EXP, }seed $SEED)";   "$PY" scripts/summarize.py "$RUN/eval.json" "$RUN/eval_perturb.json"
 }
 
 # ----------------------------------------------------------------------------- calib
@@ -365,7 +426,47 @@ stage_pair() {
   done
   (( rc == 0 )) || die "at least one run failed"
   cd "$REPO"
-  for s in "${seeds[@]}"; do log "Seed $s"; "$PY" scripts/summarize.py "runs/seed$s/eval.json" "runs/seed$s/eval_perturb.json"; done
+  for s in "${seeds[@]}"; do log "Seed $s"; "$PY" scripts/summarize.py "$GROUP/seed$s/eval.json" "$GROUP/seed$s/eval_perturb.json"; done
+}
+
+# ----------------------------------------------------------------------------- sweep
+# Train and evaluate every seed in SEEDS with the same settings, one seed per GPU in
+# parallel (CPU workers split), then report the distribution. Seeds already evaluated
+# are skipped (SWEEP_FORCE=1 redoes them). GPU=<n> runs the sweep on that GPU only.
+stage_sweep() {
+  [[ -f $ENVFILE ]] || die "run setup first (it needs sudo, so run it interactively)"
+  local s todo=() batch pids ngpu w i g rc=0
+  for s in $SEEDS; do
+    if [[ -f $GROUP/seed$s/eval.json && ${SWEEP_FORCE:-0} != 1 ]]; then log "seed $s already evaluated — skipping"
+    else todo+=("$s"); fi
+  done
+  ngpu=$(nvidia-smi -L 2>/dev/null | wc -l); (( ngpu >= 1 )) || ngpu=1
+  [[ -n $GPU ]] && ngpu=1
+  w=$(( WORKERS / ngpu )); (( w >= 2 )) || w=2
+  log "Sweep ${EXP:-<default settings>}: seeds ${todo[*]:-none} | $ngpu in parallel, $w FreeCAD workers each | runs in $GROUP"
+  while (( ${#todo[@]} )); do
+    batch=("${todo[@]:0:ngpu}"); todo=("${todo[@]:ngpu}"); pids=(); i=0
+    for s in "${batch[@]}"; do
+      g=${GPU:-$i}
+      # shellcheck disable=SC2086
+      SEED=$s GPU=$g WORKERS=$w EXP=$EXP "$SELF" $SWEEP_STAGES > "$LOGDIR/sweep_${EXP:+${EXP}_}seed${s}.log" 2>&1 &
+      pids+=($!); log "  seed $s -> GPU $g (log $LOGDIR/sweep_${EXP:+${EXP}_}seed${s}.log)"
+      i=$(( i + 1 ))
+    done
+    for i in "${!pids[@]}"; do
+      if wait "${pids[$i]}"; then log "seed ${batch[$i]} finished"
+      else log "seed ${batch[$i]} FAILED — see its sweep log"; rc=1; fi
+    done
+  done
+  stage_aggregate
+  (( rc == 0 )) || die "at least one seed failed"
+}
+
+# ----------------------------------------------------------------------------- aggregate
+stage_aggregate() {
+  [[ -f $AGG ]] || die "taiga_aggregate.py not found next to this script ($AGG)"
+  cd "$REPO"
+  "$PY" "$AGG" "$GROUP"
 }
 
 # ----------------------------------------------------------------------------- uninstall
@@ -447,7 +548,9 @@ def sh(c):
     try: return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
     except Exception: return None
 json.dump({
-  "script_version": "2026.10.03.1", "script": "taiga_repro_Quadro6000.sh", "seed": $SEED, "gpu": "${GPU:-all}", "data_workers": $DATA_WORKERS, "workers": $WORKERS,
+  "script_version": "2026.10.04.1", "script": "taiga_repro_Quadro6000.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
+  "dagger_rounds": $DAGGER_ROUNDS, "dagger_episodes": $DAGGER_EPISODES, "dagger_epochs": $DAGGER_EPOCHS, "deterministic": "$DETERMINISTIC",
+  "gpu": "${GPU:-all}", "data_workers": $DATA_WORKERS, "workers": $WORKERS,
   "repo_commit": sh("git -C '$REPO' rev-parse HEAD"), "host": platform.node(), "arch": platform.machine(),
   "python": sys.version.split()[0], "torch": torch.__version__, "cuda": torch.version.cuda,
   "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
@@ -463,10 +566,10 @@ stages=("$@"); [[ ${#stages[@]} -gt 0 ]] || stages=(all)
 [[ ${stages[0]} == all ]] && stages=(setup data train export eval calib)
 log "Taiga-S1 repro | WORK=$WORK SEED=$SEED DATA_WORKERS=$DATA_WORKERS WORKERS=$WORKERS | stages: ${stages[*]}"
 for s in "${stages[@]}"; do
-  declare -F "stage_$s" >/dev/null || die "unknown stage '$s' (setup data train export eval calib all pair uninstall)"
+  declare -F "stage_$s" >/dev/null || die "unknown stage '$s' (setup data train export eval calib all pair sweep aggregate uninstall)"
   "stage_$s"
 done
 # shellcheck disable=SC1090
 [[ -f $ENVFILE ]] && source "$ENVFILE"
-[[ " ${stages[*]} " == *" pair "* ]] || write_manifest   # pair children write their own
-log "Done. Timings: $LOGDIR/timings_seed${SEED}.tsv | outputs: $RUN"
+case " ${stages[*]} " in *" pair "*|*" sweep "*|*" aggregate "*) ;; *) write_manifest ;; esac   # children write their own
+log "Done. Timings: $LOGDIR/timings_${LOGTAG}.tsv | outputs: $RUN"

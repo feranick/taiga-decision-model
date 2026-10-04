@@ -63,13 +63,15 @@ Run them one at a time or several in sequence, for example `./script.sh train ex
 | Stage | What it does |
 |---|---|
 | `setup` | Installs uv, a Python 3.11 venv and PyTorch; installs and checks FreeCAD; clones and pins the repo; runs the upstream tests. |
-| `data` | Generates synthetic training data (4k/8k/12k episodes, about 590k labeled states) and the test set (300/600/900 episodes, seed 3). Skips generation if the data already exists. |
-| `train` | Supervised training for 4 epochs, then 2 DAgger rounds, with all of upstream's generalization options enabled. |
+| `data` | Generates synthetic training data (4k/8k/12k episodes × `DATA_SCALE`, about 590k labeled states at scale 1) and the test set (300/600/900 episodes, seed 3). Skips generation if the data already exists. |
+| `train` | Supervised training for `EPOCHS` (4) epochs, then `DAGGER_ROUNDS` (2) DAgger rounds, with all of upstream's generalization options enabled. `DETERMINISTIC=1` makes it reproducible. |
 | `export` | Converts the checkpoint to Hugging Face format (`model.safetensors` + `config.json`). |
 | `eval` | Evaluates your model **and** the published `shhivv/taiga-s1` on the same suites, once normally (`eval.json`) and once with 20% random actions injected (`eval_perturb.json`). Suites: `iid` (1–5 features, like training), `comp comp2 comp3` (feature combinations held out of training), `len len2 len3` (6–7, 8–9 and 11 features) and the stress suites `len4 len5 len6` (13, 15 and 17 features). |
 | `calib` | Fits a softmax temperature on held-out states and writes it into the exported `config.json`. |
 | `all` | Runs `setup data train export eval calib` in that order. |
 | `pair` | *(Quadro only)* Runs two seeds in parallel, one per GPU, splitting the CPU workers between them. Requires `setup` to have been run first. |
+| `sweep` | Trains and evaluates every seed in `SEEDS` with the same settings, then runs `aggregate`. Seeds already evaluated are skipped. On the Quadro, one seed per GPU runs in parallel. See [Variance studies](#variance-studies). |
+| `aggregate` | Reports the distribution of results over all runs of the current experiment (mean, sd, min, max per suite) plus per-run training diagnostics. |
 | `uninstall` | Removes what the script installed; see [Uninstall](#uninstall). Must be run on its own. |
 
 ---
@@ -79,7 +81,16 @@ Run them one at a time or several in sequence, for example `./script.sh train ex
 | Variable | Default | Meaning |
 |---|---|---|
 | `WORK` | `~/taiga` | Working directory for the repo, venv, data, runs and logs |
-| `SEED` | `2` | Seed for the training data and the model (upstream used 2) |
+| `SEED` | `2` | Seed for the model and, unless `DATA_SEED` is set, the training data (upstream used 2) |
+| `DATA_SEED` | unset | Fixes the training data for every run (e.g. `2`), so runs differ only in the model seed |
+| `DATA_SCALE` | `1` | Multiplies the number of training episodes (e.g. `0.5`, `2`) |
+| `EPOCHS` | `4` | Supervised training epochs |
+| `DAGGER_ROUNDS`, `DAGGER_EPISODES`, `DAGGER_EPOCHS` | `2`, `400`, `2` | DAgger rounds, episodes per level per round, training epochs per round |
+| `DETERMINISTIC` | `0` | `1`: deterministic PyTorch (stops on a non-deterministic operation); `warn`: only warns. Pins DAgger workers to `DAGGER_WORKERS` (8). |
+| `EXP` | derived | Experiment name; runs go to `runs/<EXP>/seed<N>`. Derived from the settings that differ from the defaults (e.g. `e8_x2_data2`); empty for the defaults, so plain runs stay in `runs/seed<N>`. |
+| `SEEDS` | `"2 12 22 32 42"` | Seeds used by `sweep` |
+| `SWEEP_STAGES` | `"data train export eval"` | Stages `sweep` runs for each seed (add `calib` if needed) |
+| `SWEEP_FORCE` | `0` | `1`: `sweep` also redoes seeds that are already evaluated |
 | `DATA_WORKERS` | `8` | Number of data-generation processes. Keep 8 to regenerate upstream's exact shards; raise it for speed. |
 | `WORKERS` | `nproc − 2` | Number of FreeCAD workers for DAgger, eval and calibration |
 | `REPO_REF` | `a6e81d3` | Upstream commit to pin |
@@ -143,21 +154,26 @@ pkill -f taiga_repro_; pkill -f freecad_s1
 ~/taiga/
 ├── taiga-s1/                         upstream repo (pinned) + .venv
 │   ├── data/
-│   │   ├── gen_train_seed<N>/        training shards
+│   │   ├── gen_train_seed<N>[_x<S>]/ training shards (data seed, optional DATA_SCALE)
 │   │   ├── gen_test/                 shared test set (seed 3)
 │   │   └── gen_test_seed<N>/         (Quadro) per-run hard links to the test shards
 │   └── runs/
+│       ├── <EXP>/                    one folder per experiment (non-default settings)
+│       │   ├── seed<N>/              same layout as below
+│       │   └── sweep_summary.json    distribution over the runs (from aggregate)
 │       ├── seed<N>/
 │       │   ├── last.pt               trained checkpoint
 │       │   ├── hf/                   exported model (+ calibrated temperature)
 │       │   ├── eval.json             normal evaluation
 │       │   ├── eval_perturb.json     evaluation with 20% random actions
 │       │   ├── calibration.json      ECE / NLL before and after temperature scaling
-│       │   └── manifest.json         versions: script, repo commit, torch, CUDA, FreeCAD, driver, GPU
+│       │   ├── train.log             training log (validation curve, DAgger rollouts)
+│       │   └── manifest.json         settings and versions: experiment, seeds, budgets, script, repo commit, torch, CUDA, FreeCAD, driver, GPU
 │       └── reference_hf/             published shhivv/taiga-s1 evaluated on this machine
 ├── logs/
-│   ├── <stage>_seed<N>.log
-│   └── timings_seed<N>.tsv           wall time per stage
+│   ├── <stage>_[<EXP>_]seed<N>.log
+│   ├── sweep_[<EXP>_]seed<N>.log     (Quadro) full output of each sweep run
+│   └── timings_[<EXP>_]seed<N>.tsv   wall time per stage
 ├── freecad.env                       detected FreeCAD paths
 ├── bin/                              freecad-python launcher (FreeCAD worker interpreter)
 └── .installed_by_taiga               record of system changes, used by uninstall
@@ -197,12 +213,53 @@ Only installs made by these script versions are recorded. Anything installed by 
 - **"GPU present but torch can't use it"** (5060ti) or **"no PyTorch build ran on these GPUs"** (Quadro). Check the driver version with `nvidia-smi`, then force a different build with `TORCH_INDEX`, for example `cu128` or `cu126`.
 - **The GPU is not the bottleneck.** The model is small, so most of the time goes into the FreeCAD steps (data generation, DAgger and evaluation), which run on the CPU. Upstream reports about 25 minutes of training on an Apple M-series Mac.
 - **Restarting a run.**
-  - `data` skips generation if shards exist. If data generation was interrupted, delete `data/gen_train_seed<N>` first.
+  - `data` skips generation if complete shards exist. An interrupted generation is detected and redone. Runs sharing a `DATA_SEED` generate the data once.
   - The Quadro script marks the test set complete only after a full generation.
   - `train` does not resume from a checkpoint; it starts over.
   - The published-model baseline is computed once per machine and then reused. If it lacks any suite in the current suite list (e.g. after the stress suites were added), `eval` evaluates the published model again.
   - To add the stress suites to an existing run, rerun only `eval` (e.g. `./taiga_repro_5060ti.sh eval`); data and training are not redone.
 - **Using both GPUs.** Splitting a 1.2M-parameter model across GPUs gains nothing. Running one seed per GPU (`pair`), or one seed per Spark, measures seed-to-seed variance in the same wall time.
+
+---
+
+## Variance studies
+
+Two training runs with the same seed, data and machine can produce noticeably different models, because GPU arithmetic is not deterministic. The tools below measure that spread and help find its cause, rather than picking the best run.
+
+### What the tools do
+
+- **`sweep`** trains and evaluates several seeds with identical settings. **`aggregate`** reports, for every suite, the mean, standard deviation, minimum and maximum over the runs, plus per-run diagnostics.
+- **Clean results** use the same goals for every run and deterministic decisions, so their spread is purely model-to-model variance, not evaluation noise. **Perturbed results** also depend on the injected random actions; `aggregate` prints the binomial noise level (`noise sd`) for comparison.
+- **Per-run diagnostics** come from each run's `train.log`: final SFT validation accuracy and NLL, how much the NLL still dropped in the last SFT epoch (a large drop means training had not converged), validation NLL after DAgger, DAgger rollout success, and a checkpoint hash.
+
+### Suggested experiments
+
+Run each as a sweep. The experiment name, and so its folder, is derived from the settings.
+
+| Question | Command (5060 Ti shown) |
+|---|---|
+| Baseline spread, data and model both vary | `./taiga_repro_5060ti.sh sweep` |
+| Spread from optimization alone (same data) | `DATA_SEED=2 ./taiga_repro_5060ti.sh sweep` |
+| Is it under-trained? | `DATA_SEED=2 EPOCHS=8 ./taiga_repro_5060ti.sh sweep` |
+| Is there too little data? | `DATA_SEED=2 DATA_SCALE=2 ./taiga_repro_5060ti.sh sweep` |
+| Does more DAgger help? | `DATA_SEED=2 DAGGER_ROUNDS=4 ./taiga_repro_5060ti.sh sweep` |
+| Is a single run reproducible? | `DETERMINISTIC=1 EXP=det_a SEEDS=2 ./taiga_repro_5060ti.sh sweep`, then the same with `EXP=det_b`; compare `sha256sum runs/det_*/seed2/last.pt` |
+
+Compare experiments side by side (mean ± sd over runs):
+
+```bash
+cd ~/taiga/taiga-s1
+.venv/bin/python <repo>/training/taiga_aggregate.py runs/data2 runs/e8_data2 runs/x2_data2
+```
+
+How to read the outcome: if the spread with fixed data (`data2`) is about as large as the baseline, it comes from optimization, and more epochs or a different schedule are the levers to try. If fixed data removes most of it, the training sample matters, and more data (`DATA_SCALE`) should narrow it. The goal is a mean that rises while the spread shrinks; a higher best run alone is not.
+
+### Notes
+
+- With `DATA_SEED` unset, every seed generates its own training data, which takes about as long as a full `data` stage per seed. With `DATA_SEED` set, the data is generated once and shared.
+- `DETERMINISTIC=1` gives bit-identical models only on the same GPU model, driver and PyTorch version. If training stops with an error about a non-deterministic operation, use `DETERMINISTIC=warn` to list such operations without stopping.
+- The default settings keep using `runs/seed<N>`, so existing runs belong to the default experiment: `./taiga_repro_5060ti.sh aggregate` summarizes them.
+- `aggregate` can be rerun at any time; it reads whatever runs exist in the experiment folder.
 
 ---
 
@@ -280,6 +337,7 @@ Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header 
 
 | Script | Version |
 |---|---|
-| `taiga_repro_DGX.sh` | 2026.10.03.2 |
-| `taiga_repro_5060ti.sh` | 2026.10.03.1 |
-| `taiga_repro_Quadro6000.sh` | 2026.10.03.1 |
+| `taiga_repro_DGX.sh` | 2026.10.04.1 |
+| `taiga_repro_5060ti.sh` | 2026.10.04.1 |
+| `taiga_repro_Quadro6000.sh` | 2026.10.04.1 |
+| `taiga_aggregate.py` | 2026.10.04.1 |
