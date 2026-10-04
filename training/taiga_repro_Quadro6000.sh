@@ -2,7 +2,7 @@
 # =============================================================================
 # taiga_repro_Quadro6000.sh — reproduce Taiga-S1 from scratch on a dual Quadro RTX 6000
 # (Turing, sm_75, 2 x 24 GB) workstation, Ubuntu 24.04 or 26.04, driver 595-open
-# Version: 2026.10.04.1
+# Version: 2026.10.04.3
 #
 # Same pipeline as the Spark/mochi scripts; differences:
 #   - FreeCAD from your PPA matching the release: noble -> bleedingedge/noble-bleed,
@@ -96,6 +96,7 @@ TRAIN_DATA=data/gen_train_seed${DATA_SEED:-$SEED}; [[ $DATA_SCALE == 1 ]] || TRA
 LOGTAG=${EXP:+${EXP}_}seed${SEED}
 SELF=$(realpath "$0")
 AGG=$(dirname "$SELF")/taiga_aggregate.py
+RUNNER=$(dirname "$SELF")/taiga_run.py
 LOGDIR=$WORK/logs
 ENVFILE=$WORK/freecad.env
 MARKER=$WORK/.installed_by_taiga
@@ -117,7 +118,11 @@ timed() {  # timed <name> <cmd...>   — logs to file and records wall time
   printf '%s\t%s\t%ds\n' "$(date -Is)" "$name" $((SECONDS - t0)) >> "$LOGDIR/timings_${LOGTAG}.tsv"
 }
 # shellcheck disable=SC1090
-load_fc() { [[ -f $ENVFILE ]] && source "$ENVFILE"; [[ -n ${FREECAD_PYTHON:-} && -n ${FREECAD_LIB:-} ]] || die "FreeCAD not configured; run setup"; }
+load_fc() {
+  [[ -f $ENVFILE ]] && source "$ENVFILE"
+  [[ -n ${FREECAD_PYTHON:-} && -n ${FREECAD_LIB:-} ]] || die "FreeCAD not configured; run setup"
+  [[ -f $RUNNER ]] || die "taiga_run.py not found next to this script ($RUNNER)"
+}
 
 # ----------------------------------------------------------------------------- setup
 gpu_probe() {  # torch imports, sees every GPU, and real kernels run on each
@@ -329,23 +334,19 @@ stage_train() {
   load_fc; cd "$REPO"
   mkdir -p "$RUN"
   [[ -d $TRAIN_DATA ]] || die "no training data at $TRAIN_DATA; run data"
-  local dw=${DAGGER_WORKERS:-$WORKERS} cmd=("$PY" -m freecad_s1.train_sft)
+  local dw=${DAGGER_WORKERS:-$WORKERS}
   if [[ $DETERMINISTIC != 0 ]]; then
     # Deterministic kernels + fixed cuBLAS workspace; DAgger collection order depends on the
     # worker count, so it is pinned. Bit-identical results hold only on the same GPU/driver/torch.
     export CUBLAS_WORKSPACE_CONFIG=:4096:8 PYTHONHASHSEED=0
     dw=${DAGGER_WORKERS:-8}
-    cmd=("$PY" -c 'import os, runpy, sys, torch
-torch.use_deterministic_algorithms(True, warn_only=os.environ.get("DETERMINISTIC") == "warn")
-torch.backends.cudnn.benchmark = False
-torch.backends.cudnn.deterministic = True
-sys.argv = ["train_sft"] + sys.argv[1:]
-runpy.run_module("freecad_s1.train_sft", run_name="__main__", alter_sys=True)')
     log "Deterministic training (DETERMINISTIC=$DETERMINISTIC), DAgger workers pinned to $dw"
   fi
   log "Run $RUN | data $TRAIN_DATA | epochs $EPOCHS | DAgger ${DAGGER_ROUNDS}x${DAGGER_EPISODES}, ${DAGGER_EPOCHS} epochs"
   # Upstream train_final.sh flags, plus EXTRA="--type-dropout 0.15" from the README; budgets are tunable.
-  timed train "${cmd[@]}" --data "$TRAIN_DATA" --out "$RUN" \
+  : > "$RUN/crashes_train.jsonl"   # 0 lines = no crash
+  timed train env S1_CRASH_LOG="$RUN/crashes_train.jsonl" "$PY" "$RUNNER" freecad_s1.train_sft \
+    --data "$TRAIN_DATA" --out "$RUN" \
     --epochs "$EPOCHS" --pos-mode rand --ordinal --invariant-numerics --modular --pointer "done" \
     --index-eval identity --type-dropout 0.15 \
     --dagger-rounds "$DAGGER_ROUNDS" --dagger-episodes "$DAGGER_EPISODES" --dagger-epochs "$DAGGER_EPOCHS" \
@@ -383,25 +384,29 @@ stage_eval() {
   mkdir -p "$ref"
   exec 8>"$ref/.lock"; flock 8                       # baseline computed once, shared
   if ! ref_complete "$ref"; then   # published model, once per machine
-    timed eval_ref "$PY" -m freecad_s1.evaluate --ckpt shhivv/taiga-s1 --data data/gen_test \
+    : > "$ref/crashes_eval.jsonl"; : > "$ref/crashes_eval_perturb.jsonl"
+    timed eval_ref env S1_CRASH_LOG="$ref/crashes_eval.jsonl" "$PY" "$RUNNER" freecad_s1.evaluate --ckpt shhivv/taiga-s1 --data data/gen_test \
       --episodes 100 --suites $SUITES --workers "$WORKERS" --out "$ref/eval.json"
-    timed eval_ref_perturb "$PY" -m freecad_s1.evaluate --ckpt shhivv/taiga-s1 \
+    timed eval_ref_perturb env S1_CRASH_LOG="$ref/crashes_eval_perturb.jsonl" "$PY" "$RUNNER" freecad_s1.evaluate --ckpt shhivv/taiga-s1 \
       --episodes 100 --perturb 0.2 --suites $SUITES --workers "$WORKERS" --out "$ref/eval_perturb.json"
   fi
   exec 8>&-
-  timed eval "$PY" -m freecad_s1.evaluate --ckpt "$RUN/hf" --data "data/gen_test_${LOGTAG}" \
+  : > "$RUN/crashes_eval.jsonl"; : > "$RUN/crashes_eval_perturb.jsonl"
+  timed eval env S1_CRASH_LOG="$RUN/crashes_eval.jsonl" "$PY" "$RUNNER" freecad_s1.evaluate --ckpt "$RUN/hf" --data "data/gen_test_${LOGTAG}" \
     --episodes 100 --suites $SUITES --workers "$WORKERS" --out "$RUN/eval.json"
-  timed eval_perturb "$PY" -m freecad_s1.evaluate --ckpt "$RUN/hf" \
+  timed eval_perturb env S1_CRASH_LOG="$RUN/crashes_eval_perturb.jsonl" "$PY" "$RUNNER" freecad_s1.evaluate --ckpt "$RUN/hf" \
     --episodes 100 --perturb 0.2 --suites $SUITES --workers "$WORKERS" --out "$RUN/eval_perturb.json"
 
   log "Published shhivv/taiga-s1"; "$PY" scripts/summarize.py "$ref/eval.json" "$ref/eval_perturb.json"
   log "Your model (${EXP:+$EXP, }seed $SEED)";   "$PY" scripts/summarize.py "$RUN/eval.json" "$RUN/eval_perturb.json"
+  local c; c=$(cat "$RUN"/crashes_*.jsonl 2>/dev/null | wc -l || true)
+  (( c == 0 )) || log "NOTE: $c FreeCAD worker crash(es) recovered in this run — see $RUN/crashes_*.jsonl"
 }
 
 # ----------------------------------------------------------------------------- calib
 stage_calib() {
   load_fc; cd "$REPO"
-  timed calibrate bash -c "'$PY' scripts/calibrate.py --model '$RUN/hf' --workers $WORKERS > '$RUN/calibration.json'"
+  timed calibrate bash -c "S1_CRASH_LOG='$RUN/crashes_calib.jsonl' '$PY' '$RUNNER' scripts/calibrate.py --model '$RUN/hf' --workers $WORKERS > '$RUN/calibration.json'"
   cat "$RUN/calibration.json"
   log "Temperature written into $RUN/hf/config.json"
 }
@@ -437,7 +442,7 @@ stage_sweep() {
   [[ -f $ENVFILE ]] || die "run setup first (it needs sudo, so run it interactively)"
   local s todo=() batch pids ngpu w i g rc=0
   for s in $SEEDS; do
-    if [[ -f $GROUP/seed$s/eval.json && ${SWEEP_FORCE:-0} != 1 ]]; then log "seed $s already evaluated — skipping"
+    if [[ -f $GROUP/seed$s/eval_perturb.json && ${SWEEP_FORCE:-0} != 1 ]]; then log "seed $s already evaluated — skipping"
     else todo+=("$s"); fi
   done
   ngpu=$(nvidia-smi -L 2>/dev/null | wc -l); (( ngpu >= 1 )) || ngpu=1
@@ -548,7 +553,7 @@ def sh(c):
     try: return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
     except Exception: return None
 json.dump({
-  "script_version": "2026.10.04.1", "script": "taiga_repro_Quadro6000.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
+  "script_version": "2026.10.04.3", "script": "taiga_repro_Quadro6000.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
   "dagger_rounds": $DAGGER_ROUNDS, "dagger_episodes": $DAGGER_EPISODES, "dagger_epochs": $DAGGER_EPOCHS, "deterministic": "$DETERMINISTIC",
   "gpu": "${GPU:-all}", "data_workers": $DATA_WORKERS, "workers": $WORKERS,
   "repo_commit": sh("git -C '$REPO' rev-parse HEAD"), "host": platform.node(), "arch": platform.machine(),

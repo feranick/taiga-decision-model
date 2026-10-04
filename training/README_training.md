@@ -168,6 +168,7 @@ pkill -f taiga_repro_; pkill -f freecad_s1
 │       │   ├── eval_perturb.json     evaluation with 20% random actions
 │       │   ├── calibration.json      ECE / NLL before and after temperature scaling
 │       │   ├── train.log             training log (validation curve, DAgger rollouts)
+│       │   ├── crashes_*.jsonl       FreeCAD worker crashes recovered per phase (empty = none)
 │       │   └── manifest.json         settings and versions: experiment, seeds, budgets, script, repo commit, torch, CUDA, FreeCAD, driver, GPU
 │       └── reference_hf/             published shhivv/taiga-s1 evaluated on this machine
 ├── logs/
@@ -331,13 +332,26 @@ sudo rm /usr/lib/freecad-python3/Mod
 
 ---
 
+### FreeCAD worker dies during evaluation: `FreeCAD worker exited (code 1)`
+
+**Symptom.** `eval_perturb` (or, more rarely, DAgger or `eval`) stops with `freecad_s1.runtime.client.WorkerError: FreeCAD worker exited (code 1)`, raised from `vec.score(...)`. Nothing is printed by the worker.
+
+**Cause.** A segmentation fault inside OpenCASCADE 7.9 (`BOPTools_AlgoTools3D::DoSplitSEAMOnFace`, in the boolean `common()` used to compute the IoU of the finished part), on unusual geometry left by an episode. Seen on resolute (OCCT 7.9) with seed 22's model under 20% injected random actions, in an episode where the model repeated `PartDesign_Pad` / `Std_Undo` dozens of times. FreeCAD's signal handler turns the segfault into a silent `exit(1)`, and upstream's lockstep `VecEnv` then aborts the whole evaluation.
+
+**Fix.** From version 2026.10.04.3 the scripts run upstream's training, evaluation and calibration through `taiga_run.py`, which replaces a dead worker with a fresh one and counts only the affected episode as a failure (IoU 0 when scoring crashes; "unrecoverable" when a step crashes). Each crash is printed and recorded in the run's `crashes_*.jsonl`; `eval` reports the count, and `aggregate` shows it per run (`crashes t/e/p`). A crash is a real failure of the episode, so the results stay honest.
+
+**Rerunning an affected run.** Only the evaluation needs to be redone, e.g. `SEED=22 GPU=0 ./taiga_repro_Quadro6000.sh eval`.
+
+---
+
 ## Versions
 
 Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header and in each run's `manifest.json`.
 
 | Script | Version |
 |---|---|
-| `taiga_repro_DGX.sh` | 2026.10.04.1 |
-| `taiga_repro_5060ti.sh` | 2026.10.04.1 |
-| `taiga_repro_Quadro6000.sh` | 2026.10.04.1 |
-| `taiga_aggregate.py` | 2026.10.04.1 |
+| `taiga_repro_DGX.sh` | 2026.10.04.3 |
+| `taiga_repro_5060ti.sh` | 2026.10.04.3 |
+| `taiga_repro_Quadro6000.sh` | 2026.10.04.3 |
+| `taiga_aggregate.py` | 2026.10.04.3 |
+| `taiga_run.py` | 2026.10.04.1 |

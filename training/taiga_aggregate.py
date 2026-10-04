@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_aggregate.py — distribution of results across training runs.
-Version: 2026.10.04.1
+Version: 2026.10.04.3
 
 Summarizes a group of runs (runs/<exp>/seed*/) as a distribution instead of a
 best pick: per suite mean, standard deviation, min and max over runs, for the
@@ -46,7 +46,7 @@ def suite_order(name: str) -> tuple:
 
 def load_eval(path: Path) -> dict:
     if not path.is_file():
-        return {}
+        return {"step_acc": None, "episodes": {}, "missing": True}
     r = json.loads(path.read_text())
     eps = {k: v for k, v in r.get("episodes", {}).items() if isinstance(v, dict)}
     return {"step_acc": r.get("per_step", {}).get("acc"), "episodes": eps}
@@ -98,7 +98,9 @@ def sha256(path: Path) -> str | None:
 def load_run(d: Path) -> dict:
     manifest = json.loads((d / "manifest.json").read_text()) if (d / "manifest.json").is_file() else {}
     return {"name": d.name, "clean": load_eval(d / "eval.json"), "perturb": load_eval(d / "eval_perturb.json"),
-            "train": parse_train_log(d / "train.log"), "manifest": manifest, "ckpt": sha256(d / "last.pt")}
+            "train": parse_train_log(d / "train.log"), "manifest": manifest, "ckpt": sha256(d / "last.pt"),
+            "crashes": {ph: sum(1 for _ in (d / f"crashes_{ph}.jsonl").open()) if (d / f"crashes_{ph}.jsonl").is_file()
+                        else None for ph in ("train", "eval", "eval_perturb", "calib")}}
 
 
 def load_group(g: Path) -> list[dict]:
@@ -136,6 +138,9 @@ def fmt(x, nd=2) -> str:
 def report_group(g: Path, runs: list[dict]) -> dict:
     summary = {"group": str(g), "runs": [r["name"] for r in runs], "clean": {}, "perturb": {}}
     print(f"\n=== {g}  ({len(runs)} runs: {', '.join(r['name'] for r in runs)})")
+    incomplete = [r["name"] for r in runs if r["perturb"].get("missing")]
+    if incomplete:
+        print("incomplete runs (no eval_perturb.json, shown as '-'):", ", ".join(incomplete))
     m0 = runs[0]["manifest"] if runs else {}
     if m0:
         knobs = {k: m0.get(k) for k in ("exp", "data_seed", "data_scale", "epochs", "dagger_rounds", "dagger_episodes",
@@ -158,7 +163,7 @@ def report_group(g: Path, runs: list[dict]) -> dict:
                       f"{extra}   {per}")
     print("\nPer-run diagnostics")
     print(f"  {'run':8s} {'ckpt':12s} {'step_acc':>8s} {'train ex':>9s} {'sft acc':>8s} {'sft nll':>8s} "
-          f"{'last-ep drop':>12s} {'final nll':>9s} {'dagger succ':>12s}")
+          f"{'last-ep drop':>12s} {'final nll':>9s} {'dagger succ':>12s} {'crashes t/e/p':>14s}")
     diag = []
     for r in runs:
         t = r["train"]
@@ -166,13 +171,17 @@ def report_group(g: Path, runs: list[dict]) -> dict:
         drop = t.get("sft_last_epoch_drop")
         print(f"  {r['name']:8s} {r['ckpt'] or '-':12s} {fmt(r['clean'].get('step_acc'), 4):>8s} "
               f"{t.get('n_train', '-')!s:>9s} {fmt(t.get('sft_final_acc'), 4):>8s} {fmt(t.get('sft_final_nll'), 4):>8s} "
-              f"{(f'{100 * drop:.1f}%' if drop is not None else '-'):>12s} {fmt(t.get('final_nll'), 4):>9s} {dag:>12s}")
+              f"{(f'{100 * drop:.1f}%' if drop is not None else '-'):>12s} {fmt(t.get('final_nll'), 4):>9s} {dag:>12s} "
+              f"{'/'.join('-' if r['crashes'][k] is None else str(r['crashes'][k]) for k in ('train', 'eval', 'eval_perturb')):>14s}")
         diag.append({"run": r["name"], "ckpt_sha256_12": r["ckpt"], "step_acc": r["clean"].get("step_acc"),
+                     "worker_crashes": r["crashes"],
                      **{k: v for k, v in t.items() if k not in ("val",)}, "val_curve": t.get("val", [])})
     summary["diagnostics"] = diag
     same = [r["ckpt"] for r in runs if r["ckpt"]]
     if len(same) > 1 and len(set(same)) == 1:
         print("\nAll checkpoints are identical (same sha256): these runs produced the same model.")
+    print("\nCrashes: FreeCAD worker crashes recovered by taiga_run.py (train/eval/perturbed eval; '-' = not"
+          "\nrecorded). Each crashed episode counts as a failure in the results above.")
     print("\nHints: a large last-epoch NLL drop means training had not converged (try more EPOCHS); spread that"
           "\nshrinks with DATA_SCALE points to too little data; compare a fixed-data sweep (DATA_SEED set) with a"
           "\nfresh-data sweep to separate optimization variance from data-sampling variance.")
