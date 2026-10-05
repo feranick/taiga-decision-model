@@ -2,7 +2,9 @@
 
 `pump_s80.py` models the **pump end** of the Victor Pumps S 80 self-priming centrifugal pump (DN80, 2900 rpm, 4 kW) as a bare-shaft pump: the casing with its real internal layout, the open impeller with curved blades, the wear plate, covers, check valve, bearing bracket, shaft, bearings and mechanical seal. No motor.
 
-Unlike `../pump/` (a Taiga-S1 goal kit, limited to top-face features), this is direct CAD code. It is the **reference geometry** for extending Taiga-S1 to curved and internal features: its construction steps are the primitives Taiga would need to learn.
+> **Not built by Taiga-S1.** This is direct CAD code (OpenCASCADE), with no model, goals or FreeCAD worker involved. It is the **reference** for a future, extended Taiga-S1 (curved outlines, features on any face, revolve, internal pockets): once such a model exists, a Taiga goal file for the S 80 is judged by how closely its parts match these STEP files (volumetric IoU, part by part). Its construction steps are also the list of primitives that model must learn; see [What this means for Taiga-S1](#what-this-means-for-taiga-s1).
+
+Unlike `../pump/` (a Taiga-S1 goal kit with the current vocabulary, limited to top-face features), this models the real geometry.
 
 ![3D view](images/preview.png)
 

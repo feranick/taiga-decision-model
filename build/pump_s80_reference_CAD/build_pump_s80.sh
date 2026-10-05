@@ -1,6 +1,6 @@
 #!/bin/bash
 # build_pump_s80.sh — generate the parametric S 80 pump (STEP parts) and assemble it in FreeCAD.
-# Version: 2026.10.05.2
+# Version: 2026.10.05.3
 #
 # Usage:   ./build_pump_s80.sh            Env: OUT (default parts/pump_s80), WORK (default ~/taiga),
 #                                              BASE_TAIGA (default $WORK/taiga-s1)
@@ -10,7 +10,8 @@ set -uo pipefail
 
 WORK=${WORK:-$HOME/taiga}
 BASE_TAIGA=${BASE_TAIGA:-$WORK/taiga-s1}
-REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)   # this folder, whatever it is called
+REPO=$(cd "$HERE/../.." && pwd)
 OUT=${OUT:-parts/pump_s80}
 PY=$BASE_TAIGA/.venv/bin/python
 
@@ -29,7 +30,7 @@ if [[ $ocp != 7.9.* ]]; then
 fi
 
 echo "== Generating the S 80 parts"
-"$PY" "$REPO/build/pump_s80/pump_s80.py" --out "$OUT" --cutaway --preview || exit 1
+"$PY" "$HERE/pump_s80.py" --out "$OUT" --cutaway --preview || exit 1
 
 echo "== Assembling in FreeCAD"
 "$FREECAD_PYTHON" "$REPO/build/taiga_assemble.py" --parts "$OUT" --spec "$OUT/pump_s80.json" || exit 1
