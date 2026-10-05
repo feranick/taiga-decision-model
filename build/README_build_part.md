@@ -17,19 +17,19 @@ No GPU is needed. Inference runs on the CPU at about 1 ms per decision; most of 
 
 ## Quick start
 
-In the commands below, `<repro>` is the folder of this repository.
+In the commands below, `<repo>` is the folder of this repository.
 
 ```bash
 cd ~/taiga/taiga-s1
 source ~/taiga/freecad.env
 
 # One showcase part, with your model
-.venv/bin/python <repro>/build/taiga_build_part.py \
+.venv/bin/python <repo>/build/taiga_build_part.py \
     --model runs/seed2/hf --goals showcase/goals.json --name flange --out parts
 
 # Every goal in a file
-.venv/bin/python <repro>/build/taiga_build_part.py \
-    --model runs/seed2/hf --goals <repro>/build/example_goals.json --out parts
+.venv/bin/python <repo>/build/taiga_build_part.py \
+    --model runs/seed2/hf --goals <repo>/build/gear/example_goals.json --out parts
 ```
 
 Open the result with `freecad parts/flange.FCStd`.
@@ -93,14 +93,14 @@ A goal file is a JSON object of named goals. Each goal is an ordered list of fea
 }
 ```
 
-`example_goals.json` (in this folder) has three goals (bracket plate, spacer, bolt-circle disc). The upstream repo has six more in `showcase/goals.json` (flange, hex nut, enclosure, mounting plate, washer, slotted wheel).
+`gear/example_goals.json` has three goals (bracket plate, spacer, bolt-circle disc). The upstream repo has six more in `showcase/goals.json` (flange, hex nut, enclosure, mounting plate, washer, slotted wheel).
 
-`example_goals_engine.json` is a parts kit for a small single-cylinder four-stroke engine (40 mm bore), one goal per part: piston, cylinder block, head gasket, cylinder head, valve cover, crankcase half, connecting rod, crank web, flywheel, port flange and valve spring retainer. Taiga-S1 builds one PartDesign Body per goal and can only add features on the top face, so the parts are simplified: no piston-pin bore, ring grooves or cooling fins (side features), no horizontal crank bore, and the piston and valve cover come out as open cups (the shell removes the top face, so read the piston upside down). Putting the parts together is outside what Taiga-S1 does. Check the kit first, then build it:
+`engine/example_goals_engine.json` is a parts kit for a small single-cylinder four-stroke engine (40 mm bore), one goal per part: piston, cylinder block, head gasket, cylinder head, valve cover, crankcase half, connecting rod, crank web, flywheel, port flange and valve spring retainer. Taiga-S1 builds one PartDesign Body per goal and can only add features on the top face, so the parts are simplified: no piston-pin bore, ring grooves or cooling fins (side features), no horizontal crank bore, and the piston and valve cover come out as open cups (the shell removes the top face, so read the piston upside down). Putting the parts together is outside what Taiga-S1 does. Check the kit first, then build it:
 
 ```bash
-.venv/bin/python <repo>/build/taiga_build_part.py --goals <repo>/build/example_goals_engine.json --check
+.venv/bin/python <repo>/build/taiga_build_part.py --goals <repo>/build/engine/example_goals_engine.json --check
 .venv/bin/python <repo>/build/taiga_build_part.py --model runs/seed2/hf \
-    --goals <repo>/build/example_goals_engine.json --out parts/engine
+    --goals <repo>/build/engine/example_goals_engine.json --out parts/engine
 ```
 
 A goal that can't be built is reported as `INFEASIBLE` and the script moves on to the next one.
@@ -143,13 +143,13 @@ Sizes are in mm. `x`/`y` are positions on the top face, measured from the centre
 
 ## Assembling parts
 
-Each goal produces its own part file. `taiga_assemble.py` places built parts into one document according to an assembly spec (rotations and a translation per part, plus color and transparency), and writes a single `.FCStd` and a combined `.step`. It runs in FreeCAD's Python; no model is involved. `assembly_engine.json` assembles the engine kit: crank axis along Y, shown at top dead center, with the crankcase, cylinder block and valve cover semi-transparent so the piston, rod and crank stay visible.
+Each goal produces its own part file. `taiga_assemble.py` places built parts into one document according to an assembly spec (rotations and a translation per part, plus color and transparency), and writes a single `.FCStd` and a combined `.step`. It runs in FreeCAD's Python; no model is involved. `engine/assembly_engine.json` assembles the engine kit: crank axis along Y, shown at top dead center, with the crankcase, cylinder block and valve cover semi-transparent so the piston, rod and crank stay visible.
 
 ```bash
 source ~/taiga/freecad.env
 cd ~/taiga/taiga-s1      # or wherever parts/engine is
-"$FREECAD_PYTHON" <repo>/build/taiga_assemble.py --parts parts/engine --spec <repo>/build/assembly_engine.json
-"$FREECAD_PYTHON" <repo>/build/taiga_assemble.py --parts parts/engine --spec <repo>/build/assembly_engine.json --explode 1
+"$FREECAD_PYTHON" <repo>/build/taiga_assemble.py --parts parts/engine --spec <repo>/build/engine/assembly_engine.json
+"$FREECAD_PYTHON" <repo>/build/taiga_assemble.py --parts parts/engine --spec <repo>/build/engine/assembly_engine.json --explode 1
 freecad parts/engine/engine_assembly.FCStd
 ```
 
@@ -197,5 +197,5 @@ It saves a screenshot and the `.FCStd` to `runs/gui_demo/`. `--delay` sets the p
 
 | Script | Version |
 |---|---|
-| `taiga_build_part.py` | 2026.10.05.4 |
-| `taiga_assemble.py` | 2026.10.05.1 |
+| `taiga_build_part.py` | 2026.10.05.5 |
+| `taiga_assemble.py` | 2026.10.05.2 |

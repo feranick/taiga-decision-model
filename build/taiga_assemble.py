@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_assemble.py — put separately built parts together into one assembly document.
-Version: 2026.10.05.1
+Version: 2026.10.05.2
 
 Taiga-S1 builds one part per goal (one .FCStd each). This script places those parts
 according to an assembly spec (rotations + translation per part, color, transparency),
@@ -9,9 +9,9 @@ own Python (no model, no GPU):
 
     source ~/taiga/freecad.env
     "$FREECAD_PYTHON" <repo>/build/taiga_assemble.py --parts parts/engine \\
-        --spec <repo>/build/assembly_engine.json
+        --spec <repo>/build/engine/assembly_engine.json
     "$FREECAD_PYTHON" <repo>/build/taiga_assemble.py --parts parts/engine \\
-        --spec <repo>/build/assembly_engine.json --explode 1      # exploded view
+        --spec <repo>/build/engine/assembly_engine.json --explode 1      # exploded view
 
 Each part is read from <parts>/<part>.FCStd (the Body's final shape) or, if that is
 missing, <parts>/<part>.step. Writes <parts>/<name>.FCStd and <name>.step (with
@@ -105,7 +105,7 @@ def add_gui_document(fcstd: Path, styles: dict[str, tuple[list[float], int]]) ->
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--parts", required=True, help="folder with the built parts (<part>.FCStd or .step)")
-    ap.add_argument("--spec", required=True, help="assembly spec JSON (e.g. assembly_engine.json)")
+    ap.add_argument("--spec", required=True, help="assembly spec JSON (e.g. engine/assembly_engine.json)")
     ap.add_argument("--out", help="output .FCStd (default: <parts>/<spec name>[_exploded].FCStd)")
     ap.add_argument("--explode", type=float, default=0.0, help="exploded view: scale of each part's explode offset")
     ap.add_argument("--no-step", action="store_true", help="don't write the combined STEP file")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.05.4
+Version: 2026.10.05.5
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -14,8 +14,8 @@ repo (~/taiga/taiga-s1), so they work from any directory:
         --goals showcase/goals.json --name flange --out parts
 
 --model: exported dir (runs/seed<N>/hf), a .pt checkpoint, or shhivv/taiga-s1.
---goals: JSON {name: goal}; see showcase/goals.json, example_goals.json and
-         example_goals_engine.json.
+--goals: JSON {name: goal}; see showcase/goals.json (upstream), gear/example_goals.json
+         and engine/example_goals_engine.json (this folder).
 --check: only check that every goal can be built (the teacher builds the target
          solid); no model is loaded and no parts are written.
 
