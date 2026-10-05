@@ -26,6 +26,7 @@ The planner decides *what* to build; Taiga-S1 decides *how*, command by command.
 |---|---|---|
 | [`training/`](training/) | Setup, data generation, training, evaluation and calibration, one script per machine; multi-seed sweeps and variance analysis | [`README_training.md`](training/README_training.md) |
 | [`build/`](build/) | Building parts with a trained model (inference) and example goals | [`README_build_part.md`](build/README_build_part.md) |
+| [`taiga-expanded/`](taiga-expanded/) | Extends Taiga-S1's vocabulary (side faces, curved outlines, revolve, …) as a patch series on a pinned upstream commit; trains with the scripts in `training/` | [`README.md`](taiga-expanded/README.md) |
 
 More folders will be added as the project grows.
 
@@ -39,26 +40,31 @@ taiga-decision-model/
 │   ├── taiga_repro_DGX.sh        NVIDIA DGX Spark, Ubuntu 24.04 (noble)
 │   ├── taiga_repro_5060ti.sh     PowerSpec G467 (RTX 5060 Ti), Ubuntu 26.04 (resolute)
 │   └── taiga_repro_Quadro6000.sh Dell Precision 7920 (2 × Quadro RTX 6000), Ubuntu 26.04 (resolute)
-└── build/
-    ├── README_build_part.md      goal format, feature types, output, GUI demo
-    ├── taiga_build_part.py       builds parts headless and saves .FCStd files
-    ├── flange/
-    │   └── example_goals.json        simple example goals (bracket plate, spacer, bolt-circle disc)
-    ├── engine/
-    │   ├── example_goals_engine.json single-cylinder engine parts kit
-    │   ├── assembly_engine.json      assembly spec for the engine kit
-    │   └── build_engine.sh           checks, builds and assembles the engine kit
-    ├── pump/
-    │   ├── example_goals_pump.json   parts kit for a Victor Pumps S 80 self-priming pump (from the brochure)
-    │   ├── assembly_pump.json        assembly spec for the pump kit
-    │   ├── build_pump.sh             checks, builds and assembles the pump kit
-    │   └── README.md                 where each dimension comes from
-    ├── pump_s80_reference_CAD/        reference geometry for a future Taiga model (not built by Taiga)
-    │   ├── pump_s80.py               parametric model of the real S 80 pump end (curved casing, volute, impeller)
-    │   ├── build_pump_s80.sh         generates the STEP parts and assembles them in FreeCAD
-    │   ├── README.md                 internal layout, design rules, dimensions
-    │   └── images/                   3D view and cross-sections
-    └── taiga_assemble.py         places built parts into one assembly (.FCStd + .step)
+├── build/
+│   ├── README_build_part.md      goal format, feature types, output, GUI demo
+│   ├── taiga_build_part.py       builds parts headless and saves .FCStd files
+│   ├── flange/
+│   │   └── example_goals.json        simple example goals (bracket plate, spacer, bolt-circle disc)
+│   ├── engine/
+│   │   ├── example_goals_engine.json single-cylinder engine parts kit
+│   │   ├── assembly_engine.json      assembly spec for the engine kit
+│   │   └── build_engine.sh           checks, builds and assembles the engine kit
+│   ├── pump/
+│   │   ├── example_goals_pump.json   parts kit for a Victor Pumps S 80 self-priming pump (from the brochure)
+│   │   ├── assembly_pump.json        assembly spec for the pump kit
+│   │   ├── build_pump.sh             checks, builds and assembles the pump kit
+│   │   └── README.md                 where each dimension comes from
+│   ├── pump_s80_reference_CAD/        reference geometry for a future Taiga model (not built by Taiga)
+│   │   ├── pump_s80.py               parametric model of the real S 80 pump end (curved casing, volute, impeller)
+│   │   ├── build_pump_s80.sh         generates the STEP parts and assembles them in FreeCAD
+│   │   ├── README.md                 internal layout, design rules, dimensions
+│   │   └── images/                   3D view and cross-sections
+│   └── taiga_assemble.py         places built parts into one assembly (.FCStd + .step)
+└── taiga-expanded/
+    ├── README.md                 design, status of each primitive, workflow
+    ├── patches/                  git patch series against upstream (+ BASE commit)
+    ├── dev/                      make the dev branch, export and check the patches
+    └── train_expanded.sh         trains the patched (or baseline) model with the training scripts
 ```
 
 ## Supported platforms

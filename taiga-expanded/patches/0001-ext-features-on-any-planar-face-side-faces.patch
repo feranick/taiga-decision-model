@@ -1,0 +1,626 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: taiga-expanded <taiga-expanded@local>
+Date: Mon, 5 Oct 2026 15:01:48 -0400
+Subject: [PATCH] ext: features on any planar face (side faces)
+
+Goal features may carry a support normal (nx, ny, nz) and a global centre
+(x, y, z): the sketch goes on the largest planar face with that normal instead
+of the top face. New pieces live in freecad_s1/ext/ (faces, sampler); upstream
+files get small hooks:
+- expert: sketch support from ext.faces.support_for
+- session: profile centre/sizes on side faces via ext.faces.local_box
+- featurize: extra goal-parameter block (z, normal) after upstream's, all zeros
+  for original goals, so they featurize exactly as before
+- goals: new split "side"; the train split mixes in expanded goals
+  (TAIGA_EXT_FRACTION, default 0.35); original splits are unchanged
+- evaluate: new suite "side" (level 3, seed offset 40000)
+Tests: tests/test_ext_faces.py (pure Python), tests/test_ext_runtime.py and
+scripts/smoke_ext.py (FreeCAD).
+---
+ freecad_s1/evaluate.py        |   3 +-
+ freecad_s1/expert.py          |   6 +-
+ freecad_s1/ext/__init__.py    |   8 ++
+ freecad_s1/ext/faces.py       |  86 +++++++++++++++++++++
+ freecad_s1/ext/sampler.py     | 115 ++++++++++++++++++++++++++++
+ freecad_s1/goals.py           |   8 +-
+ freecad_s1/model/featurize.py |   3 +
+ freecad_s1/runtime/session.py |   3 +
+ scripts/smoke_ext.py          |  59 +++++++++++++++
+ tests/test_ext_faces.py       | 138 ++++++++++++++++++++++++++++++++++
+ tests/test_ext_runtime.py     |  25 ++++++
+ 11 files changed, 450 insertions(+), 4 deletions(-)
+ create mode 100644 freecad_s1/ext/__init__.py
+ create mode 100644 freecad_s1/ext/faces.py
+ create mode 100644 freecad_s1/ext/sampler.py
+ create mode 100644 scripts/smoke_ext.py
+ create mode 100644 tests/test_ext_faces.py
+ create mode 100644 tests/test_ext_runtime.py
+
+diff --git a/freecad_s1/evaluate.py b/freecad_s1/evaluate.py
+index 27e38f4..ea6ed97 100644
+--- a/freecad_s1/evaluate.py
++++ b/freecad_s1/evaluate.py
+@@ -69,7 +69,7 @@ def offline_metrics(model: S1Model, ds: Dataset, device: torch.device, batch_siz
+ 
+ 
+ # Seed offsets keep suites that share a level (iid-L3, comp, comp2, comp3) on disjoint seeds.
+-SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0}
++SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000}
+ 
+ SUITES = {
+     "iid": [(1, "iid"), (2, "iid"), (3, "iid")],  # training distribution, fresh goals
+@@ -78,6 +78,7 @@ SUITES = {
+     "comp3": [(3, "comp3")],  # held-out pair pocket_rect -> polar_pattern; evaluated once, on the final model
+     "len": [(4, "len")],  # held-out length: 6-7 intents, training has <= 5
+     "len2": [(5, "len")],  # held-out length: 8-9 intents
++    "side": [(3, "side")],  # taiga-expanded: features on side faces (box base, 1-2 side features)
+     "len3": [(6, "len")],  # held-out length: 11 intents (2.2x the training maximum)
+     "len4": [(7, "len")],  # stress: 13 intents
+     "len5": [(8, "len")],  # stress: 15 intents
+diff --git a/freecad_s1/expert.py b/freecad_s1/expert.py
+index 5fc4569..5e7867d 100644
+--- a/freecad_s1/expert.py
++++ b/freecad_s1/expert.py
+@@ -15,6 +15,7 @@ from __future__ import annotations
+ 
+ from dataclasses import dataclass, field
+ 
++from .ext.faces import support_for
+ from .goals import RECIPES
+ from .schema import Goal
+ 
+@@ -80,9 +81,10 @@ def expert_actions(goal: Goal, meta: Meta) -> list[str]:
+     if recipe.sketched:
+         sk = current_sketch(meta, i)
+         if sk is None:
+-            if meta.selection == [recipe.support]:
++            support = support_for(goal.features[i], recipe)  # taiga-expanded: any planar face
++            if meta.selection == [support]:
+                 return ["PartDesign_NewSketch"]
+-            return [f"Select:{recipe.support}"]
++            return [f"Select:{support}"]
+         if meta.edit == sk.name:
+             if not sk.geometry:
+                 return [recipe.geometry]
+diff --git a/freecad_s1/ext/__init__.py b/freecad_s1/ext/__init__.py
+new file mode 100644
+index 0000000..706acff
+--- /dev/null
++++ b/freecad_s1/ext/__init__.py
+@@ -0,0 +1,8 @@
++"""Taiga-expanded: extensions to the Taiga-S1 command vocabulary and goal space.
++
++Kept in its own package so the changes to upstream files stay small hooks:
++  faces    features on any planar face (+-X, +-Y, +-Z), not only the top face
++  sampler  goals that use the new features, mixed into the training split and
++           exposed as new evaluation suites (original suites are unchanged)
++Pure stdlib: imported by FreeCAD's interpreter (runtime) and the torch process.
++"""
+diff --git a/freecad_s1/ext/faces.py b/freecad_s1/ext/faces.py
+new file mode 100644
+index 0000000..715c35d
+--- /dev/null
++++ b/freecad_s1/ext/faces.py
+@@ -0,0 +1,86 @@
++"""Features on any planar face.
++
++A goal feature may carry a support normal (params nx, ny, nz, one of them +-1):
++the sketch then goes on the largest planar face with that outward normal
++(Select:Face+X, Face-Y, ...) instead of the top face. Its centre is given in
++global coordinates (x, y, z); the coordinate along the normal is taken from the
++face itself. Rectangle sizes: w runs along the first in-plane global axis
++(X, then Y, then Z), d along the second. Without a normal, behaviour is the
++original top-face behaviour, bit for bit.
++"""
++from __future__ import annotations
++
++AXIS_NAMES = "XYZ"
++NORMAL_KEYS = ("nx", "ny", "nz")
++
++
++def has_normal(f) -> bool:
++    return any(k in f.params for k in NORMAL_KEYS)
++
++
++def normal(f) -> tuple[int, float]:
++    """(axis index, sign) of the feature's support normal; top face (+Z) by default."""
++    if not has_normal(f):
++        return 2, 1.0
++    vec = [float(f.params.get(k, 0.0)) for k in NORMAL_KEYS]
++    k = max(range(3), key=lambda i: abs(vec[i]))
++    return k, (1.0 if vec[k] >= 0 else -1.0)
++
++
++def face_arg(f) -> str:
++    k, sign = normal(f)
++    return f"Face{'+' if sign > 0 else '-'}{AXIS_NAMES[k]}"
++
++
++def support_for(f, recipe) -> str | None:
++    """Select argument for the sketch support of goal feature `f` (hook used by the expert).
++    Only top-face recipes (Face+Z) are redirected; origin-plane recipes keep their plane."""
++    if recipe.support == "Face+Z" and has_normal(f):
++        return face_arg(f)
++    return recipe.support
++
++
++def inplane_axes(k: int) -> tuple[int, int]:
++    a = [i for i in range(3) if i != k]
++    return a[0], a[1]
++
++
++def local_box(sk, f, sx: float, sy: float, vec_cls):
++    """Sketch-local centre and sizes for a profile on a side face.
++    `sk` is the attached sketch, `sx, sy` the sizes from params.profile_box,
++    `vec_cls` FreeCAD's App.Vector. Returns (centre, size_x, size_y) in sketch coordinates."""
++    k, sign = normal(f)
++    ua, va = inplane_axes(k)
++    n = [0.0, 0.0, 0.0]
++    n[k] = sign
++    nv = vec_cls(*n)
++    d = sk.Placement.Base.dot(nv)  # the sketch plane is {p : p . n = d}
++    c = [float(f.params.get("x", 0.0)), float(f.params.get("y", 0.0)), float(f.params.get("z", 0.0))]
++    c[k] = sign * d
++    inv = sk.Placement.inverse()
++    xs, ys = [], []
++    for du in (-sx / 2, sx / 2):
++        for dv in (-sy / 2, sy / 2):
++            p = list(c)
++            p[ua] += du
++            p[va] += dv
++            q = inv.multVec(vec_cls(*p))
++            xs.append(q.x)
++            ys.append(q.y)
++    centre = vec_cls((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2, 0)
++    return centre, max(xs) - min(xs), max(ys) - min(ys)
++
++
++# goal-feature encoding: extra block appended after upstream's goal numbers, so goals
++# without these keys featurize exactly as before
++EXT_PARAM_KEYS = ["z", "nx", "ny", "nz"]
++EXT_LENGTH_KEYS = {"z"}
++
++
++def extra_goal_num(f, scale: float) -> list[float]:
++    vals, flags = [], []
++    for key in EXT_PARAM_KEYS:
++        v = f.params.get(key)
++        vals.append(0.0 if v is None else max(-8.0, min(8.0, v / scale if key in EXT_LENGTH_KEYS else float(v))))
++        flags.append(float(key in f.params))
++    return vals + flags
+diff --git a/freecad_s1/ext/sampler.py b/freecad_s1/ext/sampler.py
+new file mode 100644
+index 0000000..e8eb6e1
+--- /dev/null
++++ b/freecad_s1/ext/sampler.py
+@@ -0,0 +1,115 @@
++"""Goals using the expanded features, and how they enter training and evaluation.
++
++Training: the "train" split draws an expanded goal with probability TRAIN_FRACTION
++(env TAIGA_EXT_FRACTION), otherwise the original sampler, so the original
++distribution stays part of training. Evaluation: the original splits (iid, comp*,
++len*) are untouched; new splits are added here (see SPLITS).
++"""
++from __future__ import annotations
++
++import os
++import random
++
++from ..schema import Goal, GoalFeature
++
++TRAIN_FRACTION = float(os.environ.get("TAIGA_EXT_FRACTION", "0.35"))
++
++# split name -> (sampler, evaluation level)
++SPLITS = ("side",)
++
++
++def _u(rng: random.Random, lo: float, hi: float) -> float:
++    return round(rng.uniform(lo, hi), 1)
++
++
++def _side_base(rng: random.Random) -> GoalFeature:
++    # tall enough for features on the side faces
++    return GoalFeature("base_box", {"w": _u(rng, 24, 80), "d": _u(rng, 24, 80), "h": _u(rng, 14, 40)})
++
++
++def side_feature(rng: random.Random, kind: str, base: GoalFeature, face: str) -> GoalFeature | None:
++    """A hole / hole_std / pocket_rect / boss_cyl / boss_box on side `face` (+X, -X, +Y, -Y) of a box base."""
++    p = base.params
++    w, d, h = p["w"], p["d"], p["h"]
++    axis, sign = face[1], (1.0 if face[0] == "+" else -1.0)
++    half_u = d / 2 if axis == "X" else w / 2  # in-plane horizontal half extent
++    depth_room = w if axis == "X" else d  # material behind the face
++    params: dict[str, float] = {"nx": 0.0, "ny": 0.0, "nz": 0.0}
++    params["n" + axis.lower()] = sign
++    if kind in ("hole", "hole_std", "boss_cyl"):
++        r = _u(rng, 1.5, max(1.6, min(half_u, h / 2) * 0.35))
++        if 2 * r + 3 > h:
++            return None
++        u = _u(rng, -(half_u - r) * 0.7, (half_u - r) * 0.7)
++        v = _u(rng, r + 1.5, h - r - 1.5)
++        params.update(r=r)
++        if kind == "boss_cyl":
++            params["h"] = _u(rng, 2, 15)
++    else:
++        a = _u(rng, 2, max(2.1, half_u * 0.7))  # along the horizontal in-plane axis
++        b = _u(rng, 2, max(2.1, (h - 3) * 0.6))  # along Z
++        if b + 3 > h:
++            return None
++        u = _u(rng, -(half_u - a / 2) * 0.7, (half_u - a / 2) * 0.7)
++        v = _u(rng, b / 2 + 1.5, h - b / 2 - 1.5)
++        params.update(w=a, d=b)
++        if kind == "boss_box":
++            params["h"] = _u(rng, 2, 15)
++        else:
++            params["depth"] = _u(rng, 1, depth_room * 0.5)
++    # centre in global coordinates; the coordinate along the normal is the face's own
++    if axis == "X":
++        params.update(x=round(sign * w / 2, 1), y=u, z=v)
++    else:
++        params.update(x=u, y=round(sign * d / 2, 1), z=v)
++    return GoalFeature(kind, params)
++
++
++def sample_side_goal(level: int, rng: random.Random) -> Goal:
++    """Box base, 1-2 side features (optionally a top feature from the original
++    vocabulary, a mirrored side boss or pocket), optional top dressup."""
++    from ..goals import _cut_group, _dressup, _scale  # original sampler pieces
++
++    for _ in range(100):
++        base = _side_base(rng)
++        feats = [base]
++        budget = 1 if level <= 2 else 4
++        if level >= 3 and rng.random() < 0.4:
++            group, _ = _cut_group(rng, base)
++            if len(group) <= budget - 1:
++                feats += group
++        n_side = 1 if level <= 2 else rng.choice([1, 1, 2])
++        for _ in range(n_side):
++            if len(feats) - 1 >= budget:
++                break
++            face = rng.choice(["+X", "-X", "+Y", "-Y"])
++            kind = rng.choice(["hole", "hole_std", "pocket_rect", "boss_cyl", "boss_box"])
++            f = side_feature(rng, kind, base, face)
++            if f is None:
++                continue
++            feats.append(f)
++            # mirror across YZ: only for +X bosses/pockets (a through hole mirrors onto itself)
++            if (face == "+X" and kind in ("boss_cyl", "boss_box", "pocket_rect") and len(feats) - 1 < budget
++                    and rng.random() < 0.4):
++                feats.append(GoalFeature("mirror", {}))
++        if len(feats) == 1:
++            continue
++        if level >= 3 and len(feats) - 1 < budget and rng.random() < 0.5:
++            feats.append(_dressup(rng, rng.choice(["fillet_top", "chamfer_top"]), base))
++        return Goal(feats, level=min(level, 3), scale=_scale(base))
++    raise ValueError("could not sample a side goal")
++
++
++def sample_split(split: str, level: int, rng: random.Random) -> Goal:
++    if split == "side":
++        return sample_side_goal(level, rng)
++    raise ValueError(split)
++
++
++def use_expanded_for_train(rng: random.Random) -> bool:
++    return rng.random() < TRAIN_FRACTION
++
++
++def sample_train(level: int, rng: random.Random) -> Goal:
++    """Expanded training goal at `level` (levels 1 stays original: a bare base has no side)."""
++    return sample_side_goal(max(level, 2), rng)
+diff --git a/freecad_s1/goals.py b/freecad_s1/goals.py
+index 5a656ed..f63acf6 100644
+--- a/freecad_s1/goals.py
++++ b/freecad_s1/goals.py
+@@ -250,7 +250,7 @@ def heldout_composition(goal: Goal) -> str | None:
+     return None
+ 
+ 
+-SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len")
++SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side")  # "side": taiga-expanded (ext.sampler)
+ 
+ 
+ def goal_in_split(goal: Goal, split: str) -> bool:
+@@ -302,6 +302,12 @@ def _patterned_pocket_goal(rng: random.Random) -> Goal:
+ 
+ 
+ def sample_split_goal(split: str, level: int, rng: random.Random, tries: int = 2000) -> Goal:
++    from .ext import sampler as ext  # taiga-expanded: new splits, and expanded goals mixed into training
++
++    if split in ext.SPLITS:
++        return ext.sample_split(split, level, rng)
++    if split == "train" and level >= 2 and ext.use_expanded_for_train(rng):
++        return ext.sample_train(level, rng)
+     if split == "comp2":
+         return _mirrored_boss_box_goal(rng)
+     if split == "comp3":
+diff --git a/freecad_s1/model/featurize.py b/freecad_s1/model/featurize.py
+index fc1ee54..a9873cf 100644
+--- a/freecad_s1/model/featurize.py
++++ b/freecad_s1/model/featurize.py
+@@ -30,6 +30,7 @@ import numpy as np
+ 
+ from ..actions import (ACTION_IDS, CATALOGUE, CATEGORIES, SCOPES, SOLID_FEATURE_TYPES, WORD_VOCAB, action_vector,
+                        action_words)
++from ..ext import faces as ext_faces
+ from ..ui import spec as UIS
+ from ..schema import (
+     CONSTRAINT_KINDS, GEOMETRY_KINDS, GOAL_KINDS, GOAL_LENGTH_KEYS, GOAL_PARAM_KEYS, LENGTH_KEYS,
+@@ -198,6 +199,7 @@ def encode_state(state: State, goal: Goal, invariant: bool = False, sentinel: bo
+             v = f.params.get(k)
+             num.append(0.0 if v is None else _clip(v / scale if k in GOAL_LENGTH_KEYS else v / 10))
+         num += [float(k in f.params) for k in GOAL_PARAM_KEYS]
++        ext_num = ext_faces.extra_goal_num(f, scale)  # taiga-expanded: z and support normal
+         # Relative order, so "which intent is next / is this the last one"
+         # does not hinge on absolute position embeddings seen in training.
+         n_goal = len(goal.features)
+@@ -205,6 +207,7 @@ def encode_state(state: State, goal: Goal, invariant: bool = False, sentinel: bo
+             num += [0.0, 0.0, 0.0]  # intent's features never depend on the goal's length
+         else:
+             num += [i / max(n_goal - 1, 1), float(i == n_goal - 1), 0.0 if invariant else (n_goal - 1 - i) / 10]
++        num += ext_num  # after upstream's block, so original goals featurize exactly as before
+         rows.append((SEG_GOAL, _GOAL.get(f.kind, 0), 0, min(i, MAX_POS - 1), num))
+         goal_rows.append(len(rows) - 1)
+     if sentinel:
+diff --git a/freecad_s1/runtime/session.py b/freecad_s1/runtime/session.py
+index 27d9c76..5b03296 100644
+--- a/freecad_s1/runtime/session.py
++++ b/freecad_s1/runtime/session.py
+@@ -24,6 +24,7 @@ import Sketcher
+ 
+ from ..actions import CATALOGUE, SOLID_FEATURE_TYPES, enumerate_actions
+ from ..expert import Meta, ObjMeta, expert_actions, progress
++from ..ext import faces as ext_faces
+ from ..goals import StartSpec
+ from ..schema import CONSTRAINT_KINDS, Goal, Node, SelItem, ShapeInfo, State, RECENT_ACTIONS
+ from . import params as P
+@@ -498,6 +499,8 @@ def ex_create(s: HeadlessSession, a: str) -> bool:
+     f = s.intent_for(om.goal_ref)
+     cx, cy, sx, sy = P.profile_box(f, s.goal.scale)
+     c = _local(sk, om, s, cx, cy)
++    if ext_faces.has_normal(f):  # taiga-expanded: profile on a side face, centre/sizes in face coordinates
++        c, sx, sy = ext_faces.local_box(sk, f, sx, sy, V)
+     n0 = sk.GeometryCount
+     if a == "Sketcher_CreateRectangle":
+         x0, y0 = c.x - sx / 2, c.y - sy / 2
+diff --git a/scripts/smoke_ext.py b/scripts/smoke_ext.py
+new file mode 100644
+index 0000000..5700634
+--- /dev/null
++++ b/scripts/smoke_ext.py
+@@ -0,0 +1,59 @@
++"""taiga-expanded: expert rollouts (clean + noisy) on the expanded goals, inside FreeCAD.
++Usage (FreeCAD's interpreter): smoke_ext.py [episodes per level] — prints stats, one per line."""
++import collections
++import random
++import sys
++import time
++
++from freecad_s1.ext import sampler
++from freecad_s1.goals import sample_start
++from freecad_s1.runtime.episode import GoalBuildError, build_target, score, step_budget
++from freecad_s1.runtime.session import HeadlessSession
++
++s = HeadlessSession()
++rng = random.Random(0)
++stats = collections.Counter()
++t0, nsteps = time.time(), 0
++n_eps = int(sys.argv[1]) if len(sys.argv) > 1 else 10
++for split in sampler.SPLITS:
++    for level in (2, 3):
++        for _ in range(n_eps):
++            goal = sampler.sample_split(split, level, rng)
++            try:
++                target = build_target(s, goal)
++            except GoalBuildError as exc:
++                stats[f"{split}{level}_infeasible"] += 1
++                print("INFEASIBLE", exc, goal.features, file=sys.stderr)
++                continue
++            stats[f"{split}{level}_feasible"] += 1
++            for noise in (0.0, 0.3):
++                start = sample_start(rng, level)
++                s.reset(goal, start)
++                budget = step_budget(goal, start) * (3 if noise else 1)
++                for _t in range(budget):
++                    st = s.state()
++                    valid = s.valid_actions(st)
++                    exp = s.expert()
++                    if not exp:
++                        stats["unrecoverable"] += 1
++                        break
++                    bad = [a for a in exp if a not in valid]
++                    if bad:
++                        stats["expert_invalid"] += 1
++                        print("EXPERT INVALID", bad, exp, valid, goal.features, file=sys.stderr)
++                        break
++                    a = rng.choice([x for x in valid if x != "Done"]) if rng.random() < noise else exp[0]
++                    info = s.step(a)
++                    nsteps += 1
++                    if info["done"]:
++                        break
++                sc = score(s, target)
++                key = f"{split}{level}_noise{noise}"
++                stats[key + "_n"] += 1
++                stats[key + "_match"] += int(s.done and sc["match"])
++                if noise == 0 and not (s.done and sc["match"]):
++                    print("CLEAN FAIL", goal.features, list(s.recent), sc, file=sys.stderr)
++for k in sorted(stats):
++    print(k, stats[k])
++dt = time.time() - t0
++print(f"{nsteps} steps in {dt:.1f}s = {1000 * dt / max(nsteps, 1):.1f} ms/step")
+diff --git a/tests/test_ext_faces.py b/tests/test_ext_faces.py
+new file mode 100644
+index 0000000..933add6
+--- /dev/null
++++ b/tests/test_ext_faces.py
+@@ -0,0 +1,138 @@
++"""taiga-expanded: features on side faces (pure-Python parts; FreeCAD parts in test_ext_runtime.py)."""
++import random
++
++import numpy as np
++
++from freecad_s1.expert import Meta, ObjMeta, expert_actions
++from freecad_s1.ext import faces, sampler
++from freecad_s1.goals import RECIPES, sample_goal, sample_split_goal
++from freecad_s1.model.featurize import encode_state
++from freecad_s1.schema import Goal, GoalFeature, State
++
++
++def _side_goal():
++    base = GoalFeature("base_box", {"w": 40, "d": 30, "h": 20})
++    hole = GoalFeature("hole", {"r": 3, "x": 20, "y": 2, "z": 10, "nx": 1.0, "ny": 0.0, "nz": 0.0})
++    return Goal([base, hole], level=2, scale=40)
++
++
++def test_support_follows_normal():
++    g = _side_goal()
++    assert faces.support_for(g.features[1], RECIPES["hole"]) == "Face+X"
++    top = GoalFeature("hole", {"r": 3, "x": 0, "y": 0})
++    assert faces.support_for(top, RECIPES["hole"]) == "Face+Z"  # unchanged without a normal
++    assert faces.support_for(GoalFeature("base_ring", {}), RECIPES["base_ring"]) == "Plane:XZ"
++    for k, f in (("ny", -1.0), ("nx", -1.0), ("ny", 1.0)):
++        p = {"nx": 0.0, "ny": 0.0, "nz": 0.0, k: f}
++        assert faces.face_arg(GoalFeature("hole", p)) == f"Face{'+' if f > 0 else '-'}{k[1].upper()}"
++
++
++def test_expert_selects_side_face():
++    g = _side_goal()
++    meta = Meta(doc_open=True, workbench="PartDesignWorkbench", body="Body")
++    meta.objects["Body"] = ObjMeta("Body", "body")
++    meta.objects["Pad"] = ObjMeta("Pad", "feature", goal_ref=0)
++    assert expert_actions(g, meta) == ["Select:Face+X"]
++    meta.selection = ["Face+X"]
++    assert expert_actions(g, meta) == ["PartDesign_NewSketch"]
++
++
++def test_original_goals_featurize_exactly_as_before():
++    rng = random.Random(0)
++    st = State(doc_open=True, workbench="PartDesignWorkbench")
++    for lvl in (1, 2, 3, 4):
++        g = sample_goal(lvl, rng)
++        tok = encode_state(st, g, invariant=True, sentinel=True)
++        assert np.all(tok.num[:, 29:37] == 0)  # the extra block is all zeros without ext keys
++
++
++def test_side_goal_features_are_encoded():
++    g = _side_goal()
++    tok = encode_state(State(doc_open=True), g, invariant=True, sentinel=True)
++    from freecad_s1.model.featurize import SEG_GOAL
++    rows = np.flatnonzero(tok.seg == SEG_GOAL)
++    hole_row = tok.num[rows[1]]
++    assert hole_row[29 + 1] == 1.0  # nx
++    assert hole_row[33:37].tolist() == [1.0, 1.0, 1.0, 1.0]  # z, nx, ny, nz present
++
++
++def test_side_sampler_geometry_within_faces():
++    rng = random.Random(1)
++    n_side = 0
++    for _ in range(300):
++        g = sampler.sample_side_goal(3, rng)
++        base = g.features[0].params
++        assert g.features[0].kind == "base_box" and len(g.features) <= 5
++        for f in g.features[1:]:
++            if not faces.has_normal(f):
++                continue
++            n_side += 1
++            k, sign = faces.normal(f)
++            assert k in (0, 1)
++            p = f.params
++            half = {0: base["w"] / 2, 1: base["d"] / 2}
++            assert abs(abs(p["xy"[k]]) - half[k]) < 0.11  # centre lies on the face
++            ext_v = p.get("r", p.get("d", 0) / 2)
++            assert ext_v <= p["z"] <= base["h"] - ext_v  # inside the face height
++    assert n_side >= 300
++
++
++def test_original_splits_unchanged_and_train_mixes():
++    # original evaluation splits draw no extra random numbers: same goals as upstream for the same seed
++    a = sample_split_goal("iid", 3, random.Random(7))
++    rng = random.Random(7)
++    from freecad_s1.goals import goal_in_split
++    while True:
++        b = sample_goal(3, rng)
++        if goal_in_split(b, "iid"):
++            break
++    assert a.to_json() == b.to_json()
++    rng = random.Random(3)
++    goals = [sample_split_goal("train", 3, rng) for _ in range(400)]
++    frac = np.mean([any(faces.has_normal(f) for f in g.features) for g in goals])
++    assert 0.2 < frac < 0.5  # ~TRAIN_FRACTION of training goals use side faces
++
++
++class _V:
++    def __init__(self, x=0.0, y=0.0, z=0.0):
++        self.x, self.y, self.z = float(x), float(y), float(z)
++
++    def dot(self, o):
++        return self.x * o.x + self.y * o.y + self.z * o.z
++
++
++class _Placement:
++    """Rotation matrix R (columns = sketch x, y, z axes in global coordinates) + base."""
++
++    def __init__(self, cols, base):
++        self.R = np.array(cols, float).T
++        self.Base = _V(*base)
++
++    def inverse(self):
++        inv = _Placement(np.eye(3), (0, 0, 0))
++        inv.R = self.R.T
++        b = np.array([self.Base.x, self.Base.y, self.Base.z])
++        inv.Base = _V(*(-self.R.T @ b))
++        return inv
++
++    def multVec(self, v):  # noqa: N802 (FreeCAD API name)
++        p = self.R @ np.array([v.x, v.y, v.z]) + np.array([self.Base.x, self.Base.y, self.Base.z])
++        return _V(*p)
++
++
++class _Sketch:
++    def __init__(self, placement):
++        self.Placement = placement
++
++
++def test_local_box_maps_side_face_profiles():
++    # sketch on the +X face at x = 20, sketch axes: x -> global Y, y -> global Z, normal -> +X
++    sk = _Sketch(_Placement([(0, 1, 0), (0, 0, 1), (1, 0, 0)], (20, 5, 0)))
++    f = GoalFeature("pocket_rect", {"w": 8, "d": 4, "x": 20, "y": 3, "z": 10, "depth": 5, "nx": 1.0, "ny": 0.0, "nz": 0.0})
++    c, sx, sy = faces.local_box(sk, f, 8, 4, _V)
++    assert (round(c.x, 6), round(c.y, 6), round(sx, 6), round(sy, 6)) == (-2.0, 10.0, 8.0, 4.0)
++    # rotated sketch frame on -Y face (x -> -X, y -> Z): w still runs along global X
++    sk = _Sketch(_Placement([(-1, 0, 0), (0, 0, 1), (0, -1, 0)], (0, -15, 0)))
++    f = GoalFeature("pocket_rect", {"w": 8, "d": 4, "x": 6, "y": -15, "z": 9, "depth": 5, "nx": 0.0, "ny": -1.0, "nz": 0.0})
++    c, sx, sy = faces.local_box(sk, f, 8, 4, _V)
++    assert (round(c.x, 6), round(c.y, 6), round(sx, 6), round(sy, 6)) == (-6.0, 9.0, 8.0, 4.0)
+diff --git a/tests/test_ext_runtime.py b/tests/test_ext_runtime.py
+new file mode 100644
+index 0000000..8065699
+--- /dev/null
++++ b/tests/test_ext_runtime.py
+@@ -0,0 +1,25 @@
++"""taiga-expanded: integration tests against real FreeCAD (skipped when FreeCAD is absent)."""
++import subprocess
++
++import pytest
++
++from freecad_s1.ext import sampler
++from freecad_s1.runtime.fcenv import REPO_ROOT, freecad_available, freecad_env, freecad_python
++
++pytestmark = pytest.mark.skipif(not freecad_available(), reason="FreeCAD not installed")
++
++
++def test_expanded_goals_are_buildable_and_expert_succeeds():
++    py, _ = freecad_python()
++    out = subprocess.run([py, str(REPO_ROOT / "scripts" / "smoke_ext.py"), "8"], env=freecad_env(),
++                         capture_output=True, text=True, timeout=900)
++    stats = dict(line.rsplit(" ", 1) for line in out.stdout.splitlines() if " " in line and not line[0].isdigit())
++    msg = out.stdout + out.stderr[-3000:]
++    for split in sampler.SPLITS:
++        for level in (2, 3):
++            feasible = int(stats.get(f"{split}{level}_feasible", 0))
++            infeasible = int(stats.get(f"{split}{level}_infeasible", 0))
++            assert feasible >= 0.75 * (feasible + infeasible), msg  # the sampler mostly proposes buildable goals
++            n = int(stats[f"{split}{level}_noise0.0_n"])
++            assert int(stats.get(f"{split}{level}_noise0.0_match", 0)) == n, msg  # clean expert always succeeds
++    assert "expert_invalid" not in stats, msg

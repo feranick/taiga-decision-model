@@ -2,7 +2,7 @@
 # =============================================================================
 # taiga_repro_5060ti.sh — reproduce Taiga-S1 from scratch on Ubuntu 26.04
 # (resolute), host "mochi", with FreeCAD 1.1.x from ppa:bleedingedge/resolute-bleed
-# Version: 2026.10.05.1
+# Version: 2026.10.05.2
 #
 # Same pipeline as taiga_repro_DGX.sh (DGX Spark); only setup differs:
 #   - FreeCAD from your PPA via apt (system Python), no conda
@@ -59,7 +59,8 @@ PPA=${PPA:-ppa:bleedingedge/resolute-bleed}
 FREECAD_PKG=${FREECAD_PKG:-freecad}
 TEST_SEED=3
 TEST_WORKERS=8          # fixed so the test set is identical across machines
-SUITES="iid comp comp2 comp3 len len2 len3 len4 len5 len6"   # len4-6: 13/15/17-feature stress suites
+SUITES=${SUITES:-"iid comp comp2 comp3 len len2 len3 len4 len5 len6"}   # len4-6: 13/15/17-feature stress suites
+PATCHES=${PATCHES:-}   # folder with a git patch series applied on top of REPO_REF (taiga-expanded)
 
 REPO=$WORK/taiga-s1
 VENV=$REPO/.venv
@@ -107,6 +108,31 @@ load_fc() {
   [[ -f $ENVFILE ]] && source "$ENVFILE"
   [[ -n ${FREECAD_PYTHON:-} && -n ${FREECAD_LIB:-} ]] || die "FreeCAD not configured; run setup"
   [[ -f $RUNNER ]] || die "taiga_run.py not found next to this script ($RUNNER)"
+  check_patches
+}
+
+# ----------------------------------------------------------------------------- patches
+# PATCHES=<dir>: a git patch series (*.patch, plus BASE = the commit it applies to) is applied
+# on top of REPO_REF during setup (taiga-expanded). Use a separate WORK for patched code.
+patch_sha() { cat "$PATCHES"/*.patch | sha256sum | cut -c1-12; }
+apply_patches() {
+  local p=("$PATCHES"/*.patch)
+  [[ -e ${p[0]} ]] || die "no *.patch files in PATCHES=$PATCHES"
+  if [[ -f $PATCHES/BASE && $(git -C "$REPO" rev-parse HEAD) != $(cat "$PATCHES/BASE") ]]; then
+    die "the patches apply to $(cut -c1-7 "$PATCHES/BASE"), but REPO_REF=$REPO_REF; set REPO_REF accordingly"
+  fi
+  git -C "$REPO" -c user.name=taiga -c user.email=taiga@local am -q "${p[@]}" \
+    || { git -C "$REPO" am --abort 2>/dev/null; die "patch series in $PATCHES does not apply to $REPO_REF"; }
+  patch_sha > "$WORK/patches.sha"
+  log "Applied ${#p[@]} patch(es) from $PATCHES (series $(cat "$WORK/patches.sha"))"
+}
+check_patches() {  # the code in REPO must match PATCHES (or be unpatched when PATCHES is unset)
+  if [[ -n $PATCHES ]]; then
+    [[ -f $WORK/patches.sha ]] || die "PATCHES is set but $WORK was set up without patches; run setup with PATCHES"
+    [[ $(cat "$WORK/patches.sha") == $(patch_sha) ]] || die "the patch series changed since setup; rerun setup"
+  elif [[ -f $WORK/patches.sha ]]; then
+    die "$WORK was set up with patches ($(cat "$WORK/patches.sha")); set PATCHES or use another WORK"
+  fi
 }
 
 # ----------------------------------------------------------------------------- setup
@@ -204,6 +230,7 @@ stage_setup() {
   git -C "$REPO" remote set-url origin "$REPO_URL"   # existing clones: follow the repo rename
   git -C "$REPO" fetch -q origin
   git -C "$REPO" checkout -q "$REPO_REF"
+  if [[ -n $PATCHES ]]; then apply_patches; else rm -f "$WORK/patches.sha"; fi
   log "Repo at $(git -C "$REPO" rev-parse --short HEAD)"
 
   # PyTorch: pick wheels by hardware unless overridden
@@ -469,10 +496,10 @@ def sh(c):
     try: return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
     except Exception: return None
 json.dump({
-  "script_version": "2026.10.05.1", "script": "taiga_repro_5060ti.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
+  "script_version": "2026.10.05.2", "script": "taiga_repro_5060ti.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
   "dagger_rounds": $DAGGER_ROUNDS, "dagger_episodes": $DAGGER_EPISODES, "dagger_epochs": $DAGGER_EPOCHS, "deterministic": "$DETERMINISTIC",
   "data_workers": $DATA_WORKERS, "workers": $WORKERS,
-  "repo_commit": sh("git -C '$REPO' rev-parse HEAD"), "host": platform.node(), "arch": platform.machine(),
+  "repo_commit": sh("git -C '$REPO' rev-parse HEAD"), "patches": "$(cat "$WORK/patches.sha" 2>/dev/null || true)", "host": platform.node(), "arch": platform.machine(),
   "python": sys.version.split()[0], "torch": torch.__version__, "cuda": torch.version.cuda,
   "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
   "freecad": sh("PYTHONPATH='${FREECAD_LIB:-}' '${FREECAD_PYTHON:-false}' -c \"import FreeCAD;print('.'.join(FreeCAD.Version()[:3]))\""),
