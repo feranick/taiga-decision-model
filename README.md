@@ -42,14 +42,16 @@ taiga-decision-model/
 └── build/
     ├── README_build_part.md      goal format, feature types, output, GUI demo
     ├── taiga_build_part.py       builds parts headless and saves .FCStd files
-    ├── gear/
+    ├── flange/
     │   └── example_goals.json        simple example goals (bracket plate, spacer, bolt-circle disc)
     ├── engine/
     │   ├── example_goals_engine.json single-cylinder engine parts kit
-    │   └── assembly_engine.json      assembly spec for the engine kit
+    │   ├── assembly_engine.json      assembly spec for the engine kit
+    │   └── build_engine.sh           checks, builds and assembles the engine kit
     ├── pump/
     │   ├── example_goals_pump.json   parts kit for a Victor Pumps S 80 self-priming pump (from the brochure)
     │   ├── assembly_pump.json        assembly spec for the pump kit
+    │   ├── build_pump.sh             checks, builds and assembles the pump kit
     │   └── README.md                 where each dimension comes from
     └── taiga_assemble.py         places built parts into one assembly (.FCStd + .step)
 ```

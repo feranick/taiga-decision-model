@@ -29,7 +29,7 @@ source ~/taiga/freecad.env
 
 # Every goal in a file
 .venv/bin/python <repo>/build/taiga_build_part.py \
-    --model runs/seed2/hf --goals <repo>/build/gear/example_goals.json --out parts
+    --model runs/seed2/hf --goals <repo>/build/flange/example_goals.json --out parts
 ```
 
 Open the result with `freecad parts/flange.FCStd`.
@@ -93,7 +93,7 @@ A goal file is a JSON object of named goals. Each goal is an ordered list of fea
 }
 ```
 
-`gear/example_goals.json` has three goals (bracket plate, spacer, bolt-circle disc). The upstream repo has six more in `showcase/goals.json` (flange, hex nut, enclosure, mounting plate, washer, slotted wheel).
+`flange/example_goals.json` has three goals (bracket plate, spacer, bolt-circle disc). The upstream repo has six more in `showcase/goals.json` (flange, hex nut, enclosure, mounting plate, washer, slotted wheel).
 
 `engine/example_goals_engine.json` is a parts kit for a small single-cylinder four-stroke engine (40 mm bore), one goal per part: piston, cylinder block, head gasket, cylinder head, valve cover, crankcase half, connecting rod, crank web, flywheel, port flange and valve spring retainer. Taiga-S1 builds one PartDesign Body per goal and can only add features on the top face, so the parts are simplified: no piston-pin bore, ring grooves or cooling fins (side features), no horizontal crank bore, and the piston and valve cover come out as open cups (the shell removes the top face, so read the piston upside down). Putting the parts together is outside what Taiga-S1 does. Check the kit first, then build it:
 
@@ -104,6 +104,8 @@ A goal file is a JSON object of named goals. Each goal is an ordered list of fea
 ```
 
 A goal that can't be built is reported as `INFEASIBLE` and the script moves on to the next one.
+
+To check, build and assemble a whole kit in one go, use the kit's script: `engine/build_engine.sh` or `pump/build_pump.sh` (optionally with a model path, e.g. `./build_pump.sh runs/seed12/hf`). Each one stops if `--check` finds a goal that can't be built, otherwise builds all parts and writes the normal and exploded assemblies, even if some parts failed. `WORK`, `BASE_TAIGA` and `OUT` override the default locations (`~/taiga`, `~/taiga/taiga-s1`, `parts/<kit>`).
 
 `pump/example_goals_pump.json` is a parts kit for a Victor Pumps S 80 self-priming centrifugal pump (DN80), derived from the manufacturer's brochure and the relevant flange and motor standards; `pump/README.md` lists where each dimension comes from, and `pump/assembly_pump.json` assembles it.
 

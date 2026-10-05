@@ -14,7 +14,7 @@ repo (~/taiga/taiga-s1), so they work from any directory:
         --goals showcase/goals.json --name flange --out parts
 
 --model: exported dir (runs/seed<N>/hf), a .pt checkpoint, or shhivv/taiga-s1.
---goals: JSON {name: goal}; see showcase/goals.json (upstream), gear/example_goals.json
+--goals: JSON {name: goal}; see showcase/goals.json (upstream), flange/example_goals.json
          and engine/example_goals_engine.json (this folder).
 --check: only check that every goal can be built (the teacher builds the target
          solid); no model is loaded and no parts are written.
