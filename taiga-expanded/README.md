@@ -7,8 +7,8 @@ Extends Taiga-S1's vocabulary so it can build real parts like the Victor S 80 pu
 | # | Primitive | State |
 |---|---|---|
 | 1 | **Features on any planar face** (±X, ±Y, ±Z): holes, pockets, bosses on side faces; new evaluation suite `side` | Patch 0001. All 38 tests pass, including the FreeCAD ones (DGX, FreeCAD 1.1.3, 2026-10-05) |
-| 2 | Sketches on origin planes with an offset (datum planes inside the part) | Planned |
-| 3 | Curved outlines: arc, slot, closed polyline, spline (drawn as one command from the goal's data) | Planned |
+| 2 | **Features on origin planes with an offset**, extruded symmetrically: cross bores (e.g. a piston-pin bore through a cylinder wall), through windows, cross pins and lugs; new evaluation suite `plane` | Patch 0002. Pure-Python tests pass; FreeCAD tests run during `setup` |
+| 3 | **Curved outlines**: closed profiles of lines, arcs and splines, drawn by one command (`Sketcher_CreateProfile`) and fixed by `Sketcher_ConstrainBlock`; outline bases, bosses and pockets on any face or plane; new evaluation suite `outline` | Patch 0003. Pure-Python tests pass; FreeCAD tests run during `setup` |
 | 4 | Pad/pocket of a given depth from any face; revolve and groove with a profile | Planned |
 | 5 | Patterns of any feature (bosses included); fillet/chamfer on chosen edges | Planned |
 | 6 | Training: size range up to ~400 mm; perturbed DAgger (`--dagger-perturb`); new suites per primitive | Planned |
@@ -35,6 +35,7 @@ taiga-expanded/
 - **Original behaviour preserved:**
   - Goals without the new parameters featurize exactly as before: the new parameters go in an extra block that is all zeros for original goals.
   - The original evaluation suites (`iid`, `comp*`, `len*`) produce exactly the same goals for the same seeds.
+  - New commands and goal kinds are appended to the vocabularies, so upstream ids keep their values. From patch 0003 the vocabulary is larger, so the published `shhivv/taiga-s1` weights no longer fit the patched code. `train_expanded.sh` therefore skips the published-model evaluation (`REF_EVAL=0`); evaluate it on the baseline (`BASELINE=1`) instead.
   - Training mixes the expanded goals in: by default 35 % of training goals use the new features, set by `TAIGA_EXT_FRACTION`. The rest come from the original sampler.
 - **Separate work folders:** the expanded model uses `~/taiga-expanded`, and the unpatched baseline at the same commit uses `~/taiga-head`. Neither touches your ongoing variance study in `~/taiga`. The training scripts refuse to run when the code in a work folder doesn't match `PATCHES`.
 
@@ -54,6 +55,44 @@ A goal feature can carry a support normal and a global centre:
 - **New evaluation suite `side`:** level 3, on its own seeds.
 
 Changes to upstream files: the teacher picks the side face (`expert.py`), the runtime maps the profile onto it (`runtime/session.py`), the goal encoding adds the extra block (`model/featurize.py`), and `goals.py`/`evaluate.py` add the new split and suite.
+
+### Primitive 2: features on origin planes with an offset
+
+A goal feature with `off` is sketched on the origin plane normal to (nx, ny, nz), shifted by `off` along that axis, and extruded **symmetrically** on both sides of the plane:
+
+```json
+{"kind": "hole", "params": {"r": 4, "x": 0, "y": 0, "z": 15, "nx": 0, "ny": 1, "nz": 0, "off": 0}}
+```
+
+- **Where:** `Select:Plane:XZ` here (normal Y). `off` shifts the sketch along Y, and the centre (x, y, z) lies on the shifted plane.
+- **What it gives, by kind:**
+  - `hole`: a cross bore through the whole part, e.g. a piston-pin or crank bore through a cylinder wall.
+  - `pocket_rect`, deeper than the part: a through window.
+  - `boss_cyl` / `boss_box`, longer than the part: a cross pin or lugs sticking out on both sides.
+- **No new commands:** the model chooses the plane. The runtime applies the offset (`AttachmentOffset`, with the sign taken from the plane's own normal) and the symmetric extrusion (`Midplane`, or `SideType` where FreeCAD has it).
+- **New training goals:** box or cylinder bases with 1–2 datum-plane features, optionally a top feature from the original vocabulary and a top dressup. Training draws the expanded goals from the `side` and `plane` samplers at random.
+- **New evaluation suite `plane`:** level 3, on its own seeds.
+
+### Primitive 3: curved outlines
+
+New kinds `profile_base`, `profile_boss` and `profile_pocket` carry a closed outline:
+
+```json
+{"kind": "profile_pocket", "params": {"depth": 4, "outline": {
+  "start": [-10, -3], "segs": [["L", 10, -3], ["A", 13, 0, 10, 3], ["L", -10, 3], ["A", -13, 0, -10, -3]]}}}
+```
+
+- **Segments:** `["L", u, v]` is a line to (u, v), `["A", um, vm, u, v]` an arc through (um, vm) to (u, v), and `["S", [[u, v], ...]]` a spline through points. The last point closes the outline at `start`.
+- **Coordinates:** (u, v) are global in-plane coordinates of the sketch plane. On the top face and the XY plane, u = X and v = Y. Normal to X, u = Y and v = Z. Normal to Y, u = X and v = Z.
+- **Where:** with `nx`/`ny`/`nz` the outline goes on a side face, and with `off` on a datum plane (primitives 1 and 2). `profile_pocket` without `depth` cuts through all.
+- **One command per outline:** `Sketcher_CreateProfile` draws the whole outline, and `Sketcher_ConstrainBlock` fixes it. The model decides when and on which face; the runtime takes the points from the goal. The model sees only a summary: the number of lines, arcs and splines, and the outline's size.
+- **Arcs** are converted to FreeCAD's counter-clockwise sketch arcs.
+- **Splines** are sketch B-splines. If a FreeCAD build has trouble with them, `TAIGA_SPLINE=polyline` draws them as short lines instead.
+- **Mistakes:** if the model chooses `CreateProfile` for an intent without an outline, a default outline is drawn so there is something to undo, as upstream does for other wrong commands.
+- **New training goals:** outline bases (rounded rectangle, slot, polygon, D shape, spline blob) with profile bosses, pockets and holes on top, polar patterns of profile features (blade or slot rings), curved windows on side faces, and top dressups.
+- **New evaluation suite `outline`:** level 3.
+
+This is what the S 80's curved casing outline, its blades, the covers and the wear-plate cutter need, apart from the revolve parts (primitive 4).
 
 ## Workflow
 
@@ -90,6 +129,6 @@ Compare the original suites between the two with `../training/taiga_aggregate.py
 
 | File | Version |
 |---|---|
-| `train_expanded.sh` | 2026.10.05.2 |
-| `dev/*.sh` | 2026.10.05.1 |
-| `patches/` | 0001 (features on any planar face), against upstream `4a31bcf` |
+| `train_expanded.sh` | 2026.10.05.4 |
+| `dev/*.sh` | 2026.10.05.1 (`export_patches.sh` 2026.10.05.2) |
+| `patches/` | 0001 (features on any planar face), 0002 (features on origin planes with an offset), 0003 (curved outlines), against upstream `4a31bcf` |

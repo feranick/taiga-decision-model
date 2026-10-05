@@ -1,0 +1,450 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: taiga-expanded <taiga-expanded@local>
+Date: Mon, 5 Oct 2026 15:31:03 -0400
+Subject: [PATCH] ext: features on origin planes with an offset (datum planes)
+
+A goal feature with "off" is sketched on the origin plane normal to (nx, ny, nz)
+(Select:Plane:YZ / XZ / XY), shifted by off along that axis, and padded or
+pocketed symmetrically: cross bores through the whole part (e.g. a piston-pin
+or crank bore through a cylinder wall), through windows and cross pins/lugs.
+No new commands: the model picks the plane, the runtime applies the offset
+(AttachmentOffset, sign taken from the plane's own normal) and the symmetric
+extrusion (Midplane, or SideType where available).
+- ext/faces.py: is_datum, support_for -> Plane:*, apply_plane_offset,
+  set_symmetric; goal encoding gains "off"
+- session: two hooks (NewSketch offset, symmetric pad/pocket)
+- ext/sampler.py: split "plane" (box or cylinder base, 1-2 datum features);
+  training mixes side and plane goals
+- evaluate: suite "plane" (level 3, seed offset 50000)
+Tests: datum support, offset sign, symmetric setter, encoding, sampler geometry.
+---
+ freecad_s1/evaluate.py        |   3 +-
+ freecad_s1/ext/__init__.py    |   3 +-
+ freecad_s1/ext/faces.py       |  50 ++++++++++++--
+ freecad_s1/ext/sampler.py     |  93 ++++++++++++++++++++++++--
+ freecad_s1/goals.py           |   2 +-
+ freecad_s1/runtime/session.py |   3 +
+ tests/test_ext_faces.py       | 121 +++++++++++++++++++++++++++++++++-
+ 7 files changed, 259 insertions(+), 16 deletions(-)
+
+diff --git a/freecad_s1/evaluate.py b/freecad_s1/evaluate.py
+index ea6ed97..5b45e20 100644
+--- a/freecad_s1/evaluate.py
++++ b/freecad_s1/evaluate.py
+@@ -69,7 +69,7 @@ def offline_metrics(model: S1Model, ds: Dataset, device: torch.device, batch_siz
+ 
+ 
+ # Seed offsets keep suites that share a level (iid-L3, comp, comp2, comp3) on disjoint seeds.
+-SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000}
++SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000}
+ 
+ SUITES = {
+     "iid": [(1, "iid"), (2, "iid"), (3, "iid")],  # training distribution, fresh goals
+@@ -79,6 +79,7 @@ SUITES = {
+     "len": [(4, "len")],  # held-out length: 6-7 intents, training has <= 5
+     "len2": [(5, "len")],  # held-out length: 8-9 intents
+     "side": [(3, "side")],  # taiga-expanded: features on side faces (box base, 1-2 side features)
++    "plane": [(3, "plane")],  # taiga-expanded: datum-plane features (cross bores, windows, cross bosses)
+     "len3": [(6, "len")],  # held-out length: 11 intents (2.2x the training maximum)
+     "len4": [(7, "len")],  # stress: 13 intents
+     "len5": [(8, "len")],  # stress: 15 intents
+diff --git a/freecad_s1/ext/__init__.py b/freecad_s1/ext/__init__.py
+index 706acff..f36495f 100644
+--- a/freecad_s1/ext/__init__.py
++++ b/freecad_s1/ext/__init__.py
+@@ -1,7 +1,8 @@
+ """Taiga-expanded: extensions to the Taiga-S1 command vocabulary and goal space.
+ 
+ Kept in its own package so the changes to upstream files stay small hooks:
+-  faces    features on any planar face (+-X, +-Y, +-Z), not only the top face
++  faces    features on any planar face (+-X, +-Y, +-Z), not only the top face, and on
++           origin planes with an offset, extruded symmetrically (cross bores, windows, pins)
+   sampler  goals that use the new features, mixed into the training split and
+            exposed as new evaluation suites (original suites are unchanged)
+ Pure stdlib: imported by FreeCAD's interpreter (runtime) and the torch process.
+diff --git a/freecad_s1/ext/faces.py b/freecad_s1/ext/faces.py
+index 715c35d..9703fb8 100644
+--- a/freecad_s1/ext/faces.py
++++ b/freecad_s1/ext/faces.py
+@@ -1,4 +1,4 @@
+-"""Features on any planar face.
++"""Features on any planar face, and on origin planes with an offset (datum planes).
+ 
+ A goal feature may carry a support normal (params nx, ny, nz, one of them +-1):
+ the sketch then goes on the largest planar face with that outward normal
+@@ -7,6 +7,13 @@ global coordinates (x, y, z); the coordinate along the normal is taken from the
+ face itself. Rectangle sizes: w runs along the first in-plane global axis
+ (X, then Y, then Z), d along the second. Without a normal, behaviour is the
+ original top-face behaviour, bit for bit.
++
++Datum-plane features (param "off" present): the sketch goes on the origin plane
++normal to (nx, ny, nz) (Select:Plane:YZ / XZ / XY), shifted by "off" along that
++axis, and the pad or pocket is extruded symmetrically on both sides of the plane.
++That gives cross bores (a hole through the whole part, e.g. a piston-pin or crank
++bore through a cylinder wall), through windows (pocket_rect deeper than the part)
++and cross bosses (pins or lugs sticking out on both sides).
+ """
+ from __future__ import annotations
+ 
+@@ -32,14 +39,49 @@ def face_arg(f) -> str:
+     return f"Face{'+' if sign > 0 else '-'}{AXIS_NAMES[k]}"
+ 
+ 
++PLANE_FOR_AXIS = {0: "Plane:YZ", 1: "Plane:XZ", 2: "Plane:XY"}
++
++
++def is_datum(f) -> bool:
++    return "off" in f.params
++
++
+ def support_for(f, recipe) -> str | None:
+     """Select argument for the sketch support of goal feature `f` (hook used by the expert).
+     Only top-face recipes (Face+Z) are redirected; origin-plane recipes keep their plane."""
+     if recipe.support == "Face+Z" and has_normal(f):
+-        return face_arg(f)
++        return PLANE_FOR_AXIS[normal(f)[0]] if is_datum(f) else face_arg(f)
+     return recipe.support
+ 
+ 
++def apply_plane_offset(sk, f, app) -> None:
++    """Shift a sketch attached to an origin plane by the feature's offset "off" (global units
++    along the plane's axis). Hook in the NewSketch executor; `app` is the FreeCAD module."""
++    if f is None or not is_datum(f) or not sk.AttachmentSupport:
++        return
++    plane = sk.AttachmentSupport[0][0]
++    n = plane.Placement.Rotation.multVec(app.Vector(0, 0, 1))  # the plane's own normal (sign varies)
++    k = normal(f)[0]
++    comp = (n.x, n.y, n.z)[k]
++    sk.AttachmentOffset = app.Placement(app.Vector(0, 0, float(f.params["off"]) * comp), app.Rotation())
++
++
++def set_symmetric(feat) -> bool:
++    """Extrude a pad/pocket symmetrically to its sketch plane (FreeCAD 1.x: Midplane,
++    newer builds: SideType). Returns False if the feature has neither."""
++    props = getattr(feat, "PropertiesList", [])
++    if "SideType" in props:
++        opts = feat.getEnumerationsOfProperty("SideType") or []
++        sym = next((o for o in opts if "ymmetric" in o), None)
++        if sym is not None:
++            feat.SideType = sym
++            return True
++    if "Midplane" in props:
++        feat.Midplane = True
++        return True
++    return False
++
++
+ def inplane_axes(k: int) -> tuple[int, int]:
+     a = [i for i in range(3) if i != k]
+     return a[0], a[1]
+@@ -73,8 +115,8 @@ def local_box(sk, f, sx: float, sy: float, vec_cls):
+ 
+ # goal-feature encoding: extra block appended after upstream's goal numbers, so goals
+ # without these keys featurize exactly as before
+-EXT_PARAM_KEYS = ["z", "nx", "ny", "nz"]
+-EXT_LENGTH_KEYS = {"z"}
++EXT_PARAM_KEYS = ["z", "nx", "ny", "nz", "off"]
++EXT_LENGTH_KEYS = {"z", "off"}
+ 
+ 
+ def extra_goal_num(f, scale: float) -> list[float]:
+diff --git a/freecad_s1/ext/sampler.py b/freecad_s1/ext/sampler.py
+index e8eb6e1..382b07c 100644
+--- a/freecad_s1/ext/sampler.py
++++ b/freecad_s1/ext/sampler.py
+@@ -14,8 +14,8 @@ from ..schema import Goal, GoalFeature
+ 
+ TRAIN_FRACTION = float(os.environ.get("TAIGA_EXT_FRACTION", "0.35"))
+ 
+-# split name -> (sampler, evaluation level)
+-SPLITS = ("side",)
++# new evaluation splits (each also feeds training through sample_train)
++SPLITS = ("side", "plane")
+ 
+ 
+ def _u(rng: random.Random, lo: float, hi: float) -> float:
+@@ -100,9 +100,90 @@ def sample_side_goal(level: int, rng: random.Random) -> Goal:
+     raise ValueError("could not sample a side goal")
+ 
+ 
++def _extents(base: GoalFeature) -> tuple[float, float, float]:
++    """Half extents (x, y) of the material usable for cross features, and the height."""
++    p = base.params
++    if base.kind == "base_box":
++        return p["w"] / 2, p["d"] / 2, p["h"]
++    return p["r"], p["r"], p["h"]  # base_cyl
++
++
++def datum_feature(rng: random.Random, kind: str, base: GoalFeature, axis: int) -> GoalFeature | None:
++    """A feature sketched on the origin plane normal to `axis` (0: YZ plane, along X; 1: XZ plane,
++    along Y), shifted by "off", extruded symmetrically: hole = cross bore through the part,
++    pocket_rect = through window, boss_cyl / boss_box = cross pin / lugs sticking out both sides."""
++    hx, hy, h = _extents(base)
++    along = (hx, hy)[axis]  # half extent along the extrusion
++    across = (hy, hx)[axis] * (0.6 if base.kind == "base_cyl" else 1.0)  # usable in-plane half width
++    params: dict[str, float] = {"nx": 0.0, "ny": 0.0, "nz": 0.0}
++    params["nx" if axis == 0 else "ny"] = 1.0
++    off = _u(rng, -along * 0.3, along * 0.3)
++    if kind in ("hole", "boss_cyl"):
++        r = _u(rng, 1.5, max(1.6, min(across, h / 2) * 0.35))
++        if 2 * r + 4 > h:
++            return None
++        u = _u(rng, -(across - r) * 0.5, (across - r) * 0.5)
++        v = _u(rng, r + 2, h - r - 2)
++        params["r"] = r
++        if kind == "boss_cyl":
++            params["h"] = round(2 * (along + _u(rng, 4, 15)), 1)  # sticks out on both sides
++    else:
++        a = _u(rng, 2, max(2.1, across * 0.6))
++        b = _u(rng, 2, max(2.1, (h - 4) * 0.6))
++        if b + 4 > h:
++            return None
++        u = _u(rng, -(across - a / 2) * 0.5, (across - a / 2) * 0.5)
++        v = _u(rng, b / 2 + 2, h - b / 2 - 2)
++        params.update(w=a, d=b)
++        if kind == "boss_box":
++            params["h"] = round(2 * (along + _u(rng, 4, 15)), 1)
++        else:
++            params["depth"] = round(2 * along + 10, 1)  # deeper than the part: a through window
++    params["off"] = off
++    if axis == 0:
++        params.update(x=off, y=u, z=v)
++    else:
++        params.update(x=u, y=off, z=v)
++    return GoalFeature(kind, params)
++
++
++def sample_plane_goal(level: int, rng: random.Random) -> Goal:
++    """Box or cylinder base, 1-2 datum-plane features, optionally a top feature from the
++    original vocabulary and a top dressup."""
++    from ..goals import _base, _cut_group, _dressup, _scale
++
++    for _ in range(100):
++        base = _side_base(rng) if rng.random() < 0.6 else _base(rng, ["base_cyl"])
++        if base.kind == "base_cyl":
++            base.params["h"] = _u(rng, 14, 40)
++        feats = [base]
++        budget = 1 if level <= 2 else 4
++        if level >= 3 and rng.random() < 0.4:
++            group, _ = _cut_group(rng, base)
++            if len(group) <= budget - 1:
++                feats += group
++        n = 1 if level <= 2 else rng.choice([1, 1, 2])
++        for _ in range(n):
++            if len(feats) - 1 >= budget:
++                break
++            kind = rng.choice(["hole", "hole", "pocket_rect", "boss_cyl", "boss_box"])
++            f = datum_feature(rng, kind, base, rng.choice([0, 1]))
++            if f is not None:
++                feats.append(f)
++        if len(feats) == 1:
++            continue
++        if level >= 3 and len(feats) - 1 < budget and rng.random() < 0.5:
++            feats.append(_dressup(rng, "chamfer_top" if base.kind == "base_cyl" else rng.choice(["fillet_top", "chamfer_top"]), base))
++        return Goal(feats, level=min(level, 3), scale=_scale(base))
++    raise ValueError("could not sample a plane goal")
++
++
++SAMPLERS = {"side": sample_side_goal, "plane": sample_plane_goal}
++
++
+ def sample_split(split: str, level: int, rng: random.Random) -> Goal:
+-    if split == "side":
+-        return sample_side_goal(level, rng)
++    if split in SAMPLERS:
++        return SAMPLERS[split](level, rng)
+     raise ValueError(split)
+ 
+ 
+@@ -111,5 +192,5 @@ def use_expanded_for_train(rng: random.Random) -> bool:
+ 
+ 
+ def sample_train(level: int, rng: random.Random) -> Goal:
+-    """Expanded training goal at `level` (levels 1 stays original: a bare base has no side)."""
+-    return sample_side_goal(max(level, 2), rng)
++    """Expanded training goal at `level` >= 2, one of the expanded splits at random."""
++    return SAMPLERS[rng.choice(SPLITS)](max(level, 2), rng)
+diff --git a/freecad_s1/goals.py b/freecad_s1/goals.py
+index f63acf6..4abc09e 100644
+--- a/freecad_s1/goals.py
++++ b/freecad_s1/goals.py
+@@ -250,7 +250,7 @@ def heldout_composition(goal: Goal) -> str | None:
+     return None
+ 
+ 
+-SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side")  # "side": taiga-expanded (ext.sampler)
++SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane")  # side, plane: taiga-expanded (ext.sampler)
+ 
+ 
+ def goal_in_split(goal: Goal, split: str) -> bool:
+diff --git a/freecad_s1/runtime/session.py b/freecad_s1/runtime/session.py
+index 5b03296..329ad34 100644
+--- a/freecad_s1/runtime/session.py
++++ b/freecad_s1/runtime/session.py
+@@ -470,6 +470,7 @@ def ex_new_sketch(s: HeadlessSession, a: str) -> bool:
+     sk = s.body.newObject("Sketcher::SketchObject", "Sketch")
+     sk.AttachmentSupport = [(s.doc.getObject(obj_name), subs[0] if subs else "")]
+     sk.MapMode = "FlatFace"
++    ext_faces.apply_plane_offset(sk, s.intent_for(goal_ref), App)  # taiga-expanded: datum plane offset
+     s.doc.recompute()
+     s.meta.objects[sk.Name] = ObjMeta(sk.Name, "sketch", goal_ref=goal_ref, command=a)
+     s.meta.edit = sk.Name
+@@ -612,6 +613,8 @@ def ex_profile_feature(s: HeadlessSession, a: str) -> bool:
+     elif a == "PartDesign_Hole":
+         feat.Diameter = P.hole_diameter(f, scale)
+         feat.DepthType = "ThroughAll"
++    if ext_faces.is_datum(f) and a in ("PartDesign_Pad", "PartDesign_Pocket"):
++        ext_faces.set_symmetric(feat)  # taiga-expanded: datum-plane features extrude both ways
+     prof.consumed_by = feat.Name
+     s.finish_feature(feat)
+     return True
+diff --git a/tests/test_ext_faces.py b/tests/test_ext_faces.py
+index 933add6..ee86d54 100644
+--- a/tests/test_ext_faces.py
++++ b/tests/test_ext_faces.py
+@@ -43,7 +43,7 @@ def test_original_goals_featurize_exactly_as_before():
+     for lvl in (1, 2, 3, 4):
+         g = sample_goal(lvl, rng)
+         tok = encode_state(st, g, invariant=True, sentinel=True)
+-        assert np.all(tok.num[:, 29:37] == 0)  # the extra block is all zeros without ext keys
++        assert np.all(tok.num[:, 29:39] == 0)  # the extra block is all zeros without ext keys
+ 
+ 
+ def test_side_goal_features_are_encoded():
+@@ -53,7 +53,7 @@ def test_side_goal_features_are_encoded():
+     rows = np.flatnonzero(tok.seg == SEG_GOAL)
+     hole_row = tok.num[rows[1]]
+     assert hole_row[29 + 1] == 1.0  # nx
+-    assert hole_row[33:37].tolist() == [1.0, 1.0, 1.0, 1.0]  # z, nx, ny, nz present
++    assert hole_row[34:39].tolist() == [1.0, 1.0, 1.0, 1.0, 0.0]  # z, nx, ny, nz present; no datum offset
+ 
+ 
+ def test_side_sampler_geometry_within_faces():
+@@ -90,7 +90,9 @@ def test_original_splits_unchanged_and_train_mixes():
+     rng = random.Random(3)
+     goals = [sample_split_goal("train", 3, rng) for _ in range(400)]
+     frac = np.mean([any(faces.has_normal(f) for f in g.features) for g in goals])
+-    assert 0.2 < frac < 0.5  # ~TRAIN_FRACTION of training goals use side faces
++    assert 0.2 < frac < 0.5  # ~TRAIN_FRACTION of training goals use the expanded features
++    datum = np.mean([any(faces.is_datum(f) for f in g.features) for g in goals])
++    assert 0.08 < datum < frac  # both expanded kinds (side faces, datum planes) are in the mix
+ 
+ 
+ class _V:
+@@ -136,3 +138,116 @@ def test_local_box_maps_side_face_profiles():
+     f = GoalFeature("pocket_rect", {"w": 8, "d": 4, "x": 6, "y": -15, "z": 9, "depth": 5, "nx": 0.0, "ny": -1.0, "nz": 0.0})
+     c, sx, sy = faces.local_box(sk, f, 8, 4, _V)
+     assert (round(c.x, 6), round(c.y, 6), round(sx, 6), round(sy, 6)) == (-6.0, 9.0, 8.0, 4.0)
++
++
++# ---------------------------------------------------------------- datum planes (patch 0002)
++
++
++def _datum_hole(axis=1, off=3.0):
++    p = {"r": 3, "x": 0, "y": 0, "z": 10, "nx": 0.0, "ny": 0.0, "nz": 0.0, "off": off}
++    p["nx" if axis == 0 else "ny"] = 1.0
++    p["xy"[axis]] = off
++    return GoalFeature("hole", p)
++
++
++def test_datum_support_is_the_origin_plane():
++    assert faces.support_for(_datum_hole(1), RECIPES["hole"]) == "Plane:XZ"
++    assert faces.support_for(_datum_hole(0), RECIPES["hole"]) == "Plane:YZ"
++    base = GoalFeature("base_cyl", {"r": 20, "h": 30})
++    g = Goal([base, _datum_hole(1)], level=2, scale=40)
++    meta = Meta(doc_open=True, workbench="PartDesignWorkbench", body="Body")
++    meta.objects["Body"] = ObjMeta("Body", "body")
++    meta.objects["Pad"] = ObjMeta("Pad", "feature", goal_ref=0)
++    assert expert_actions(g, meta) == ["Select:Plane:XZ"]
++
++
++def test_datum_offset_and_encoding():
++    tok = encode_state(State(doc_open=True), Goal([GoalFeature("base_box", {"w": 40, "d": 30, "h": 20}), _datum_hole(1, 4.0)],
++                                                   level=2, scale=40), invariant=True, sentinel=True)
++    from freecad_s1.model.featurize import SEG_GOAL
++    row = tok.num[np.flatnonzero(tok.seg == SEG_GOAL)[1]]
++    assert abs(row[33] - 0.1) < 1e-3 and row[38] == 1.0  # off / scale, off present
++
++
++class _App:
++    """Just enough of the FreeCAD module for apply_plane_offset."""
++
++    class Vector(_V):
++        pass
++
++    class Rotation:
++        def __init__(self, cols=None):
++            self.R = np.eye(3) if cols is None else np.array(cols, float).T
++
++        def multVec(self, v):  # noqa: N802
++            return _V(*(self.R @ np.array([v.x, v.y, v.z])))
++
++    class Placement:
++        def __init__(self, base=None, rot=None):
++            self.Base, self.Rotation = base, rot
++
++
++class _Plane:
++    def __init__(self, cols):
++        self.Placement = _App.Placement(_V(), _App.Rotation(cols))
++
++
++class _AttachedSketch:
++    def __init__(self, plane):
++        self.AttachmentSupport = [(plane, "")]
++        self.AttachmentOffset = None
++
++
++def test_plane_offset_follows_the_plane_normal_sign():
++    # an XZ plane whose normal points to -Y: a +3 mm global offset becomes -3 along the sketch normal
++    sk = _AttachedSketch(_Plane([(1, 0, 0), (0, 0, 1), (0, -1, 0)]))
++    faces.apply_plane_offset(sk, _datum_hole(1, 3.0), _App)
++    assert sk.AttachmentOffset.Base.z == -3.0
++    sk = _AttachedSketch(_Plane([(0, 1, 0), (0, 0, 1), (1, 0, 0)]))  # YZ plane, normal +X
++    faces.apply_plane_offset(sk, _datum_hole(0, 3.0), _App)
++    assert sk.AttachmentOffset.Base.z == 3.0
++    sk = _AttachedSketch(_Plane([(1, 0, 0), (0, 0, 1), (0, -1, 0)]))
++    faces.apply_plane_offset(sk, GoalFeature("hole", {"r": 3, "x": 0, "y": 0}), _App)  # not a datum feature
++    assert sk.AttachmentOffset is None
++
++
++class _Feat:
++    def __init__(self, props, enum=None):
++        self.PropertiesList = props
++        self._enum = enum
++
++    def getEnumerationsOfProperty(self, name):  # noqa: N802
++        return self._enum
++
++
++def test_symmetric_extrusion_uses_what_the_feature_has():
++    f = _Feat(["Length", "Midplane"])
++    assert faces.set_symmetric(f) and f.Midplane is True
++    f = _Feat(["Length", "SideType", "Midplane"], ["One side", "Two sides", "Symmetric to plane"])
++    assert faces.set_symmetric(f) and f.SideType == "Symmetric to plane"
++    assert not faces.set_symmetric(_Feat(["Length"]))
++
++
++def test_plane_sampler_geometry():
++    rng = random.Random(5)
++    seen = set()
++    for _ in range(300):
++        g = sampler.sample_plane_goal(3, rng)
++        base = g.features[0]
++        assert base.kind in ("base_box", "base_cyl") and len(g.features) <= 5
++        hx, hy, h = sampler._extents(base)
++        for f in g.features[1:]:
++            if not faces.is_datum(f):
++                continue
++            seen.add(f.kind)
++            k = faces.normal(f)[0]
++            p = f.params
++            assert k in (0, 1) and abs(p["xy"[k]] - p["off"]) < 1e-9  # centre lies on the shifted plane
++            half_along = (hx, hy)[k]
++            if f.kind == "pocket_rect":
++                assert p["depth"] > 2 * half_along  # a through window
++            if f.kind.startswith("boss"):
++                assert p["h"] > 2 * half_along  # sticks out on both sides
++            ext_v = p.get("r", p.get("d", 0) / 2)
++            assert ext_v < p["z"] < h - ext_v
++    assert seen == {"hole", "pocket_rect", "boss_cyl", "boss_box"}

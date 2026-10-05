@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.05.5
+Version: 2026.10.05.6
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -131,6 +131,13 @@ def base_scale(goal: dict) -> float:
         return max(p["w"], p["d"], p["h"])
     if f["kind"] == "base_ring":
         return max(2 * p["ro"], p["h"])
+    if f["kind"] == "profile_base":  # taiga-expanded: outline base, size from its points
+        if "w" in p and "d" in p:
+            return max(p["w"], p["d"], p["h"])
+        from freecad_s1.ext.profiles import bbox
+
+        _, _, w, d = bbox(p["outline"])
+        return max(w, d, p["h"])
     return max(2 * p["r"], p["h"])  # base_cyl, base_hex
 
 

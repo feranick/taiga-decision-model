@@ -3,7 +3,7 @@
 # the patches' BASE commit with the patch series applied, in its own WORK folder, with the
 # expanded evaluation suites added. BASELINE=1 runs the same upstream commit unpatched
 # (the reference for "no regression on the original suites").
-# Version: 2026.10.05.2
+# Version: 2026.10.05.4
 #
 # Usage:   ./train_expanded.sh <dgx|5060ti|quadro> <stages...>
 #   e.g.   ./train_expanded.sh 5060ti setup
@@ -23,11 +23,12 @@ case $machine in
 esac
 [[ -f $HERE/patches/BASE ]] || { echo "error: $HERE/patches/BASE missing"; exit 1; }
 export REPO_REF=${REPO_REF:-$(cut -c1-12 "$HERE/patches/BASE")}
-EXT_SUITES="side"   # suites added by the patch series (keep in sync with freecad_s1/ext/sampler.SPLITS)
+EXT_SUITES="side plane outline"   # suites added by the patch series (keep in sync with freecad_s1/ext/sampler.SPLITS)
 if [[ ${BASELINE:-0} == 1 ]]; then
   export WORK=${WORK:-$HOME/taiga-head} PATCHES=""
 else
-  export WORK=${WORK:-$HOME/taiga-expanded} PATCHES=$HERE/patches
+  # the patches extend the vocabulary, so the published weights only make sense on the baseline
+  export WORK=${WORK:-$HOME/taiga-expanded} PATCHES=$HERE/patches REF_EVAL=${REF_EVAL:-0}
 fi
 export SUITES=${SUITES:-"iid comp comp2 comp3 len len2 len3 len4 len5 len6"}
 [[ ${BASELINE:-0} == 1 ]] || SUITES="$SUITES $EXT_SUITES"

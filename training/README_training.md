@@ -95,6 +95,7 @@ Run them one at a time or several in sequence, for example `./script.sh train ex
 | `SWEEP_FORCE` | `0` | `1`: `sweep` also redoes seeds that are already evaluated |
 | `SUITES` | all 10 suites | Evaluation suites to run (`taiga-expanded` adds its own) |
 | `PATCHES` | unset | Folder with a git patch series applied on top of `REPO_REF` during `setup` (used by `../taiga-expanded/train_expanded.sh`). Use a separate `WORK`: the scripts refuse to run when the code in `WORK` doesn't match `PATCHES`. |
+| `REF_EVAL` | `1` | `0` skips evaluating the published `shhivv/taiga-s1` model in `eval` (needed when patches change the vocabulary, as `taiga-expanded` does from patch 0003) |
 | `DATA_WORKERS` | `8` | Number of data-generation processes. Keep 8 to regenerate upstream's exact shards; raise it for speed. |
 | `WORKERS` | `nproc − 2` | Number of FreeCAD workers for DAgger, eval and calibration |
 | `REPO_REF` | `a6e81d3` | Upstream commit to pin |
@@ -354,8 +355,8 @@ Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header 
 
 | Script | Version |
 |---|---|
-| `taiga_repro_DGX.sh` | 2026.10.05.3 |
-| `taiga_repro_5060ti.sh` | 2026.10.05.2 |
-| `taiga_repro_Quadro6000.sh` | 2026.10.05.2 |
+| `taiga_repro_DGX.sh` | 2026.10.05.4 |
+| `taiga_repro_5060ti.sh` | 2026.10.05.3 |
+| `taiga_repro_Quadro6000.sh` | 2026.10.05.3 |
 | `taiga_aggregate.py` | 2026.10.04.3 |
 | `taiga_run.py` | 2026.10.04.1 |

@@ -2,7 +2,7 @@
 # =============================================================================
 # taiga_repro_Quadro6000.sh — reproduce Taiga-S1 from scratch on a dual Quadro RTX 6000
 # (Turing, sm_75, 2 x 24 GB) workstation, Ubuntu 24.04 or 26.04, driver 595-open
-# Version: 2026.10.05.2
+# Version: 2026.10.05.3
 #
 # Same pipeline as the Spark/mochi scripts; differences:
 #   - FreeCAD from your PPA matching the release: noble -> bleedingedge/noble-bleed,
@@ -76,6 +76,7 @@ TEST_SEED=3
 TEST_WORKERS=8          # fixed so the test set is identical across machines
 SUITES=${SUITES:-"iid comp comp2 comp3 len len2 len3 len4 len5 len6"}   # len4-6: 13/15/17-feature stress suites
 PATCHES=${PATCHES:-}   # folder with a git patch series applied on top of REPO_REF (taiga-expanded)
+REF_EVAL=${REF_EVAL:-1}   # 0: skip the published-model baseline (its vocabulary may not match patched code)
 
 REPO=$WORK/taiga-s1
 VENV=$REPO/.venv
@@ -411,7 +412,7 @@ stage_eval() {
   local ref=runs/reference_hf
   mkdir -p "$ref"
   exec 8>"$ref/.lock"; flock 8                       # baseline computed once, shared
-  if ! ref_complete "$ref"; then   # published model, once per machine
+  if [[ $REF_EVAL == 1 ]] && ! ref_complete "$ref"; then   # published model, once per machine
     : > "$ref/crashes_eval.jsonl"; : > "$ref/crashes_eval_perturb.jsonl"
     timed eval_ref env S1_CRASH_LOG="$ref/crashes_eval.jsonl" "$PY" "$RUNNER" freecad_s1.evaluate --ckpt shhivv/taiga-s1 --data data/gen_test \
       --episodes 100 --suites $SUITES --workers "$WORKERS" --out "$ref/eval.json"
@@ -425,7 +426,7 @@ stage_eval() {
   timed eval_perturb env S1_CRASH_LOG="$RUN/crashes_eval_perturb.jsonl" "$PY" "$RUNNER" freecad_s1.evaluate --ckpt "$RUN/hf" \
     --episodes 100 --perturb 0.2 --suites $SUITES --workers "$WORKERS" --out "$RUN/eval_perturb.json"
 
-  log "Published shhivv/taiga-s1"; "$PY" scripts/summarize.py "$ref/eval.json" "$ref/eval_perturb.json"
+  if [[ $REF_EVAL == 1 ]]; then log "Published shhivv/taiga-s1"; "$PY" scripts/summarize.py "$ref/eval.json" "$ref/eval_perturb.json"; fi
   log "Your model (${EXP:+$EXP, }seed $SEED)";   "$PY" scripts/summarize.py "$RUN/eval.json" "$RUN/eval_perturb.json"
   local c; c=$(cat "$RUN"/crashes_*.jsonl 2>/dev/null | wc -l || true)
   (( c == 0 )) || log "NOTE: $c FreeCAD worker crash(es) recovered in this run — see $RUN/crashes_*.jsonl"
@@ -581,7 +582,7 @@ def sh(c):
     try: return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
     except Exception: return None
 json.dump({
-  "script_version": "2026.10.05.2", "script": "taiga_repro_Quadro6000.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
+  "script_version": "2026.10.05.3", "script": "taiga_repro_Quadro6000.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
   "dagger_rounds": $DAGGER_ROUNDS, "dagger_episodes": $DAGGER_EPISODES, "dagger_epochs": $DAGGER_EPOCHS, "deterministic": "$DETERMINISTIC",
   "gpu": "${GPU:-all}", "data_workers": $DATA_WORKERS, "workers": $WORKERS,
   "repo_commit": sh("git -C '$REPO' rev-parse HEAD"), "patches": "$(cat "$WORK/patches.sha" 2>/dev/null || true)", "host": platform.node(), "arch": platform.machine(),
