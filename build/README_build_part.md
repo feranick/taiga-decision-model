@@ -45,6 +45,8 @@ Relative `--model` and `--goals` paths are looked up in the current directory fi
 | `--name` | all goals | Build only this goal from the file |
 | `--out` | `parts` | Directory for the `.FCStd` files |
 | `--quiet` | off | Print only the result line for each part |
+| `--check` | off | Only check that each goal can be built (the teacher builds the target); no model needed, no files written |
+| `--no-step`, `--no-gui-data` | off | Skip the STEP export / the added view data |
 
 The exit code is `0` if every part succeeded and `1` otherwise, so the script can be used in other scripts and CI.
 
@@ -90,6 +92,16 @@ A goal file is a JSON object of named goals. Each goal is an ordered list of fea
 ```
 
 `example_goals.json` (in this folder) has three goals (bracket plate, spacer, bolt-circle disc). The upstream repo has six more in `showcase/goals.json` (flange, hex nut, enclosure, mounting plate, washer, slotted wheel).
+
+`example_goals_engine.json` is a parts kit for a small single-cylinder four-stroke engine (40 mm bore), one goal per part: piston, cylinder block, head gasket, cylinder head, valve cover, crankcase half, connecting rod, crank web, flywheel, port flange and valve spring retainer. Taiga-S1 builds one PartDesign Body per goal and can only add features on the top face, so the parts are simplified: no piston-pin bore, ring grooves or cooling fins (side features), no horizontal crank bore, and the piston and valve cover come out as open cups (the shell removes the top face, so read the piston upside down). Putting the parts together is outside what Taiga-S1 does. Check the kit first, then build it:
+
+```bash
+.venv/bin/python <repo>/build/taiga_build_part.py --goals <repo>/build/example_goals_engine.json --check
+.venv/bin/python <repo>/build/taiga_build_part.py --model runs/seed2/hf \
+    --goals <repo>/build/example_goals_engine.json --out parts/engine
+```
+
+A goal that can't be built is reported as `INFEASIBLE` and the script moves on to the next one.
 
 ### Feature types
 
@@ -157,4 +169,4 @@ It saves a screenshot and the `.FCStd` to `runs/gui_demo/`. `--delay` sets the p
 
 | Script | Version |
 |---|---|
-| `taiga_build_part.py` | 2026.10.05.2 |
+| `taiga_build_part.py` | 2026.10.05.3 |

@@ -1,0 +1,95 @@
+{
+  "engine_piston": {
+    "features": [
+      {"kind": "base_cyl", "params": {"r": 20, "h": 30}},
+      {"kind": "shell", "params": {"t": 2}}
+    ]
+  },
+  "engine_cylinder_block": {
+    "features": [
+      {"kind": "base_box", "params": {"w": 70, "d": 70, "h": 30}},
+      {"kind": "hole", "params": {"r": 20.5, "x": 0, "y": 0}},
+      {"kind": "hole", "params": {"r": 3, "x": 29, "y": 0}},
+      {"kind": "polar_pattern", "params": {"n": 4}},
+      {"kind": "chamfer_top", "params": {"size": 1}}
+    ]
+  },
+  "engine_head_gasket": {
+    "features": [
+      {"kind": "base_box", "params": {"w": 70, "d": 70, "h": 2}},
+      {"kind": "hole", "params": {"r": 21, "x": 0, "y": 0}},
+      {"kind": "hole", "params": {"r": 3.2, "x": 29, "y": 0}},
+      {"kind": "polar_pattern", "params": {"n": 4}}
+    ]
+  },
+  "engine_cylinder_head": {
+    "features": [
+      {"kind": "base_box", "params": {"w": 70, "d": 70, "h": 20}},
+      {"kind": "boss_cyl", "params": {"r": 5, "x": -20, "y": -20, "h": 10}},
+      {"kind": "hole", "params": {"r": 7, "x": 0, "y": 0}},
+      {"kind": "hole", "params": {"r": 5, "x": 16, "y": 0}},
+      {"kind": "mirror", "params": {}},
+      {"kind": "hole", "params": {"r": 3.2, "x": 29, "y": 0}},
+      {"kind": "polar_pattern", "params": {"n": 4}},
+      {"kind": "chamfer_top", "params": {"size": 1}}
+    ]
+  },
+  "engine_valve_cover": {
+    "features": [
+      {"kind": "base_box", "params": {"w": 70, "d": 70, "h": 15}},
+      {"kind": "shell", "params": {"t": 2}}
+    ]
+  },
+  "engine_crankcase_half": {
+    "features": [
+      {"kind": "base_box", "params": {"w": 80, "d": 60, "h": 25}},
+      {"kind": "pocket_rect", "params": {"w": 50, "d": 40, "x": 0, "y": 0, "depth": 15}},
+      {"kind": "hole", "params": {"r": 12, "x": 0, "y": 0}},
+      {"kind": "hole", "params": {"r": 3, "x": -24, "y": -25}},
+      {"kind": "linear_pattern", "params": {"n": 3, "length": 48}},
+      {"kind": "fillet_top", "params": {"r": 1.5}}
+    ]
+  },
+  "engine_connecting_rod": {
+    "features": [
+      {"kind": "base_box", "params": {"w": 80, "d": 24, "h": 8}},
+      {"kind": "hole", "params": {"r": 8, "x": -28, "y": 0}},
+      {"kind": "hole", "params": {"r": 5, "x": 28, "y": 0}},
+      {"kind": "pocket_rect", "params": {"w": 24, "d": 10, "x": 0, "y": 0, "depth": 3}},
+      {"kind": "chamfer_top", "params": {"size": 0.5}}
+    ]
+  },
+  "engine_crank_web": {
+    "features": [
+      {"kind": "base_cyl", "params": {"r": 30, "h": 10}},
+      {"kind": "hole_std", "params": {"r": 6, "x": 0, "y": 0}},
+      {"kind": "hole", "params": {"r": 5, "x": 18, "y": 0}},
+      {"kind": "chamfer_top", "params": {"size": 0.8}}
+    ]
+  },
+  "engine_flywheel": {
+    "features": [
+      {"kind": "base_cyl", "params": {"r": 40, "h": 12}},
+      {"kind": "hole_std", "params": {"r": 5, "x": 0, "y": 0}},
+      {"kind": "pocket_rect", "params": {"w": 3, "d": 2, "x": 5.5, "y": 0, "depth": 8}},
+      {"kind": "hole", "params": {"r": 6, "x": 24, "y": 0}},
+      {"kind": "polar_pattern", "params": {"n": 6}},
+      {"kind": "chamfer_top", "params": {"size": 1}}
+    ]
+  },
+  "engine_port_flange": {
+    "features": [
+      {"kind": "base_box", "params": {"w": 40, "d": 30, "h": 8}},
+      {"kind": "hole", "params": {"r": 8, "x": 0, "y": 0}},
+      {"kind": "hole", "params": {"r": 2.5, "x": 14, "y": 0}},
+      {"kind": "mirror", "params": {}},
+      {"kind": "chamfer_top", "params": {"size": 0.8}}
+    ]
+  },
+  "engine_valve_spring_retainer": {
+    "features": [
+      {"kind": "base_ring", "params": {"ri": 4, "ro": 10, "h": 4}},
+      {"kind": "chamfer_top", "params": {"size": 0.5}}
+    ]
+  }
+}

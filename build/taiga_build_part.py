@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.05.2
+Version: 2026.10.05.3
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -14,7 +14,10 @@ repo (~/taiga/taiga-s1), so they work from any directory:
         --goals showcase/goals.json --name flange --out parts
 
 --model: exported dir (runs/seed<N>/hf), a .pt checkpoint, or shhivv/taiga-s1.
---goals: JSON {name: goal}; see showcase/goals.json and example_goals.json.
+--goals: JSON {name: goal}; see showcase/goals.json, example_goals.json and
+         example_goals_engine.json.
+--check: only check that every goal can be built (the teacher builds the target
+         solid); no model is loaded and no parts are written.
 
 Output per part: <name>.FCStd and <name>.step. The worker runs FreeCAD without a GUI,
 so the saved document has no GuiDocument.xml (view settings); FreeCAD then opens it
@@ -36,7 +39,7 @@ from xml.sax.saxutils import quoteattr
 
 from freecad_s1.model.net import from_pretrained, load_checkpoint
 from freecad_s1.rollout import Policy
-from freecad_s1.runtime.client import FreeCADEnv
+from freecad_s1.runtime.client import FreeCADEnv, WorkerError
 from freecad_s1.runtime.fcenv import REPO_ROOT, freecad_env, freecad_python
 from freecad_s1.schema import Goal, State
 
@@ -137,6 +140,7 @@ def main() -> None:
     ap.add_argument("--quiet", action="store_true", help="only print the result line per part")
     ap.add_argument("--no-gui-data", action="store_true", help="don't add GuiDocument.xml to the .FCStd")
     ap.add_argument("--no-step", action="store_true", help="don't export a .step file")
+    ap.add_argument("--check", action="store_true", help="only check that the goals can be built")
     args = ap.parse_args()
 
     if not (os.environ.get("FREECAD_PYTHON") and os.environ.get("FREECAD_LIB")):
@@ -144,9 +148,8 @@ def main() -> None:
     goals_path = local_path(args.goals)
     if goals_path is None:
         sys.exit(f"error: goals file not found: {args.goals}\n  looked in {Path.cwd()} and {REPO_ROOT}")
-    model = load_model(args.model)
-    policy = Policy(model, "cpu")
     goals = json.loads(goals_path.read_text())
+    policy = None if args.check else Policy(load_model(args.model), "cpu")
     if args.name and args.name not in goals:
         sys.exit(f"error: no goal named '{args.name}' in {goals_path}; available: {', '.join(goals)}")
     names = [args.name] if args.name else list(goals)
@@ -160,9 +163,20 @@ def main() -> None:
             spec = dict(goals[name])
             spec.setdefault("scale", base_scale(spec))
             spec.setdefault("level", 3)
-            r = env.call({"op": "reset", "goal": spec,
-                          "start": {"doc_open": True, "workbench": "PartDesignWorkbench"}})
+            try:
+                r = env.call({"op": "reset", "goal": spec,
+                              "start": {"doc_open": True, "workbench": "PartDesignWorkbench"}})
+            except WorkerError as exc:
+                failures += 1
+                if env.proc.poll() is not None:  # the worker died (FreeCAD crash): start a new one
+                    env = FreeCADEnv()
+                print(f"\n{name}: INFEASIBLE  {exc}")
+                continue
             goal = Goal.from_json(r["goal"])
+            if args.check:
+                print(f"{name}: OK  {len(goal.features)} features, budget {r['budget']} steps, "
+                      f"target volume {goal.target.volume:.0f} mm3, bbox {tuple(round(x, 1) for x in goal.target.bbox)}")
+                continue
             print(f"\n== {name}: " + " -> ".join(f"{f.kind}{json.dumps(f.params)}" for f in goal.features))
             state, actions, expert = State.from_json(r["state"]), r["actions"], r["expert"]
             steps = agree = 0
