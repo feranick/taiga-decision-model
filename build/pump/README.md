@@ -27,7 +27,7 @@ The brochure has no dimensional drawings, so the other dimensions come from the 
 
 Taiga-S1 builds one PartDesign Body per goal and adds features only on the top face (see `../README_build_part.md`):
 
-- **Casing:** a solid block with the two top ports and the priming port drilled through. The internal volute, the separation chamber and the side openings for the covers are not modeled.
+- **Casing:** a solid block (360 × 260 × 220 mm) with the two top ports and the priming port drilled through. The ports are 210 mm apart so the two Ø200 DN80 flanges fit side by side, with the priming cover between them. The internal volute, the separation chamber and the side openings for the covers are not modeled.
 - **Impeller:** a back shroud with 5 straight radial blades and a shaft bore. Real blades are curved; there is no hub boss.
 - **Motor:** a plain cylinder with the shaft on top. No cooling fins, terminal box or feet.
 - **Parts outside the training sizes:** the model was trained on parts up to about 80 mm, while this kit goes up to 300 mm. Its inputs are normalized by part size, so this should matter little, but expect a lower success rate than with the engine kit. The impeller (a patterned boss) is also a combination never seen in training.
@@ -42,3 +42,15 @@ cd ~/taiga/taiga-s1 && source ~/taiga/freecad.env
 ```
 
 `--check` confirms each goal can be built before running the model. The port flange is built once and used for both suction and discharge.
+
+## Assemble
+
+`assembly_pump.json` puts the parts together as a close-coupled pump: shaft along X at 140 mm height, casing on the −X side with both ports on top (suction with gasket, check-valve flap and flange; discharge with gasket and flange), the priming cover between them, the inspection cover on the front face, the wear plate and impeller inside the casing (shown through the semi-transparent casing), and the motor flange, motor and two mounting feet on the +X side.
+
+```bash
+source ~/taiga/freecad.env && cd ~/taiga/taiga-s1
+"$FREECAD_PYTHON" <repo>/build/taiga_assemble.py --parts parts/pump --spec <repo>/build/pump/assembly_pump.json
+"$FREECAD_PYTHON" <repo>/build/taiga_assemble.py --parts parts/pump --spec <repo>/build/pump/assembly_pump.json --explode 1
+```
+
+The discharge flange overhangs the casing's motor end, so the motor flange sits 30 mm behind the casing, bridged by the motor shaft. A real S 80 has a bearing bracket there.

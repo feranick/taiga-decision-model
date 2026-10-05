@@ -105,7 +105,7 @@ A goal file is a JSON object of named goals. Each goal is an ordered list of fea
 
 A goal that can't be built is reported as `INFEASIBLE` and the script moves on to the next one.
 
-`pump/example_goals_pump.json` is a parts kit for a Victor Pumps S 80 self-priming centrifugal pump (DN80), derived from the manufacturer's brochure and the relevant flange and motor standards; `pump/README.md` lists where each dimension comes from.
+`pump/example_goals_pump.json` is a parts kit for a Victor Pumps S 80 self-priming centrifugal pump (DN80), derived from the manufacturer's brochure and the relevant flange and motor standards; `pump/README.md` lists where each dimension comes from, and `pump/assembly_pump.json` assembles it.
 
 ### Feature types
 

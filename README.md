@@ -49,6 +49,7 @@ taiga-decision-model/
     │   └── assembly_engine.json      assembly spec for the engine kit
     ├── pump/
     │   ├── example_goals_pump.json   parts kit for a Victor Pumps S 80 self-priming pump (from the brochure)
+    │   ├── assembly_pump.json        assembly spec for the pump kit
     │   └── README.md                 where each dimension comes from
     └── taiga_assemble.py         places built parts into one assembly (.FCStd + .step)
 ```
