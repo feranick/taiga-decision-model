@@ -1,0 +1,89 @@
+{
+  "pump_casing": {
+    "features": [
+      {"kind": "base_box", "params": {"w": 260, "d": 200, "h": 220}},
+      {"kind": "hole", "params": {"r": 40, "x": 65, "y": 0}},
+      {"kind": "mirror", "params": {}},
+      {"kind": "hole", "params": {"r": 12, "x": 0, "y": 60}},
+      {"kind": "chamfer_top", "params": {"size": 2}}
+    ]
+  },
+  "pump_port_flange_dn80": {
+    "features": [
+      {"kind": "base_cyl", "params": {"r": 100, "h": 20}},
+      {"kind": "hole_std", "params": {"r": 45, "x": 0, "y": 0}},
+      {"kind": "hole", "params": {"r": 9, "x": 80, "y": 0}},
+      {"kind": "polar_pattern", "params": {"n": 8}},
+      {"kind": "chamfer_top", "params": {"size": 1.5}}
+    ]
+  },
+  "pump_flange_gasket_dn80": {
+    "features": [
+      {"kind": "base_ring", "params": {"ri": 45, "ro": 71, "h": 3}}
+    ]
+  },
+  "pump_impeller": {
+    "features": [
+      {"kind": "base_cyl", "params": {"r": 80, "h": 6}},
+      {"kind": "boss_box", "params": {"w": 55, "d": 8, "x": 47.5, "y": 0, "h": 22}},
+      {"kind": "polar_pattern", "params": {"n": 5}},
+      {"kind": "hole_std", "params": {"r": 14, "x": 0, "y": 0}}
+    ]
+  },
+  "pump_wear_plate": {
+    "features": [
+      {"kind": "base_cyl", "params": {"r": 85, "h": 8}},
+      {"kind": "hole", "params": {"r": 40, "x": 0, "y": 0}},
+      {"kind": "hole", "params": {"r": 5, "x": 70, "y": 0}},
+      {"kind": "polar_pattern", "params": {"n": 6}},
+      {"kind": "chamfer_top", "params": {"size": 0.5}}
+    ]
+  },
+  "pump_inspection_cover": {
+    "features": [
+      {"kind": "base_cyl", "params": {"r": 90, "h": 15}},
+      {"kind": "boss_cyl", "params": {"r": 20, "x": 0, "y": 0, "h": 25}},
+      {"kind": "hole", "params": {"r": 8, "x": 72, "y": 0}},
+      {"kind": "polar_pattern", "params": {"n": 6}},
+      {"kind": "chamfer_top", "params": {"size": 1}}
+    ]
+  },
+  "pump_priming_cover": {
+    "features": [
+      {"kind": "base_cyl", "params": {"r": 35, "h": 12}},
+      {"kind": "boss_box", "params": {"w": 50, "d": 10, "x": 0, "y": 0, "h": 15}},
+      {"kind": "chamfer_top", "params": {"size": 1}}
+    ]
+  },
+  "pump_check_valve_flap": {
+    "features": [
+      {"kind": "base_cyl", "params": {"r": 48, "h": 5}},
+      {"kind": "boss_cyl", "params": {"r": 25, "x": 0, "y": 0, "h": 6}},
+      {"kind": "chamfer_top", "params": {"size": 0.5}}
+    ]
+  },
+  "pump_motor_flange_ff215": {
+    "features": [
+      {"kind": "base_cyl", "params": {"r": 125, "h": 16}},
+      {"kind": "hole", "params": {"r": 90, "x": 0, "y": 0}},
+      {"kind": "hole", "params": {"r": 7, "x": 107.5, "y": 0}},
+      {"kind": "polar_pattern", "params": {"n": 4}},
+      {"kind": "chamfer_top", "params": {"size": 1}}
+    ]
+  },
+  "pump_motor_112m": {
+    "features": [
+      {"kind": "base_cyl", "params": {"r": 110, "h": 300}},
+      {"kind": "boss_cyl", "params": {"r": 14, "x": 0, "y": 0, "h": 60}},
+      {"kind": "chamfer_top", "params": {"size": 3}}
+    ]
+  },
+  "pump_mounting_foot": {
+    "features": [
+      {"kind": "base_box", "params": {"w": 300, "d": 60, "h": 15}},
+      {"kind": "hole", "params": {"r": 7, "x": 120, "y": 0}},
+      {"kind": "mirror", "params": {}},
+      {"kind": "chamfer_top", "params": {"size": 1}}
+    ]
+  }
+}
