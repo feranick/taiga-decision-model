@@ -6,7 +6,7 @@ Extends Taiga-S1's vocabulary so it can build real parts like the Victor S 80 pu
 
 | # | Primitive | State |
 |---|---|---|
-| 1 | **Features on any planar face** (±X, ±Y, ±Z): holes, pockets, bosses on side faces; new evaluation suite `side` | Patch 0001. Pure-Python tests pass; FreeCAD tests run on your machines during `setup` |
+| 1 | **Features on any planar face** (±X, ±Y, ±Z): holes, pockets, bosses on side faces; new evaluation suite `side` | Patch 0001. All 38 tests pass, including the FreeCAD ones (DGX, FreeCAD 1.1.3, 2026-10-05) |
 | 2 | Sketches on origin planes with an offset (datum planes inside the part) | Planned |
 | 3 | Curved outlines: arc, slot, closed polyline, spline (drawn as one command from the goal's data) | Planned |
 | 4 | Pad/pocket of a given depth from any face; revolve and groove with a profile | Planned |
@@ -90,6 +90,6 @@ Compare the original suites between the two with `../training/taiga_aggregate.py
 
 | File | Version |
 |---|---|
-| `train_expanded.sh` | 2026.10.05.1 |
+| `train_expanded.sh` | 2026.10.05.2 |
 | `dev/*.sh` | 2026.10.05.1 |
 | `patches/` | 0001 (features on any planar face), against upstream `4a31bcf` |

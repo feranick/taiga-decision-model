@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
 # taiga_repro_DGX.sh — reproduce Taiga-S1 from scratch on an NVIDIA DGX Spark
-# (DGX OS / Ubuntu 24.04 noble), with FreeCAD 1.0.x from ppa:bleedingedge/noble-spark-bleed
-# Version: 2026.10.05.2
+# (DGX OS / Ubuntu 24.04 noble), with FreeCAD 1.1.x from ppa:bleedingedge/noble-spark-bleed (Qt5 build)
+# Version: 2026.10.05.3
 #
 # Pipeline (mirrors upstream scripts/train_final.sh + final_eval.sh):
 #   setup   : uv + Python 3.11 venv, PyTorch (CUDA 13, aarch64), FreeCAD from
@@ -37,7 +37,7 @@
 #   WORKERS=18          FreeCAD workers for DAgger / eval / calibration
 #   REPO_REF=a6e81d3    upstream commit to pin (verified 2026-10-02)
 #   PPA=ppa:bleedingedge/noble-spark-bleed   FREECAD_PKG=freecad
-#   FREECAD_EXPECT=1.0  FreeCAD series expected from the PPA (warns if different)
+#   FREECAD_EXPECT=1.1  FreeCAD series expected from the PPA (warns if different)
 #   TORCH_INDEX=https://download.pytorch.org/whl/cu130
 # FreeCAD always comes from the PPA: FREECAD_PYTHON / FREECAD_LIB are ignored by
 # setup, and FreeCAD development builds (calendar versions such as 26.x) are
@@ -76,7 +76,7 @@ TORCH_INDEX=${TORCH_INDEX:-https://download.pytorch.org/whl/cu130}
 TEST_SEED=3
 FREECAD_PKG=${FREECAD_PKG:-freecad}
 PPA=${PPA:-ppa:bleedingedge/noble-spark-bleed}
-FREECAD_EXPECT=${FREECAD_EXPECT:-1.0}
+FREECAD_EXPECT=${FREECAD_EXPECT:-1.1}
 TEST_WORKERS=8          # fixed so the test set is identical across machines
 SUITES=${SUITES:-"iid comp comp2 comp3 len len2 len3 len4 len5 len6"}   # len4-6: 13/15/17-feature stress suites
 PATCHES=${PATCHES:-}   # folder with a git patch series applied on top of REPO_REF (taiga-expanded)
@@ -513,7 +513,7 @@ def sh(c):
     try: return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
     except Exception: return None
 json.dump({
-  "script_version": "2026.10.05.2", "script": "taiga_repro_DGX.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
+  "script_version": "2026.10.05.3", "script": "taiga_repro_DGX.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
   "dagger_rounds": $DAGGER_ROUNDS, "dagger_episodes": $DAGGER_EPISODES, "dagger_epochs": $DAGGER_EPOCHS, "deterministic": "$DETERMINISTIC",
   "data_workers": $DATA_WORKERS, "workers": $WORKERS,
   "repo_commit": sh("git -C '$REPO' rev-parse HEAD"), "patches": "$(cat "$WORK/patches.sha" 2>/dev/null || true)", "host": platform.node(), "arch": platform.machine(),

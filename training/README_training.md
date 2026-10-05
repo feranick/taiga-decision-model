@@ -6,7 +6,7 @@ Upstream was renamed from `shhivv/taiga-s1` to [`shhivv/biome-s1`](https://githu
 
 | Script | Machine | CPU / RAM | OS | FreeCAD source | GPU |
 |---|---|---|---|---|---|
-| `taiga_repro_DGX.sh` | NVIDIA DGX Spark (aarch64) | GB10 Grace, 20 Arm cores / 128 GB unified | DGX OS / Ubuntu 24.04 (noble) | `ppa:bleedingedge/noble-spark-bleed` (1.0.x) | GB10, CUDA 13 |
+| `taiga_repro_DGX.sh` | NVIDIA DGX Spark (aarch64) | GB10 Grace, 20 Arm cores / 128 GB unified | DGX OS / Ubuntu 24.04 (noble) | `ppa:bleedingedge/noble-spark-bleed` (1.1.x, Qt5 build) | GB10, CUDA 13 |
 | `taiga_repro_5060ti.sh` | PowerSpec G467 | Intel Core i7-8700K @ 3.70 GHz (12 cores) / 40 GB | Ubuntu 26.04 (resolute) | `ppa:bleedingedge/resolute-bleed` (1.1.x) | RTX 5060 Ti (Blackwell, sm_120) |
 | `taiga_repro_Quadro6000.sh` | Dell Precision 7920 Tower | Intel Xeon Gold 6230 @ 2.10 GHz (40 cores) / 64 GB | Ubuntu 26.04 (resolute) | `ppa:bleedingedge/resolute-bleed` (1.1.x) | 2 × Quadro RTX 6000 (Turing, sm_75) |
 
@@ -40,7 +40,7 @@ chmod +x taiga_repro_DGX.sh
 ./taiga_repro_DGX.sh data train export eval calib
 SEED=12 ./taiga_repro_DGX.sh data train export eval calib   # on the second Spark: independent replicate
 ```
-The DGX script is specific to Ubuntu 24.04 (noble) and always installs FreeCAD 1.0.x from `ppa:bleedingedge/noble-spark-bleed`. It ignores `FREECAD_PYTHON`/`FREECAD_LIB`, doesn't use conda, and refuses FreeCAD development builds (see [Known issues](#known-issues)).
+The DGX script is specific to Ubuntu 24.04 (noble) and always installs FreeCAD 1.1.x (a Qt5 build of 1.1.3) from `ppa:bleedingedge/noble-spark-bleed`. It ignores `FREECAD_PYTHON`/`FREECAD_LIB`, doesn't use conda, and refuses FreeCAD development builds (see [Known issues](#known-issues)).
 
 ### PowerSpec G467 (RTX 5060 Ti)
 ```bash
@@ -101,7 +101,7 @@ Run them one at a time or several in sequence, for example `./script.sh train ex
 | `TORCH_INDEX` | auto | Forces a specific PyTorch wheel index (e.g. `https://download.pytorch.org/whl/cu128`) |
 | `FREECAD_PYTHON`, `FREECAD_LIB` | auto | *(5060ti, Quadro)* Set both to use an existing FreeCAD and skip installing or detecting one. Ignored by the DGX script. |
 | `PPA`, `FREECAD_PKG` | per script, `freecad` | Which PPA and package to install (`noble-spark-bleed` on the DGX, `resolute-bleed` on the others) |
-| `FREECAD_EXPECT` | `1.0` | *(DGX)* FreeCAD series expected from the PPA; setup warns if the installed version differs |
+| `FREECAD_EXPECT` | `1.1` | *(DGX)* FreeCAD series expected from the PPA; setup warns if the installed version differs |
 | `GPU` | all | *(Quadro)* Pins the run to one GPU (sets `CUDA_VISIBLE_DEVICES`) |
 | `PAIR_SEEDS` | `"2 12"` | *(Quadro)* Seeds used by `pair` |
 | `PURGE` | `0` | *(uninstall)* `1` also deletes trained models, evals and logs |
@@ -213,7 +213,7 @@ Only installs made by these script versions are recorded. Anything installed by 
 
 ## Notes and troubleshooting
 
-- **Each platform gets its own model.** Runs aren't meant to match upstream: each OS and FreeCAD version (noble with 1.0.x, resolute with 1.1.x) produces its own data and model. Compare models only within the same platform, using the FreeCAD and OS versions recorded in `manifest.json`. The `reference_hf` evaluation shows how the published model performs on each machine's FreeCAD.
+- **Each platform gets its own model.** Runs aren't meant to match upstream: each OS and FreeCAD version (noble with 1.1.x built on Qt5, resolute with 1.1.x on Qt6) produces its own data and model. Compare models only within the same platform, using the FreeCAD and OS versions recorded in `manifest.json`. The `reference_hf` evaluation shows how the published model performs on each machine's FreeCAD.
 - **"FreeCAD import failed".** Setup creates a PartDesign Body and a Sketch headless before running the tests. Upstream's tests silently *skip* when FreeCAD is missing, so a passing pytest alone proves nothing. If automatic detection fails, set `FREECAD_PYTHON` and `FREECAD_LIB` yourself.
 - **"GPU present but torch can't use it"** (5060ti) or **"no PyTorch build ran on these GPUs"** (Quadro). Check the driver version with `nvidia-smi`, then force a different build with `TORCH_INDEX`, for example `cu128` or `cu126`.
 - **The GPU is not the bottleneck.** The model is small, so most of the time goes into the FreeCAD steps (data generation, DAgger and evaluation), which run on the CPU. Upstream reports about 25 minutes of training on an Apple M-series Mac.
@@ -332,7 +332,7 @@ sudo rm /usr/lib/freecad-python3/Mod
 
 `~/taiga/fcenv` and `~/taiga/mamba` are no longer used. Remove them to free space, or let `uninstall` do it.
 
-**Verify.** `setup` logs `FreeCAD 1.0.x OK` and `test_runtime.py` passes: `16 passed`, no failures or skips.
+**Verify.** `setup` logs `FreeCAD 1.1.x OK` and `test_runtime.py` passes: `16 passed`, no failures or skips.
 
 ---
 
@@ -354,7 +354,7 @@ Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header 
 
 | Script | Version |
 |---|---|
-| `taiga_repro_DGX.sh` | 2026.10.05.2 |
+| `taiga_repro_DGX.sh` | 2026.10.05.3 |
 | `taiga_repro_5060ti.sh` | 2026.10.05.2 |
 | `taiga_repro_Quadro6000.sh` | 2026.10.05.2 |
 | `taiga_aggregate.py` | 2026.10.04.3 |

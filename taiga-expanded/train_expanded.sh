@@ -3,7 +3,7 @@
 # the patches' BASE commit with the patch series applied, in its own WORK folder, with the
 # expanded evaluation suites added. BASELINE=1 runs the same upstream commit unpatched
 # (the reference for "no regression on the original suites").
-# Version: 2026.10.05.1
+# Version: 2026.10.05.2
 #
 # Usage:   ./train_expanded.sh <dgx|5060ti|quadro> <stages...>
 #   e.g.   ./train_expanded.sh 5060ti setup
@@ -14,7 +14,7 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/.." && pwd)
-machine=${1:-}; shift || true
+machine=$(tr "[:upper:]" "[:lower:]" <<<"${1:-}"); shift || true   # dgx, DGX, ... all work
 case $machine in
   dgx) script=taiga_repro_DGX.sh ;;
   5060ti) script=taiga_repro_5060ti.sh ;;

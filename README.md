@@ -71,7 +71,7 @@ taiga-decision-model/
 
 | Machine | OS | FreeCAD | GPU | Script |
 |---|---|---|---|---|
-| NVIDIA DGX Spark (aarch64) | DGX OS / Ubuntu 24.04 (noble) | 1.0.x from `ppa:bleedingedge/noble-spark-bleed` | GB10, CUDA 13 | `training/taiga_repro_DGX.sh` |
+| NVIDIA DGX Spark (aarch64) | DGX OS / Ubuntu 24.04 (noble) | 1.1.x (Qt5 build) from `ppa:bleedingedge/noble-spark-bleed` | GB10, CUDA 13 | `training/taiga_repro_DGX.sh` |
 | PowerSpec G467 | Ubuntu 26.04 (resolute) | 1.1.x from `ppa:bleedingedge/resolute-bleed` | RTX 5060 Ti (Blackwell) | `training/taiga_repro_5060ti.sh` |
 | Dell Precision 7920 Tower | Ubuntu 26.04 (resolute) | 1.1.x from `ppa:bleedingedge/resolute-bleed` | 2 × Quadro RTX 6000 (Turing) | `training/taiga_repro_Quadro6000.sh` |
 
