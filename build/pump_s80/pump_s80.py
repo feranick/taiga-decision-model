@@ -2,10 +2,10 @@
 """pump_s80.py — parametric model of the Victor Pumps S 80 self-priming centrifugal pump
 (bare-shaft pump end: casing with volute, impeller, wear plate, covers, bearing bracket,
 shaft, seal and bearings). Reference geometry for extending Taiga-S1.
-Version: 2026.10.05.1
+Version: 2026.10.05.3
 
 Runs with any Python >= 3.10 that has OpenCASCADE's Python bindings (OCP):
-    pip install cadquery-ocp            # or: uv pip install --python <venv>/bin/python cadquery-ocp
+    pip install 'cadquery-ocp>=7.9,<8'  # or: uv pip install --python <venv>/bin/python 'cadquery-ocp>=7.9,<8'
     python pump_s80.py --out parts/pump_s80
 Writes one STEP file per part, in pump coordinates (so the parts are already assembled),
 plus pump_s80.json, a spec for ../taiga_assemble.py, which builds the FreeCAD document:
@@ -34,13 +34,22 @@ from OCP.BRepGProp import BRepGProp
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism, BRepPrimAPI_MakeRevol
 from OCP.GC import GC_MakeArcOfCircle
-from OCP.GeomAPI import GeomAPI_Interpolate
+from OCP.GeomAbs import GeomAbs_C2
+from OCP.GeomAPI import GeomAPI_PointsToBSpline
 from OCP.GProp import GProp_GProps
 from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pln, gp_Pnt, gp_Trsf, gp_Vec
 from OCP.IFSelect import IFSelect_RetDone
 from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
-from OCP.TColgp import TColgp_HArray1OfPnt
+try:  # OCP 7.x (tested: 7.9.3)
+    from OCP.TColgp import TColgp_Array1OfPnt
+except ImportError:  # OCP 8.x (OCCT 8) dropped the TColgp typedefs; look for the NCollection template instead
+    import OCP.NCollection as _nc
+    _cands = [n for n in dir(_nc) if "Array1" in n and n.endswith("gp_Pnt")]
+    if not _cands:
+        raise ImportError("this OCP build has no array of gp_Pnt; install the tested version: "
+                          "pip install 'cadquery-ocp>=7.9,<8'")
+    TColgp_Array1OfPnt = getattr(_nc, _cands[0])
 from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopLoc import TopLoc_Location
@@ -117,13 +126,13 @@ class Profile:
         return self
 
     def spline(self, pts):
-        arr = TColgp_HArray1OfPnt(1, len(pts) + 1)
+        arr = TColgp_Array1OfPnt(1, len(pts) + 1)
         arr.SetValue(1, self._p(self.cur))
         for i, uv in enumerate(pts, 2):
             arr.SetValue(i, self._p(uv))
-        it = GeomAPI_Interpolate(arr, False, 1e-6)
-        it.Perform()
-        self.edges.append(BRepBuilderAPI_MakeEdge(it.Curve()).Edge())
+        # cubic B-spline through the points (end points exact, inner points within 0.01 mm)
+        curve = GeomAPI_PointsToBSpline(arr, 3, 8, GeomAbs_C2, 1e-2).Curve()
+        self.edges.append(BRepBuilderAPI_MakeEdge(curve).Edge())
         self.cur = pts[-1]
         return self
 

@@ -1,11 +1,11 @@
 #!/bin/bash
 # build_pump_s80.sh — generate the parametric S 80 pump (STEP parts) and assemble it in FreeCAD.
-# Version: 2026.10.05.1
+# Version: 2026.10.05.2
 #
 # Usage:   ./build_pump_s80.sh            Env: OUT (default parts/pump_s80), WORK (default ~/taiga),
 #                                              BASE_TAIGA (default $WORK/taiga-s1)
 # Needs OpenCASCADE's Python bindings in the upstream venv (installed on first run):
-#   uv pip install --python ~/taiga/taiga-s1/.venv/bin/python cadquery-ocp
+#   uv pip install --python ~/taiga/taiga-s1/.venv/bin/python 'cadquery-ocp>=7.9,<8'
 set -uo pipefail
 
 WORK=${WORK:-$HOME/taiga}
@@ -18,9 +18,14 @@ PY=$BASE_TAIGA/.venv/bin/python
 source "$WORK/freecad.env" || { echo "error: $WORK/freecad.env not found; run the training setup first"; exit 1; }
 cd "$BASE_TAIGA" || { echo "error: $BASE_TAIGA not found"; exit 1; }
 
-if ! "$PY" -c "import OCP" 2>/dev/null; then
-  echo "== Installing cadquery-ocp (OpenCASCADE bindings) into $BASE_TAIGA/.venv"
-  uv pip install --python "$PY" cadquery-ocp || { echo "error: could not install cadquery-ocp"; exit 1; }
+# The model is tested with OCP 7.9 (OpenCASCADE 7.9, the same kernel generation as FreeCAD 1.1).
+# OCP 8.x renamed classes the script uses, so anything other than 7.9 is replaced.
+ocp=$("$PY" -c "import OCP; print(OCP.__version__)" 2>/dev/null || true)
+if [[ $ocp != 7.9.* ]]; then
+  echo "== OCP ${ocp:-not installed}; installing cadquery-ocp 7.9 into $BASE_TAIGA/.venv"
+  uv pip install --python "$PY" "cadquery-ocp>=7.9,<8" || { echo "error: could not install cadquery-ocp 7.9"; exit 1; }
+  ocp=$("$PY" -c "import OCP; print(OCP.__version__)" 2>/dev/null || true)
+  [[ $ocp == 7.9.* ]] || { echo "error: OCP is still ${ocp:-missing}; another package provides it:"; uv pip list --python "$PY" | grep -i ocp; exit 1; }
 fi
 
 echo "== Generating the S 80 parts"

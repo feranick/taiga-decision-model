@@ -15,13 +15,13 @@ Unlike `../pump/` (a Taiga-S1 goal kit, limited to top-face features), this is d
 or step by step:
 
 ```bash
-uv pip install --python ~/taiga/taiga-s1/.venv/bin/python cadquery-ocp     # OpenCASCADE bindings, once
+uv pip install --python ~/taiga/taiga-s1/.venv/bin/python 'cadquery-ocp>=7.9,<8'   # OpenCASCADE bindings, once
 ~/taiga/taiga-s1/.venv/bin/python pump_s80.py --out parts/pump_s80 --cutaway --preview
 source ~/taiga/freecad.env
 "$FREECAD_PYTHON" ../taiga_assemble.py --parts parts/pump_s80 --spec parts/pump_s80/pump_s80.json
 ```
 
-The script needs only Python ≥ 3.10 with `cadquery-ocp` (OpenCASCADE 7.9, the same kernel as FreeCAD 1.1). It writes one STEP file per part, already in pump coordinates, plus `pump_s80.json` for `taiga_assemble.py`, which builds `pump_s80.FCStd` (and `pump_s80_exploded.FCStd`) with colors. `--cutaway` adds `casing_cutaway.step` (the casing cut in half, like the brochure's cutaway photo). `--preview` writes a 3D view and three cross-sections as PNG. Each part is checked: single valid solid, volume printed.
+The script needs only Python ≥ 3.10 with `cadquery-ocp` 7.9 (OpenCASCADE 7.9, the same kernel generation as FreeCAD 1.1). OCP 8.x renamed classes the script uses; `build_pump_s80.sh` installs 7.9 when it finds another version. Your system's OpenCASCADE libraries aren't enough on their own: Python needs bindings to them, and OCP ships its own copy of the kernel. It writes one STEP file per part, already in pump coordinates, plus `pump_s80.json` for `taiga_assemble.py`, which builds `pump_s80.FCStd` (and `pump_s80_exploded.FCStd`) with colors. `--cutaway` adds `casing_cutaway.step` (the casing cut in half, like the brochure's cutaway photo). `--preview` writes a 3D view and three cross-sections as PNG. Each part is checked: single valid solid, volume printed.
 
 ## Internal layout
 
