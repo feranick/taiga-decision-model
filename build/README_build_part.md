@@ -68,6 +68,8 @@ flange: SUCCESS  IoU 1.0000  done True  steps 27  agreement 27/27  3.1s  -> /hom
 
 The `.FCStd` file is saved even when the build fails, so you can inspect what went wrong.
 
+Next to each `.FCStd` the script writes a `.step` file of the finished part (`--no-step` to skip). The FreeCAD worker runs without a GUI, so the saved document has no view data and FreeCAD would open it with every object hidden; the script adds a minimal `GuiDocument.xml` that shows the Body and its final feature (`--no-gui-data` to skip).
+
 ---
 
 ## Writing your own goals
@@ -155,4 +157,4 @@ It saves a screenshot and the `.FCStd` to `runs/gui_demo/`. `--delay` sets the p
 
 | Script | Version |
 |---|---|
-| `taiga_build_part.py` | 2026.10.05.1 |
+| `taiga_build_part.py` | 2026.10.05.2 |

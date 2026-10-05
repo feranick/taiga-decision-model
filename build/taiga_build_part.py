@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.05.1
+Version: 2026.10.05.2
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -15,20 +15,29 @@ repo (~/taiga/taiga-s1), so they work from any directory:
 
 --model: exported dir (runs/seed<N>/hf), a .pt checkpoint, or shhivv/taiga-s1.
 --goals: JSON {name: goal}; see showcase/goals.json and example_goals.json.
+
+Output per part: <name>.FCStd and <name>.step. The worker runs FreeCAD without a GUI,
+so the saved document has no GuiDocument.xml (view settings); FreeCAD then opens it
+with every object hidden. The script adds a minimal GuiDocument.xml that shows the
+objects FreeCAD marked visible (the Body's final feature). --no-gui-data skips this.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
+import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
+from xml.sax.saxutils import quoteattr
 
 from freecad_s1.model.net import from_pretrained, load_checkpoint
 from freecad_s1.rollout import Policy
 from freecad_s1.runtime.client import FreeCADEnv
-from freecad_s1.runtime.fcenv import REPO_ROOT
+from freecad_s1.runtime.fcenv import REPO_ROOT, freecad_env, freecad_python
 from freecad_s1.schema import Goal, State
 
 
@@ -53,6 +62,61 @@ def load_model(arg: str):
     return from_pretrained(arg)  # Hugging Face repo id, e.g. shhivv/taiga-s1
 
 
+def add_gui_document(fcstd: Path) -> int:
+    """Add a minimal GuiDocument.xml so FreeCAD shows the objects whose App-side
+    Visibility is true. Returns the number of visible objects."""
+    with zipfile.ZipFile(fcstd) as z:
+        if "GuiDocument.xml" in z.namelist():
+            return -1
+        doc = z.read("Document.xml").decode("utf-8")
+        members = [(i, z.read(i.filename)) for i in z.infolist()]
+    blocks = [(m.group(1), m.group(2)) for m in re.finditer(r'<Object name="([^"]+)"[^>]*>(.*?)</Object>', doc, re.S)]
+    # Show each Body and its Tip (the finished part), like FreeCAD does after a recompute;
+    # hide origins, sketches and intermediate features. Without a Tip, keep App-side Visibility.
+    tips = {t.group(1) for _, body in blocks
+            for t in [re.search(r'<Property name="Tip"[^>]*>\s*<Link value="([^"]+)"', body)] if t}
+    bodies = {n for n, _ in blocks if n in re.findall(r'<Object type="PartDesign::Body" name="([^"]+)"', doc)}
+    objs = []
+    for name, body in blocks:
+        if tips:
+            vis = name in tips or name in bodies
+        else:
+            v = re.search(r'<Property name="Visibility"[^>]*>\s*<Bool value="(\w+)"', body)
+            vis = bool(v and v.group(1) == "true")
+        objs.append((name, vis))
+    vps = "".join(
+        f'        <ViewProvider name={quoteattr(name)} expanded="0">\n'
+        f'            <Properties Count="1" TransientCount="0">\n'
+        f'                <Property name="Visibility" type="App::PropertyBool">\n'
+        f'                    <Bool value="{"true" if vis else "false"}"/>\n'
+        f'                </Property>\n'
+        f'            </Properties>\n'
+        f'        </ViewProvider>\n' for name, vis in objs)
+    gui = ("<?xml version='1.0' encoding='utf-8'?>\n<Document SchemaVersion=\"1\">\n"
+           f'    <ViewProviderData Count="{len(objs)}">\n{vps}    </ViewProviderData>\n'
+           '    <Camera settings=""/>\n</Document>\n')
+    tmp = fcstd.with_suffix(".tmp")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+        for info, data in members:
+            z.writestr(info, data)
+        z.writestr("GuiDocument.xml", gui)
+    tmp.replace(fcstd)
+    return sum(v for _, v in objs)
+
+
+def export_step(fcstd: Path, step: Path) -> str | None:
+    """Export the Body's final shape as STEP, in a separate FreeCAD process. Returns an error or None."""
+    code = ("import sys, FreeCAD\n"
+            "d = FreeCAD.openDocument(sys.argv[1])\n"
+            "b = [o for o in d.Objects if o.TypeId == 'PartDesign::Body']\n"
+            "s = b[0].Shape if b else None\n"
+            "if s is None or s.isNull(): sys.exit('no Body shape')\n"
+            "s.exportStep(sys.argv[2])\n")
+    py, _ = freecad_python()
+    r = subprocess.run([py, "-c", code, str(fcstd), str(step)], env=freecad_env(), capture_output=True, text=True)
+    return None if r.returncode == 0 and step.is_file() else (r.stderr.strip().splitlines() or ["failed"])[-1]
+
+
 def base_scale(goal: dict) -> float:
     """Largest extent of the base feature; upstream's goals use this as `scale`."""
     f = goal["features"][0]
@@ -71,6 +135,8 @@ def main() -> None:
     ap.add_argument("--name", help="goal to build (default: all goals in the file)")
     ap.add_argument("--out", default="parts", help="directory for the .FCStd files")
     ap.add_argument("--quiet", action="store_true", help="only print the result line per part")
+    ap.add_argument("--no-gui-data", action="store_true", help="don't add GuiDocument.xml to the .FCStd")
+    ap.add_argument("--no-step", action="store_true", help="don't export a .step file")
     args = ap.parse_args()
 
     if not (os.environ.get("FREECAD_PYTHON") and os.environ.get("FREECAD_LIB")):
@@ -119,10 +185,18 @@ def main() -> None:
             sc = env.call({"op": "score"})
             fcstd = out / f"{name}.FCStd"
             env.call({"op": "save", "fcstd": str(fcstd)})
+            extra = []
+            if not args.no_gui_data:
+                n = add_gui_document(fcstd)
+                if n == 0:
+                    extra.append("no visible objects")
+            if not args.no_step:
+                err = export_step(fcstd, fcstd.with_suffix(".step"))
+                extra.append(f"STEP export failed: {err}" if err else f"{fcstd.with_suffix('.step').name}")
             ok = done and sc["match"]
             failures += not ok
             print(f"{name}: {'SUCCESS' if ok else 'FAIL'}  IoU {sc['iou']:.4f}  done {done}  steps {steps}  "
-                  f"agreement {agree}/{steps}  {time.time() - t0:.1f}s  -> {fcstd}")
+                  f"agreement {agree}/{steps}  {time.time() - t0:.1f}s  -> {fcstd}" + (f" (+ {', '.join(extra)})" if extra else ""))
     finally:
         env.close()
     raise SystemExit(1 if failures else 0)
