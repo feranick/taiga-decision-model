@@ -53,6 +53,11 @@ taiga-decision-model/
     │   ├── assembly_pump.json        assembly spec for the pump kit
     │   ├── build_pump.sh             checks, builds and assembles the pump kit
     │   └── README.md                 where each dimension comes from
+    ├── pump_s80/
+    │   ├── pump_s80.py               parametric model of the real S 80 pump end (curved casing, volute, impeller)
+    │   ├── build_pump_s80.sh         generates the STEP parts and assembles them in FreeCAD
+    │   ├── README.md                 internal layout, design rules, dimensions
+    │   └── images/                   3D view and cross-sections
     └── taiga_assemble.py         places built parts into one assembly (.FCStd + .step)
 ```
 
