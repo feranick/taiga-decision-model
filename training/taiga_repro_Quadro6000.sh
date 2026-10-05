@@ -2,7 +2,7 @@
 # =============================================================================
 # taiga_repro_Quadro6000.sh — reproduce Taiga-S1 from scratch on a dual Quadro RTX 6000
 # (Turing, sm_75, 2 x 24 GB) workstation, Ubuntu 24.04 or 26.04, driver 595-open
-# Version: 2026.10.05.4
+# Version: 2026.10.05.5
 #
 # Same pipeline as the Spark/mochi scripts; differences:
 #   - FreeCAD from your PPA matching the release: noble -> bleedingedge/noble-bleed,
@@ -501,7 +501,7 @@ stage_sweep() {
     for s in "${batch[@]}"; do
       g=${GPU:-$i}
       # shellcheck disable=SC2086
-      SEED=$s GPU=$g WORKERS=$w EXP=$EXP "$SELF" $SWEEP_STAGES > "$LOGDIR/sweep_${EXP:+${EXP}_}seed${s}.log" 2>&1 &
+      SEED=$s GPU=$g WORKERS=$w EXP=$EXP bash "$SELF" $SWEEP_STAGES > "$LOGDIR/sweep_${EXP:+${EXP}_}seed${s}.log" 2>&1 &
       pids+=($!); log "  seed $s -> GPU $g (log $LOGDIR/sweep_${EXP:+${EXP}_}seed${s}.log)"
       i=$(( i + 1 ))
     done
@@ -600,7 +600,7 @@ def sh(c):
     try: return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
     except Exception: return None
 json.dump({
-  "script_version": "2026.10.05.4", "script": "taiga_repro_Quadro6000.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
+  "script_version": "2026.10.05.5", "script": "taiga_repro_Quadro6000.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
   "dagger_rounds": $DAGGER_ROUNDS, "dagger_episodes": $DAGGER_EPISODES, "dagger_epochs": $DAGGER_EPOCHS, "deterministic": "$DETERMINISTIC",
   "dagger_perturb": $DAGGER_PERTURB, "dagger_perturb_frac": $DAGGER_PERTURB_FRAC,
   "taiga_env": {k: v for k, v in sorted(os.environ.items()) if k.startswith("TAIGA_")},

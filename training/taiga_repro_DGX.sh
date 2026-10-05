@@ -2,7 +2,7 @@
 # =============================================================================
 # taiga_repro_DGX.sh — reproduce Taiga-S1 from scratch on an NVIDIA DGX Spark
 # (DGX OS / Ubuntu 24.04 noble), with FreeCAD 1.1.x from ppa:bleedingedge/noble-spark-bleed (Qt5 build)
-# Version: 2026.10.05.5
+# Version: 2026.10.05.6
 #
 # Pipeline (mirrors upstream scripts/train_final.sh + final_eval.sh):
 #   setup   : uv + Python 3.11 venv, PyTorch (CUDA 13, aarch64), FreeCAD from
@@ -440,7 +440,7 @@ stage_sweep() {
       log "seed $s already evaluated — skipping"; continue
     fi
     # shellcheck disable=SC2086
-    SEED=$s EXP=$EXP "$SELF" $SWEEP_STAGES || { log "seed $s FAILED"; rc=1; }
+    SEED=$s EXP=$EXP bash "$SELF" $SWEEP_STAGES || { log "seed $s FAILED"; rc=1; }
   done
   stage_aggregate
   (( rc == 0 )) || die "at least one seed failed"
@@ -532,7 +532,7 @@ def sh(c):
     try: return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
     except Exception: return None
 json.dump({
-  "script_version": "2026.10.05.5", "script": "taiga_repro_DGX.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
+  "script_version": "2026.10.05.6", "script": "taiga_repro_DGX.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
   "dagger_rounds": $DAGGER_ROUNDS, "dagger_episodes": $DAGGER_EPISODES, "dagger_epochs": $DAGGER_EPOCHS, "deterministic": "$DETERMINISTIC",
   "dagger_perturb": $DAGGER_PERTURB, "dagger_perturb_frac": $DAGGER_PERTURB_FRAC,
   "taiga_env": {k: v for k, v in sorted(os.environ.items()) if k.startswith("TAIGA_")},
