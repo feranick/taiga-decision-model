@@ -141,6 +141,32 @@ Sizes are in mm. `x`/`y` are positions on the top face, measured from the centre
 
 ---
 
+## Assembling parts
+
+Each goal produces its own part file. `taiga_assemble.py` places built parts into one document according to an assembly spec (rotations and a translation per part, plus color and transparency), and writes a single `.FCStd` and a combined `.step`. It runs in FreeCAD's Python; no model is involved. `assembly_engine.json` assembles the engine kit: crank axis along Y, shown at top dead center, with the crankcase, cylinder block and valve cover semi-transparent so the piston, rod and crank stay visible.
+
+```bash
+source ~/taiga/freecad.env
+cd ~/taiga/taiga-s1      # or wherever parts/engine is
+"$FREECAD_PYTHON" <repo>/build/taiga_assemble.py --parts parts/engine --spec <repo>/build/assembly_engine.json
+"$FREECAD_PYTHON" <repo>/build/taiga_assemble.py --parts parts/engine --spec <repo>/build/assembly_engine.json --explode 1
+freecad parts/engine/engine_assembly.FCStd
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--parts` | (required) | Folder with the built parts (`<part>.FCStd`, or `<part>.step` as a fallback) |
+| `--spec` | (required) | Assembly spec JSON |
+| `--out` | `<parts>/<name>.FCStd` | Output file (`<name>_exploded` with `--explode`) |
+| `--explode` | `0` | Exploded view: moves each part by its `explode` offset times this factor |
+| `--no-step` | off | Don't write the combined STEP file |
+
+Parts that haven't been built (or failed) are listed and left out. The assembly holds fixed copies of the part shapes: after rebuilding parts, run the script again. The parts are simplified (see the engine kit above), so some don't fit perfectly: for example, the connecting rod is as wide as the crankcase's spigot hole.
+
+In a spec, each entry has `label`, `part` (the goal name), `rotations` (a list of `[axis, degrees]`, applied in order), `translation`, `color` (RGB, 0–1), `transparency` (0–100) and `explode`. Parts are modeled sitting on z = 0..h and centered on the origin, which is the frame the rotations and translations start from.
+
+---
+
 ## Watching it build in the FreeCAD GUI
 
 Upstream's demo drives a live FreeCAD window instead. It needs a desktop session (not plain SSH).
@@ -172,3 +198,4 @@ It saves a screenshot and the `.FCStd` to `runs/gui_demo/`. `--delay` sets the p
 | Script | Version |
 |---|---|
 | `taiga_build_part.py` | 2026.10.05.4 |
+| `taiga_assemble.py` | 2026.10.05.1 |

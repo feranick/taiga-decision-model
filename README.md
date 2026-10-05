@@ -43,7 +43,9 @@ taiga-decision-model/
     ├── README_build_part.md      goal format, feature types, output, GUI demo
     ├── taiga_build_part.py       builds parts headless and saves .FCStd files
     ├── example_goals.json        example goals
-    └── example_goals_engine.json single-cylinder engine parts kit
+    ├── example_goals_engine.json single-cylinder engine parts kit
+    ├── taiga_assemble.py         places built parts into one assembly (.FCStd + .step)
+    └── assembly_engine.json      assembly spec for the engine kit
 ```
 
 ## Supported platforms
