@@ -265,7 +265,7 @@ index e8eb6e1..382b07c 100644
 +    """Expanded training goal at `level` >= 2, one of the expanded splits at random."""
 +    return SAMPLERS[rng.choice(SPLITS)](max(level, 2), rng)
 diff --git a/freecad_s1/goals.py b/freecad_s1/goals.py
-index f63acf6..4abc09e 100644
+index 9ce1c22..a9cb15d 100644
 --- a/freecad_s1/goals.py
 +++ b/freecad_s1/goals.py
 @@ -250,7 +250,7 @@ def heldout_composition(goal: Goal) -> str | None:

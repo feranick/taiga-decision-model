@@ -22,19 +22,21 @@ scripts/smoke_ext.py (FreeCAD).
  freecad_s1/ext/__init__.py    |   8 ++
  freecad_s1/ext/faces.py       |  86 +++++++++++++++++++++
  freecad_s1/ext/sampler.py     | 115 ++++++++++++++++++++++++++++
- freecad_s1/goals.py           |   8 +-
+ freecad_s1/goals.py           |  10 ++-
  freecad_s1/model/featurize.py |   3 +
  freecad_s1/runtime/session.py |   3 +
  scripts/smoke_ext.py          |  59 +++++++++++++++
  tests/test_ext_faces.py       | 138 ++++++++++++++++++++++++++++++++++
  tests/test_ext_runtime.py     |  25 ++++++
- 11 files changed, 450 insertions(+), 4 deletions(-)
+ tests/test_ext_splits.py      |  20 +++++
+ 12 files changed, 472 insertions(+), 4 deletions(-)
  create mode 100644 freecad_s1/ext/__init__.py
  create mode 100644 freecad_s1/ext/faces.py
  create mode 100644 freecad_s1/ext/sampler.py
  create mode 100644 scripts/smoke_ext.py
  create mode 100644 tests/test_ext_faces.py
  create mode 100644 tests/test_ext_runtime.py
+ create mode 100644 tests/test_ext_splits.py
 
 diff --git a/freecad_s1/evaluate.py b/freecad_s1/evaluate.py
 index 27e38f4..ea6ed97 100644
@@ -310,7 +312,7 @@ index 0000000..e8eb6e1
 +    """Expanded training goal at `level` (levels 1 stays original: a bare base has no side)."""
 +    return sample_side_goal(max(level, 2), rng)
 diff --git a/freecad_s1/goals.py b/freecad_s1/goals.py
-index 5a656ed..f63acf6 100644
+index 5a656ed..9ce1c22 100644
 --- a/freecad_s1/goals.py
 +++ b/freecad_s1/goals.py
 @@ -250,7 +250,7 @@ def heldout_composition(goal: Goal) -> str | None:
@@ -322,16 +324,18 @@ index 5a656ed..f63acf6 100644
  
  
  def goal_in_split(goal: Goal, split: str) -> bool:
-@@ -302,6 +302,12 @@ def _patterned_pocket_goal(rng: random.Random) -> Goal:
+@@ -302,6 +302,14 @@ def _patterned_pocket_goal(rng: random.Random) -> Goal:
  
  
  def sample_split_goal(split: str, level: int, rng: random.Random, tries: int = 2000) -> Goal:
 +    from .ext import sampler as ext  # taiga-expanded: new splits, and expanded goals mixed into training
 +
-+    if split in ext.SPLITS:
-+        return ext.sample_split(split, level, rng)
-+    if split == "train" and level >= 2 and ext.use_expanded_for_train(rng):
-+        return ext.sample_train(level, rng)
++    if split in ext.SPLITS or (split == "train" and level >= 2 and ext.use_expanded_for_train(rng)):
++        for _ in range(tries):  # never a composition upstream holds out for its comp suites
++            goal = ext.sample_split(split, level, rng) if split in ext.SPLITS else ext.sample_train(level, rng)
++            if heldout_composition(goal) is None:
++                return goal
++        raise ValueError(f"could not sample a {split} goal at level {level}")
      if split == "comp2":
          return _mirrored_boss_box_goal(rng)
      if split == "comp3":
@@ -624,3 +628,29 @@ index 0000000..8065699
 +            n = int(stats[f"{split}{level}_noise0.0_n"])
 +            assert int(stats.get(f"{split}{level}_noise0.0_match", 0)) == n, msg  # clean expert always succeeds
 +    assert "expert_invalid" not in stats, msg
+diff --git a/tests/test_ext_splits.py b/tests/test_ext_splits.py
+new file mode 100644
+index 0000000..3a75d79
+--- /dev/null
++++ b/tests/test_ext_splits.py
+@@ -0,0 +1,20 @@
++"""taiga-expanded: the expanded goals never use a composition upstream holds out for its
++comp suites, so training on them keeps comp* a test of unseen compositions."""
++import random
++
++from freecad_s1.ext import sampler
++from freecad_s1.goals import heldout_composition, sample_split_goal
++
++
++def test_expanded_goals_avoid_heldout_compositions():
++    rng = random.Random(11)
++    for split in sampler.SPLITS:
++        for level in (2, 3):
++            for _ in range(300):
++                assert heldout_composition(sample_split_goal(split, level, rng)) is None
++    seen_ext = 0
++    for _ in range(2000):
++        g = sample_split_goal("train", 3, rng)
++        assert heldout_composition(g) is None
++        seen_ext += any(k in f.params for f in g.features for k in ("nx", "ny", "nz", "outline"))
++    assert seen_ext > 300  # the expanded goals are still mixed in

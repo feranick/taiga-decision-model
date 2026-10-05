@@ -1,0 +1,517 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Mon, 5 Oct 2026 17:13:06 -0400
+Subject: [PATCH] ext: patterns and mirrors about any axis; wider goal rows
+
+---
+ freecad_s1/evaluate.py        |   3 +-
+ freecad_s1/ext/__init__.py    |   1 +
+ freecad_s1/ext/faces.py       |   1 +
+ freecad_s1/ext/patterns.py    |  50 +++++++++
+ freecad_s1/ext/revolve.py     |   6 +-
+ freecad_s1/ext/sampler.py     | 206 +++++++++++++++++++++++++++++++++-
+ freecad_s1/goals.py           |   2 +-
+ freecad_s1/model/featurize.py |   1 +
+ freecad_s1/runtime/session.py |   2 +
+ tests/test_ext_faces.py       |   2 +-
+ tests/test_ext_patterns.py    |  88 +++++++++++++++
+ 11 files changed, 355 insertions(+), 7 deletions(-)
+ create mode 100644 freecad_s1/ext/patterns.py
+ create mode 100644 tests/test_ext_patterns.py
+
+diff --git a/freecad_s1/evaluate.py b/freecad_s1/evaluate.py
+index 6f6b1d1..6a96caa 100644
+--- a/freecad_s1/evaluate.py
++++ b/freecad_s1/evaluate.py
+@@ -69,7 +69,7 @@ def offline_metrics(model: S1Model, ds: Dataset, device: torch.device, batch_siz
+ 
+ 
+ # Seed offsets keep suites that share a level (iid-L3, comp, comp2, comp3) on disjoint seeds.
+-SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000}
++SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000}
+ 
+ SUITES = {
+     "iid": [(1, "iid"), (2, "iid"), (3, "iid")],  # training distribution, fresh goals
+@@ -82,6 +82,7 @@ SUITES = {
+     "plane": [(3, "plane")],  # taiga-expanded: datum-plane features (cross bores, windows, cross bosses)
+     "outline": [(3, "outline")],  # taiga-expanded: curved outlines (bases, bosses, pockets, side windows)
+     "revolve": [(3, "revolve")],  # taiga-expanded: turned parts, ring grooves, collars (revolve / groove)
++    "pattern": [(3, "pattern")],  # taiga-expanded: patterns and mirrors about any axis, of any feature
+     "len3": [(6, "len")],  # held-out length: 11 intents (2.2x the training maximum)
+     "len4": [(7, "len")],  # stress: 13 intents
+     "len5": [(8, "len")],  # stress: 15 intents
+diff --git a/freecad_s1/ext/__init__.py b/freecad_s1/ext/__init__.py
+index f73871d..a5ce827 100644
+--- a/freecad_s1/ext/__init__.py
++++ b/freecad_s1/ext/__init__.py
+@@ -6,6 +6,7 @@ Kept in its own package so the changes to upstream files stay small hooks:
+   profiles closed outlines of lines, arcs and splines, drawn by one command
+            (Sketcher_CreateProfile) and fixed by Sketcher_ConstrainBlock
+   revolve  revolve / groove a profile about a global axis (turned parts, ring grooves)
++  patterns polar / linear patterns and mirrors about any axis
+   sampler  goals that use the new features, mixed into the training split and
+            exposed as new evaluation suites (original suites are unchanged)
+ Pure stdlib: imported by FreeCAD's interpreter (runtime) and the torch process.
+diff --git a/freecad_s1/ext/faces.py b/freecad_s1/ext/faces.py
+index aa4c5ef..df3818c 100644
+--- a/freecad_s1/ext/faces.py
++++ b/freecad_s1/ext/faces.py
+@@ -119,6 +119,7 @@ def local_box(sk, f, sx: float, sy: float, vec_cls):
+ # outline width/scale, height/scale | flags: has z, has normal, has off, has outline |
+ # revolve axis ax, ay, az, angle/360 (ext.revolve).
+ EXT_NUM_DIM = 18
++GOAL_ROW_DIM = 64  # numbers per token row (upstream: 48), room for the extra block
+ 
+ 
+ def _clip(x: float) -> float:
+diff --git a/freecad_s1/ext/patterns.py b/freecad_s1/ext/patterns.py
+new file mode 100644
+index 0000000..0ae9c73
+--- /dev/null
++++ b/freecad_s1/ext/patterns.py
+@@ -0,0 +1,50 @@
++"""Patterns and mirrors about any axis.
++
++Upstream patterns are fixed: polar about Z, linear along +X, mirror across the YZ plane.
++A pattern intent may carry an axis (ax, ay, az), one of them +-1 (same keys as ext.revolve):
++  polar_pattern   axis of rotation (sign: direction of rotation), "angle" (default 360)
++  linear_pattern  direction (sign: towards + or -), "length" first to last copy as upstream
++  mirror          normal of the mirror plane (YZ for X, XZ for Y, XY for Z)
++The axes and planes are the body's origin features, so they pass through the origin.
++Intents without an axis keep upstream's behaviour exactly.
++
++Pure stdlib except configure(), which works on FreeCAD objects passed in.
++"""
++from __future__ import annotations
++
++from . import revolve
++
++PATTERN_KINDS = ("polar_pattern", "linear_pattern", "mirror")
++AXIS_FEATURES = ("X_Axis", "Y_Axis", "Z_Axis")
++PLANE_FEATURES = ("YZ_Plane", "XZ_Plane", "XY_Plane")  # normal X, Y, Z
++
++
++def axis_sign(f) -> float:
++    k = revolve.axis_index(f)
++    return -1.0 if float(f.params.get(revolve.AXIS_KEYS[k], 0.0)) < 0 else 1.0
++
++
++def pattern_params(kind: str, axis: int, sign: float = 1.0, **extra) -> dict:
++    p = {"ax": 0.0, "ay": 0.0, "az": 0.0}
++    p[revolve.AXIS_KEYS[axis]] = sign
++    p.update(extra)
++    return p
++
++
++def configure(feat, command: str, f, origin_feature) -> None:
++    """Hook in the pattern executor, after upstream set n / length / angle: axis, plane,
++    direction and angle from the intent. `origin_feature(role)` returns the body's origin
++    feature (e.g. "X_Axis")."""
++    if f is None or f.kind not in PATTERN_KINDS or not revolve.has_axis(f):
++        return
++    k = revolve.axis_index(f)
++    rev = axis_sign(f) < 0
++    if command == "PartDesign_Mirrored":
++        feat.MirrorPlane = (origin_feature(PLANE_FEATURES[k]), [""])
++    elif command == "PartDesign_LinearPattern":
++        feat.Direction = (origin_feature(AXIS_FEATURES[k]), [""])
++        feat.Reversed = rev
++    elif command == "PartDesign_PolarPattern":
++        feat.Axis = (origin_feature(AXIS_FEATURES[k]), [""])
++        feat.Angle = revolve.angle(f)
++        feat.Reversed = rev
+diff --git a/freecad_s1/ext/revolve.py b/freecad_s1/ext/revolve.py
+index 8bb8b03..fe66a8f 100644
+--- a/freecad_s1/ext/revolve.py
++++ b/freecad_s1/ext/revolve.py
+@@ -80,9 +80,11 @@ def set_axis(feat, sk, f, vec_cls) -> None:
+ 
+ 
+ def extra_goal_num(f) -> list[float]:
+-    """Axis (ax, ay, az) and angle / 360 for the goal encoding (zeros without an axis)."""
++    """Axis (ax, ay, az, signed) and angle / 360 for the goal encoding (zeros without an axis).
++    Also used by pattern intents (ext.patterns)."""
+     if not has_axis(f):
+         return [0.0, 0.0, 0.0, 0.0]
++    k = axis_index(f)
+     vec = [0.0, 0.0, 0.0]
+-    vec[axis_index(f)] = 1.0
++    vec[k] = -1.0 if float(f.params.get(AXIS_KEYS[k], 0.0)) < 0 else 1.0  # sign: pattern direction
+     return vec + [angle(f) / 360.0]
+diff --git a/freecad_s1/ext/sampler.py b/freecad_s1/ext/sampler.py
+index 637cdc4..7155151 100644
+--- a/freecad_s1/ext/sampler.py
++++ b/freecad_s1/ext/sampler.py
+@@ -16,7 +16,7 @@ from ..schema import Goal, GoalFeature
+ TRAIN_FRACTION = float(os.environ.get("TAIGA_EXT_FRACTION", "0.35"))
+ 
+ # new evaluation splits (each also feeds training through sample_train)
+-SPLITS = ("side", "plane", "outline", "revolve")
++SPLITS = ("side", "plane", "outline", "revolve", "pattern")
+ 
+ 
+ def _u(rng: random.Random, lo: float, hi: float) -> float:
+@@ -357,8 +357,210 @@ def sample_revolve_goal(level: int, rng: random.Random) -> Goal:
+     raise ValueError("could not sample a revolve goal")
+ 
+ 
++def _span(rng: random.Random, lo: float, hi: float, size: float):
++    """Linear pattern of n copies of a feature `size` wide, centres within [lo, hi]:
++    (first centre, length first to last, n, sign), or None if there is no room."""
++    lo, hi = lo + 0.1, hi - 0.1
++    for n in (rng.randint(2, 4), 2):
++        min_len = (size + 1.5) * (n - 1)
++        if hi - lo >= min_len + 0.2:
++            length = _u(rng, min_len + 0.1, hi - lo - 0.1)
++            first = _u(rng, lo + 0.1, max(lo + 0.1, hi - length - 0.1))
++            sign = rng.choice([1.0, -1.0])
++            return (round(first + length, 1) if sign < 0 else first), length, n, sign
++    return None
++
++
++def _top_feature(rng: random.Random, kind: str, x: float, y: float, r: float, h: float) -> GoalFeature:
++    if kind == "slot_pocket":  # profile pocket: a short slot, round ends
++        from . import profiles as pr
++
++        return _outline_feature("profile_pocket", pr.slot(x, y, 2 * r, r, rng.choice([0.0, math.pi / 2])),
++                                depth=_u(rng, 1, max(1.1, h * 0.6)))
++    p = {"r": r, "x": x, "y": y}
++    if kind == "boss_cyl":
++        p["h"] = _u(rng, 2, 15)
++    return GoalFeature(kind, p)
++
++
++def _pattern_side(rng: random.Random):
++    """A hole / boss on a side face of a box, in a row along the face (horizontal or vertical)."""
++    from . import patterns as pt
++
++    base = _side_base(rng)
++    w, d, h = base.params["w"], base.params["d"], base.params["h"]
++    face = rng.choice(["+X", "-X", "+Y", "-Y"])
++    f = side_feature(rng, rng.choice(["hole", "hole", "hole_std", "boss_cyl"]), base, face)
++    if f is None:
++        return None
++    r = f.params["r"]
++    if rng.random() < 0.5:  # horizontal row
++        k = 1 if face[1] == "X" else 0
++        half = (d if k == 1 else w) / 2
++        sp = _span(rng, -(half - r - 1.5), half - r - 1.5, 2 * r)
++    else:  # vertical row
++        k = 2
++        sp = _span(rng, r + 1.5, h - r - 1.5, 2 * r)
++    if sp is None:
++        return None
++    first, length, n, sign = sp
++    f.params["xyz"[k]] = first
++    return base, [f, GoalFeature("linear_pattern", pt.pattern_params("linear_pattern", k, sign, n=float(n), length=length))]
++
++
++def _pattern_top(rng: random.Random):
++    """A hole / boss / slot pocket on top of a box, in a row along -X or +-Y."""
++    from . import patterns as pt
++
++    base = _side_base(rng) if rng.random() < 0.5 else GoalFeature("base_box", {"w": _u(rng, 30, 80), "d": _u(rng, 30, 80), "h": _u(rng, 6, 30)})
++    w, d, h = base.params["w"], base.params["d"], base.params["h"]
++    kind = rng.choice(["hole", "hole_std", "boss_cyl", "slot_pocket"])
++    k = rng.choice([0, 1, 1])
++    half_a, half_b = (w / 2, d / 2) if k == 0 else (d / 2, w / 2)
++    r = _u(rng, 1.5, max(1.6, min(half_a, half_b) * 0.25))
++    sp = _span(rng, -(half_a - r - 1.5), half_a - r - 1.5, 2 * r)
++    if sp is None:
++        return None
++    first, length, n, sign = sp
++    if k == 0 and sign > 0:
++        sign, first = -1.0, round(first + length, 1)  # +X rows are upstream's; use -X here
++    other = _u(rng, -(half_b - r - 1.5) * 0.8, (half_b - r - 1.5) * 0.8)
++    x, y = (first, other) if k == 0 else (other, first)
++    f = _top_feature(rng, kind, x, y, r, h)
++    return base, [f, GoalFeature("linear_pattern", pt.pattern_params("linear_pattern", k, sign, n=float(n), length=length))]
++
++
++def _pattern_mirror(rng: random.Random):
++    """Mirror across the XZ plane (top or side feature), or a side feature mirrored to the opposite face."""
++    from . import patterns as pt
++
++    base = _side_base(rng)
++    w, d, h = base.params["w"], base.params["d"], base.params["h"]
++    if rng.random() < 0.4:  # top feature at y > 0, mirrored across XZ
++        kind = rng.choice(["hole", "boss_cyl", "pocket_rect"])
++        if kind == "pocket_rect":
++            a, b = _u(rng, 2, w * 0.3), _u(rng, 2, d * 0.2)
++            f = GoalFeature(kind, {"w": a, "d": b, "x": _u(rng, -(w / 2 - a) * 0.7, (w / 2 - a) * 0.7),
++                                   "y": _u(rng, b / 2 + 1, max(b / 2 + 1.1, (d / 2 - b / 2) * 0.8)), "depth": _u(rng, 1, h * 0.6)})
++        else:
++            r = _u(rng, 1.5, max(1.6, min(w, d) * 0.12))
++            f = _top_feature(rng, kind, _u(rng, -(w / 2 - r) * 0.7, (w / 2 - r) * 0.7),
++                             _u(rng, r + 1, max(r + 1.1, (d / 2 - r) * 0.8)), r, h)
++        return base, [f, GoalFeature("mirror", pt.pattern_params("mirror", 1))]
++    face = rng.choice(["+X", "+Y"])
++    f = side_feature(rng, rng.choice(["hole", "boss_cyl", "pocket_rect"]), base, face)
++    if f is None:
++        return None
++    k_face = 0 if face[1] == "X" else 1
++    if rng.random() < 0.5:  # to the opposite face
++        return base, [f, GoalFeature("mirror", pt.pattern_params("mirror", k_face))]
++    k = 1 - k_face  # across the other vertical plane, on the same face
++    size = f.params.get("r", 0) * 2 or f.params["w"]
++    half = (d if k == 1 else w) / 2
++    if half - size / 2 - 1.5 < size / 2 + 1:
++        return None
++    f.params["xyz"[k]] = _u(rng, size / 2 + 1, half - size / 2 - 1.5)
++    return base, [f, GoalFeature("mirror", pt.pattern_params("mirror", k))]
++
++
++def _pattern_disc(rng: random.Random):
++    """A disc turned about X or Y; a hole or pin on its end face, polar pattern about the
++    disc axis (full or partial circle) or a mirror across XY."""
++    from . import patterns as pt
++    from . import revolve as rv
++
++    axis = rng.choice([0, 1])
++    R, L = _u(rng, 18, 45), _u(rng, 6, 25)
++    r_in = _u(rng, 3, R * 0.35) if rng.random() < 0.4 else 0.0
++    base = GoalFeature("profile_revolve", rv.revolve_params(axis, outline=rv.lathe_outline(
++        axis, [(0.0, r_in), (0.0, R), (L, R), (L, r_in)]), angle=360.0))
++    r = _u(rng, 1.5, max(1.6, (R - r_in) * 0.15))
++    lo, hi = r_in + r + 2, R - r - 2
++    if hi - lo < 0.5:
++        return None
++    rb = _u(rng, lo + 0.1, hi - 0.1)
++    kind = rng.choice(["hole", "hole", "boss_cyl"])
++    p = {"r": r, "nx": 0.0, "ny": 0.0, "nz": 0.0, "x": 0.0, "y": 0.0, "z": rb}
++    p["nx" if axis == 0 else "ny"] = 1.0
++    p["x" if axis == 0 else "y"] = L
++    if kind == "boss_cyl":
++        p["h"] = _u(rng, 2, 10)
++    f = GoalFeature(kind, p)
++    if rng.random() < 0.2:
++        return base, [f, GoalFeature("mirror", pt.pattern_params("mirror", 2))], max(2 * R, L)
++    sign = rng.choice([1.0, -1.0])
++    if rng.random() < 0.7:
++        pat = pt.pattern_params("polar_pattern", axis, sign, n=float(rng.randint(3, 8)), angle=360.0)
++    else:
++        pat = pt.pattern_params("polar_pattern", axis, sign, n=float(rng.randint(2, 4)), angle=float(rng.choice([90, 120, 180, 270])))
++    return base, [f, GoalFeature("polar_pattern", pat)], max(2 * R, L)
++
++
++def _pattern_arc(rng: random.Random):
++    """Holes / pins on top of a cylinder, polar about Z over part of a circle."""
++    from ..goals import _base
++    from . import patterns as pt
++
++    base = _base(rng, ["base_cyl"])
++    R, h = base.params["r"], base.params["h"]
++    r = _u(rng, 1.5, max(1.6, R * 0.15))
++    rb = _u(rng, r + 2, max(r + 2.1, R * 0.6))
++    a = rng.uniform(0, 2 * math.pi)
++    f = _top_feature(rng, rng.choice(["hole", "hole_std", "boss_cyl"]), round(rb * math.cos(a), 1), round(rb * math.sin(a), 1), r, h)
++    pat = pt.pattern_params("polar_pattern", 2, rng.choice([1.0, -1.0]), n=float(rng.randint(2, 4)),
++                            angle=float(rng.choice([90, 120, 180, 270])))
++    return base, [f, GoalFeature("polar_pattern", pat)]
++
++
++def _pattern_datum(rng: random.Random):
++    """A cross bore (datum-plane hole) repeated along the part or up its height."""
++    from . import patterns as pt
++
++    base = _side_base(rng)
++    w, d, h = base.params["w"], base.params["d"], base.params["h"]
++    k_n = rng.choice([0, 1])
++    f = datum_feature(rng, "hole", base, k_n)
++    if f is None:
++        return None
++    r = f.params["r"]
++    if rng.random() < 0.6:  # along the in-plane horizontal axis
++        k = 1 - k_n
++        half = (d if k == 1 else w) / 2
++        sp = _span(rng, -(half - r - 2), half - r - 2, 2 * r)
++    else:
++        k = 2
++        sp = _span(rng, r + 2, h - r - 2, 2 * r)
++    if sp is None:
++        return None
++    first, length, n, sign = sp
++    f.params["xyz"[k]] = first
++    return base, [f, GoalFeature("linear_pattern", pt.pattern_params("linear_pattern", k, sign, n=float(n), length=length))]
++
++
++def sample_pattern_goal(level: int, rng: random.Random) -> Goal:
++    """Patterns and mirrors about any axis, of any feature: rows on side faces and on top
++    (along -X / +-Y), rows of cross bores, mirrors across XZ or to the opposite face, polar
++    patterns on discs turned about X / Y, partial polar patterns about Z; optional top dressup."""
++    from ..goals import _dressup
++
++    makers = [_pattern_side, _pattern_top, _pattern_mirror, _pattern_disc, _pattern_arc, _pattern_datum]
++    for _ in range(200):
++        out = rng.choice(makers)(rng)
++        if out is None:
++            continue
++        base, group, scale = (*out, None) if len(out) == 2 else out
++        feats = [base, *group]
++        if level >= 3 and base.kind in ("base_box", "base_cyl") and rng.random() < 0.5:
++            feats.append(_dressup(rng, "chamfer_top" if base.kind == "base_cyl" else rng.choice(["fillet_top", "chamfer_top"]), base))
++        if scale is None:
++            p = base.params
++            scale = max(p["w"], p["d"], p["h"]) if base.kind == "base_box" else max(2 * p["r"], p["h"])
++        return Goal(feats, level=min(level, 3), scale=scale)
++    raise ValueError("could not sample a pattern goal")
++
++
+ SAMPLERS = {"side": sample_side_goal, "plane": sample_plane_goal, "outline": _outline_split,
+-            "revolve": sample_revolve_goal}
++            "revolve": sample_revolve_goal, "pattern": sample_pattern_goal}
+ 
+ 
+ def sample_split(split: str, level: int, rng: random.Random) -> Goal:
+diff --git a/freecad_s1/goals.py b/freecad_s1/goals.py
+index 4da0ea9..0769252 100644
+--- a/freecad_s1/goals.py
++++ b/freecad_s1/goals.py
+@@ -257,7 +257,7 @@ def heldout_composition(goal: Goal) -> str | None:
+     return None
+ 
+ 
+-SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve")  # side .. revolve: taiga-expanded
++SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern")  # side .. pattern: taiga-expanded
+ 
+ 
+ def goal_in_split(goal: Goal, split: str) -> bool:
+diff --git a/freecad_s1/model/featurize.py b/freecad_s1/model/featurize.py
+index a9873cf..b2902b6 100644
+--- a/freecad_s1/model/featurize.py
++++ b/freecad_s1/model/featurize.py
+@@ -40,6 +40,7 @@ from ..schema import (
+ SEG_CLS, SEG_GLOBAL, SEG_NODE, SEG_SEL, SEG_RECENT, SEG_GOAL_GLOBAL, SEG_GOAL = range(7)
+ N_SEGMENTS = 7
+ NUM_DIM = len(NODE_NUM_KEYS) + len(GEOMETRY_KINDS) + len(CONSTRAINT_KINDS)
++NUM_DIM = max(NUM_DIM, ext_faces.GOAL_ROW_DIM)  # taiga-expanded: wider rows for the extra goal block
+ MAX_POS = 128  # position-embedding table; randomized positions sample from this range
+ MAX_ORD = 32  # ordinal-embedding table (0 = no ordinal)
+ MAX_NODES = 40
+diff --git a/freecad_s1/runtime/session.py b/freecad_s1/runtime/session.py
+index ee2e19d..b264004 100644
+--- a/freecad_s1/runtime/session.py
++++ b/freecad_s1/runtime/session.py
+@@ -26,6 +26,7 @@ from ..actions import CATALOGUE, SOLID_FEATURE_TYPES, enumerate_actions
+ from ..expert import Meta, ObjMeta, expert_actions, progress
+ from ..ext import faces as ext_faces
+ from ..ext import profiles as ext_profiles
++from ..ext import patterns as ext_patterns
+ from ..ext import revolve as ext_revolve
+ from ..goals import StartSpec
+ from ..schema import CONSTRAINT_KINDS, Goal, Node, SelItem, ShapeInfo, State, RECENT_ACTIONS
+@@ -670,6 +671,7 @@ def ex_pattern(s: HeadlessSession, a: str) -> bool:
+         feat.Axis = (s.origin_feature("Z_Axis"), [""])
+         feat.Angle = 360
+         feat.Occurrences = spec["n"]
++    ext_patterns.configure(feat, a, f, s.origin_feature)  # taiga-expanded: axis / plane / direction from the intent
+     s.finish_feature(feat)
+     return True
+ 
+diff --git a/tests/test_ext_faces.py b/tests/test_ext_faces.py
+index 047c6a2..2e6a4d2 100644
+--- a/tests/test_ext_faces.py
++++ b/tests/test_ext_faces.py
+@@ -43,7 +43,7 @@ def test_original_goals_featurize_exactly_as_before():
+     for lvl in (1, 2, 3, 4):
+         g = sample_goal(lvl, rng)
+         tok = encode_state(st, g, invariant=True, sentinel=True)
+-        assert np.all(tok.num[:, 29:47] == 0)  # the extra block is all zeros without ext keys
++        assert np.all(tok.num[:, 29:] == 0)  # the extra block (and the widened tail) is all zeros without ext keys
+ 
+ 
+ def test_side_goal_features_are_encoded():
+diff --git a/tests/test_ext_patterns.py b/tests/test_ext_patterns.py
+new file mode 100644
+index 0000000..33182e4
+--- /dev/null
++++ b/tests/test_ext_patterns.py
+@@ -0,0 +1,88 @@
++"""taiga-expanded: patterns and mirrors about any axis (patch 0005), pure-Python parts."""
++import random
++
++import numpy as np
++
++from freecad_s1.ext import faces, patterns as pt, sampler
++from freecad_s1.model.featurize import NUM_DIM, SEG_GOAL, encode_state
++from freecad_s1.schema import GOAL_PARAM_KEYS, Goal, GoalFeature, State
++
++
++def test_rows_are_wide_enough_for_the_extra_block():
++    assert NUM_DIM == 64
++    assert 2 * len(GOAL_PARAM_KEYS) + 3 + faces.EXT_NUM_DIM <= NUM_DIM
++
++
++class _Feat:
++    MirrorPlane = Direction = Axis = Angle = Reversed = None
++
++
++def _origin(role):
++    return role
++
++
++def test_configure_sets_axis_plane_direction():
++    feat = _Feat()
++    pt.configure(feat, "PartDesign_Mirrored", GoalFeature("mirror", pt.pattern_params("mirror", 1)), _origin)
++    assert feat.MirrorPlane == ("XZ_Plane", [""])
++    feat = _Feat()
++    pt.configure(feat, "PartDesign_LinearPattern",
++                 GoalFeature("linear_pattern", pt.pattern_params("linear_pattern", 2, -1.0, n=3.0, length=20.0)), _origin)
++    assert feat.Direction == ("Z_Axis", [""]) and feat.Reversed is True
++    feat = _Feat()
++    pt.configure(feat, "PartDesign_PolarPattern",
++                 GoalFeature("polar_pattern", pt.pattern_params("polar_pattern", 0, n=4.0, angle=180.0)), _origin)
++    assert feat.Axis == ("X_Axis", [""]) and feat.Angle == 180.0 and feat.Reversed is False
++    feat = _Feat()  # upstream intent (no axis): untouched
++    pt.configure(feat, "PartDesign_PolarPattern", GoalFeature("polar_pattern", {"n": 6.0}), _origin)
++    assert feat.Axis is None and feat.Angle is None
++
++
++def test_signed_axis_and_angle_are_encoded():
++    f = GoalFeature("linear_pattern", pt.pattern_params("linear_pattern", 1, -1.0, n=3.0, length=20.0))
++    g = Goal([GoalFeature("base_box", {"w": 40, "d": 30, "h": 20}), GoalFeature("hole", {"r": 2, "x": 0, "y": 5}), f],
++             level=2, scale=40)
++    tok = encode_state(State(doc_open=True), g, invariant=True, sentinel=True)
++    row = tok.num[np.flatnonzero(tok.seg == SEG_GOAL)[2]]
++    assert row[43:47].tolist() == [0.0, -1.0, 0.0, 1.0]
++    assert not row[47:].any()
++
++
++def _copies(first, length, n, sign):
++    return [first + sign * i * length / (n - 1) for i in range(int(n))]
++
++
++def test_pattern_copies_stay_on_the_part():
++    rng = random.Random(9)
++    seen = set()
++    for _ in range(1500):
++        g = sampler.sample_pattern_goal(3, rng)
++        base, f, pat = g.features[:3]
++        seen.add(pat.kind)
++        if pat.kind != "linear_pattern" or base.kind != "base_box":
++            continue
++        k = next(i for i, key in enumerate(("ax", "ay", "az")) if pat.params[key])
++        sign = pat.params[("ax", "ay", "az")[k]]
++        size = f.params.get("r", 0.0) or max(f.params["w"], f.params["d"]) / 2
++        first = f.params["xyz"[k]]
++        lim = (base.params["w"] / 2, base.params["d"] / 2, base.params["h"])[k]
++        for c in _copies(first, pat.params["length"], pat.params["n"], sign):
++            if k == 2:
++                assert size <= c <= lim - size + 1e-6
++            else:
++                assert abs(c) <= lim - size + 1e-6
++    assert seen == {"linear_pattern", "polar_pattern", "mirror"}
++
++
++def test_disc_holes_fit_between_bore_and_rim():
++    rng = random.Random(3)
++    n = 0
++    for _ in range(1500):
++        g = sampler.sample_pattern_goal(2, rng)
++        base, f = g.features[:2]
++        if base.kind != "profile_revolve":
++            continue
++        n += 1
++        R = max(abs(v) for _, v in (tuple(s[1:3]) for s in base.params["outline"]["segs"]))
++        assert f.params["z"] + f.params["r"] <= R
++    assert n > 100

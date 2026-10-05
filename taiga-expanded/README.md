@@ -9,8 +9,9 @@ Extends Taiga-S1's vocabulary so it can build real parts like the Victor S 80 pu
 | 1 | **Features on any planar face** (±X, ±Y, ±Z): holes, pockets, bosses on side faces; new evaluation suite `side` | Patch 0001. All 38 tests pass, including the FreeCAD ones (DGX, FreeCAD 1.1.3, 2026-10-05) |
 | 2 | **Features on origin planes with an offset**, extruded symmetrically: cross bores (e.g. a piston-pin bore through a cylinder wall), through windows, cross pins and lugs; new evaluation suite `plane` | Patch 0002. All tests pass, including FreeCAD (DGX, FreeCAD 1.1.3, 2026-10-05) |
 | 3 | **Curved outlines**: closed profiles of lines, arcs and splines, drawn by one command (`Sketcher_CreateProfile`) and fixed by `Sketcher_ConstrainBlock`; outline bases, bosses and pockets on any face or plane; new evaluation suite `outline` | Patch 0003. All 50 tests pass, including FreeCAD with sketch B-splines (DGX, FreeCAD 1.1.3, 2026-10-05) |
-| 4 | **Revolve and groove with a profile**: a closed outline turned about the X, Y or Z axis (`PartDesign_Revolution`, `PartDesign_Groove`), drawn like a lathe drawing (position along the axis, radius); turned bases, collars, ring grooves, bores; new evaluation suite `revolve`. (Pads and pockets of a given depth from any face are already covered by primitives 1–3.) | Patch 0004. Pure-Python tests pass; FreeCAD tests run during `setup` |
-| 5 | Patterns of any feature (bosses included); fillet/chamfer on chosen edges | Planned |
+| 4 | **Revolve and groove with a profile**: a closed outline turned about the X, Y or Z axis (`PartDesign_Revolution`, `PartDesign_Groove`), drawn like a lathe drawing (position along the axis, radius); turned bases, collars, ring grooves, bores; new evaluation suite `revolve`. (Pads and pockets of a given depth from any face are already covered by primitives 1–3.) | Patch 0004. All 55 tests pass, including FreeCAD revolve and groove builds (DGX, FreeCAD 1.1.3, 2026-10-05) |
+| 5 | **Patterns and mirrors about any axis**, of any feature: polar about X, Y or Z (full or part circle), linear along ±X, ±Y, ±Z, mirror across any origin plane; goal rows widened from 48 to 64 numbers; new suite `pattern` | Patch 0005. Pure-Python tests pass; FreeCAD tests run during `setup` |
+| 5b | **Fillets and chamfers on chosen edges** (`fillet_edges`, `chamfer_edges`): the edge loop of a face with any normal, or all edges along X, Y or Z; **features on a chosen face** (point `at`), e.g. a hole or hub on top of a boss, a chamfer on a shoulder; new suite `edges` | Patch 0006. Pure-Python tests pass; FreeCAD tests run during `setup` |
 | 6 | Training: size range up to ~400 mm; perturbed DAgger (`--dagger-perturb`); new suites per primitive | Planned |
 
 Out of scope for now (Phase 2): sweep, loft, helix, multi-body parts, assemblies.
@@ -37,6 +38,7 @@ taiga-expanded/
   - The original evaluation suites (`iid`, `comp*`, `len*`) produce exactly the same goals for the same seeds.
   - New commands and goal kinds are appended to the vocabularies, so upstream ids keep their values. From patch 0003 the vocabulary is larger, so the published `shhivv/taiga-s1` weights no longer fit the patched code. `train_expanded.sh` therefore skips the published-model evaluation (`REF_EVAL=0`); evaluate it on the baseline (`BASELINE=1`) instead.
   - Training mixes the expanded goals in: by default 35 % of training goals use the new features, set by `TAIGA_EXT_FRACTION`. The rest come from the original sampler.
+  - The expanded goals never contain a composition upstream holds out for its `comp`, `comp2` and `comp3` suites (e.g. a patterned `boss_box` or a mirrored `hole_std`), so those suites still test unseen compositions for the expanded model too. (Fixed in patch 0001 on 2026-10-05: before, about 4 % of `side` and `plane` goals contained one.)
 - **Separate work folders:** the expanded model uses `~/taiga-expanded`, and the unpatched baseline at the same commit uses `~/taiga-head`. Neither touches your ongoing variance study in `~/taiga`. The training scripts refuse to run when the code in a work folder doesn't match `PATCHES`.
 
 ### Primitive 1: features on any planar face
@@ -108,11 +110,49 @@ New kinds `profile_revolve` (adds material) and `profile_groove` (removes it) tu
 - **Sketch plane:** an origin plane that contains the axis, given like a primitive 2 feature (`off: 0`): XZ (normal Y) for the Z and X axes, YZ (normal X) for the Y axis.
 - **Outline:** same format and (u, v) convention as primitive 3. About Z on the XZ plane, u = X is the radius and v = Z the position along the axis (the example above is a stepped shaft, Ø20 × 20 then Ø12 × 20). About X, u = X is along the axis and v = Z the radius. About Y, u = Y is along and v = Z the radius. The outline must stay on one side of the axis (radius ≥ 0).
 - **No new commands:** the outline is drawn by `Sketcher_CreateProfile` and fixed by `Sketcher_ConstrainBlock`, as in primitive 3. The model chooses `PartDesign_Revolution` or `PartDesign_Groove`; the runtime revolves about the sketch axis that runs along the goal's axis (`H_Axis` or `V_Axis`, found from the sketch placement) by the goal's angle. Upstream's own revolve goals are unchanged (`V_Axis`, 360°).
-- **Encoding:** the axis and angle / 360 are added to the extra block of the goal encoding (positions 43–46). The goal row now uses 47 of its 48 numbers, so primitive 5 will have to widen it.
+- **Encoding:** the axis and angle / 360 are added to the extra block of the goal encoding (positions 43–46). (Rows are widened to 64 numbers in primitive 5.)
 - **New training goals:** stepped turned parts (1–3 steps, optionally hollow) about Z (mostly), X or Y, with ring grooves, revolved collars and, for solid parts turned about Z whose top step is the widest, an axial hole and a top chamfer.
 - **New evaluation suite `revolve`:** level 3.
 
 This covers the S 80's shaft, bearing bracket, seal housing, wear ring and the round parts of the casing.
+
+### Primitive 5: patterns and mirrors about any axis
+
+Upstream patterns are fixed: polar about Z, linear along +X, mirror across the YZ plane. A pattern goal may now carry an axis (`ax`, `ay`, `az`, one of them ±1), the same keys as a revolve:
+
+```json
+{"kind": "polar_pattern",  "params": {"n": 6, "ax": 1, "ay": 0, "az": 0, "angle": 360}}
+{"kind": "linear_pattern", "params": {"n": 3, "length": 40, "ax": 0, "ay": 0, "az": -1}}
+{"kind": "mirror",         "params": {"ax": 0, "ay": 1, "az": 0}}
+```
+
+- **Polar:** about the X, Y or Z origin axis; the sign sets the direction of rotation. `angle` (default 360) is the angular extent: 360 spreads `n` copies round the full circle, less than 360 puts the first and last copies `angle` apart.
+- **Linear:** along the axis, towards + or −; `length` is the distance from the first to the last copy, as upstream.
+- **Mirror:** the axis is the normal of the origin plane to mirror across (X → YZ, Y → XZ, Z → XY).
+- **Any feature:** the pattern repeats the previous feature (`Tip`), as upstream, so side-face, datum-plane, outline and top features all work. Exception: compositions upstream holds out for its `comp` suites (patterns of `boss_box`, patterns of `pocket_rect`, mirrors of `boss_box` and `hole_std`) are never used in training, to keep those suites meaningful.
+- **No new commands:** the model chooses the pattern command; the runtime sets the axis, plane, direction and angle from the goal. Without an axis, patterns behave exactly as upstream.
+- **Encoding:** the axis (now signed) and angle use the same positions as a revolve (43–46). Each token row is widened from 48 to 64 numbers (zeros for everything upstream), leaving room for the rest of the extra block.
+- **New training goals:** holes and pins in rows on side faces (horizontal or vertical) and on top (along −X or ±Y), rows of cross bores, mirrors across XZ or to the opposite face, bolt circles on discs turned about X or Y (polar about the disc axis, full or part circle, or mirrored across XY), part-circle polar patterns about Z; optional top dressup.
+- **New evaluation suite `pattern`:** level 3.
+
+### Primitive 5b: fillets and chamfers on chosen edges, features on a chosen face
+
+New kinds `fillet_edges` (`r`) and `chamfer_edges` (`size`) take their edges from the goal:
+
+```json
+{"kind": "chamfer_edges", "params": {"size": 1, "nx": 0, "ny": 0, "nz": 1, "at": [12, 0, 38]}}
+{"kind": "fillet_edges",  "params": {"r": 2, "ax": 1, "ay": 0, "az": 0}}
+```
+
+- **Edge loop of a face:** with a normal (nx, ny, nz), the outer edge loop of a planar face with that outward normal (new selections `Edges@Face-Z`, `Edges@Face±X`, `Edges@Face±Y`; upstream has `Edges@Face+Z`).
+- **Edges along an axis:** with an axis (ax, ay, az), every straight edge parallel to it (new `Edges|X`, `Edges|Y`; upstream has `Edges|Z`).
+- **Which face (`at`):** by default the largest face with that normal, as upstream does for the top face. With `at` = [x, y, z] (global), the face with that normal nearest to the point: the top of a boss, a shoulder of a turned part. The first example chamfers the top edge of a boss whose top face is at z = 38.
+- **Features on a chosen face:** `at` works the same for the sketch face of any sketched feature, so a hole or a hub can go on top of a boss, or a pocket in a lower step: `{"kind": "hole", "params": {"r": 3, "x": 12, "y": 0, "at": [12, 0, 38]}}`.
+- **Encoding:** `at` / scale and a flag at positions 47–50.
+- **New training goals:** fillets and chamfers on the top edge of a boss, holes and hubs on top of a boss, fillets and chamfers on every edge along X, Y or Z of a box, on the edge loop of its bottom or a side face, and on the ends and shoulders of stepped turned parts.
+- **New evaluation suite `edges`:** level 3.
+
+Together with primitives 1–4, these cover the S 80's bolt circles (port flanges, covers, motor flange), the impeller's blade ring, and the edge breaks on its machined parts.
 
 ## Workflow
 
@@ -132,7 +172,7 @@ For `check_patches.sh`, run `source ~/taiga/freecad.env` first to include the Fr
 
 ```bash
 ./train_expanded.sh 5060ti setup                                # ~/taiga-expanded: clone, apply patches, venv, FreeCAD, tests
-DATA_SEED=2 ./train_expanded.sh 5060ti sweep                    # expanded model, 5 seeds, suites incl. "side", "plane", "outline", "revolve"
+DATA_SEED=2 ./train_expanded.sh 5060ti sweep                    # expanded model, 5 seeds, suites incl. "side", "plane", "outline", "revolve", "pattern", "edges"
 BASELINE=1 ./train_expanded.sh 5060ti setup                     # ~/taiga-head: same upstream commit, no patches
 BASELINE=1 DATA_SEED=2 ./train_expanded.sh 5060ti sweep         # baseline for the no-regression check
 ```
@@ -149,6 +189,6 @@ Compare the original suites between the two with `../training/taiga_aggregate.py
 
 | File | Version |
 |---|---|
-| `train_expanded.sh` | 2026.10.05.5 |
+| `train_expanded.sh` | 2026.10.05.6 |
 | `dev/*.sh` | 2026.10.05.1 (`export_patches.sh` 2026.10.05.2) |
-| `patches/` | 0001 (features on any planar face), 0002 (features on origin planes with an offset), 0003 (curved outlines), 0004 (revolve and groove with a profile), against upstream `4a31bcf` |
+| `patches/` | 0001 (features on any planar face), 0002 (features on origin planes with an offset), 0003 (curved outlines), 0004 (revolve and groove with a profile), 0005 (patterns and mirrors about any axis, wider goal rows), 0006 (fillets and chamfers on chosen edges, features on a chosen face), against upstream `4a31bcf` |

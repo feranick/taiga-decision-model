@@ -277,7 +277,7 @@ index d84a8c6..637cdc4 100644
  
  def sample_split(split: str, level: int, rng: random.Random) -> Goal:
 diff --git a/freecad_s1/goals.py b/freecad_s1/goals.py
-index eb34fd2..b02b450 100644
+index a2429cb..4da0ea9 100644
 --- a/freecad_s1/goals.py
 +++ b/freecad_s1/goals.py
 @@ -55,6 +55,9 @@ RECIPES: dict[str, Recipe] = {

@@ -1,0 +1,596 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Mon, 5 Oct 2026 17:16:43 -0400
+Subject: [PATCH] ext: fillets and chamfers on chosen edges; features on a
+ chosen face
+
+---
+ freecad_s1/actions.py         |   8 ++-
+ freecad_s1/evaluate.py        |   3 +-
+ freecad_s1/expert.py          |   6 +-
+ freecad_s1/ext/__init__.py    |   1 +
+ freecad_s1/ext/edges.py       |  77 +++++++++++++++++++++
+ freecad_s1/ext/faces.py       |  10 +--
+ freecad_s1/ext/sampler.py     | 126 +++++++++++++++++++++++++++++++++-
+ freecad_s1/goals.py           |   5 +-
+ freecad_s1/runtime/params.py  |   2 +-
+ freecad_s1/runtime/session.py |  18 +++--
+ freecad_s1/schema.py          |   1 +
+ tests/test_ext_edges.py       |  88 ++++++++++++++++++++++++
+ tests/test_ext_profiles.py    |   4 +-
+ tests/test_ext_revolve.py     |   3 +-
+ 14 files changed, 331 insertions(+), 21 deletions(-)
+ create mode 100644 freecad_s1/ext/edges.py
+ create mode 100644 tests/test_ext_edges.py
+
+diff --git a/freecad_s1/actions.py b/freecad_s1/actions.py
+index fa46cdf..9beb034 100644
+--- a/freecad_s1/actions.py
++++ b/freecad_s1/actions.py
+@@ -16,6 +16,7 @@ from __future__ import annotations
+ import re
+ from dataclasses import dataclass
+ 
++from .ext import edges as ext_edges
+ from .schema import State
+ 
+ 
+@@ -78,6 +79,8 @@ CATALOGUE: dict[str, ActionSpec] = {
+         # taiga-expanded (appended, so upstream ids keep their values): curved outlines
+         _spec("Sketcher_CreateProfile", "sketch_geometry", "sketch"),
+         _spec("Sketcher_ConstrainBlock", "sketch_constraint", "sketch"),
++        # taiga-expanded: edges of a face with any normal, edges parallel to X / Y (ext.edges)
++        *[_spec(f"Select:{a}", "select", "doc", False) for a in ext_edges.EXTRA_SELECTS],
+     ]
+ }
+ 
+@@ -125,8 +128,8 @@ def action_vector(action_id: str) -> list[float]:
+     elif arg.startswith("Plane:"):
+         normal = {"XY": "Z", "XZ": "Y", "YZ": "X"}[arg.split(":")[1]]
+         vec[:3] = list(_AXES[normal])
+-    elif arg == "Edges|Z":
+-        vec[:3] = list(_AXES["Z"])
++    elif arg.startswith("Edges|"):  # taiga-expanded: Edges|X, Edges|Y too
++        vec[:3] = list(_AXES[arg[-1]])
+     vec[3] = float(arg.startswith("Plane:"))
+     vec[4] = float(arg.startswith("Face"))
+     vec[5] = float(arg.startswith("Edges"))
+@@ -169,6 +172,7 @@ def enumerate_actions(state: State) -> list[str]:
+         out.append("Select:Edges@Face+Z")
+     if "|Z" in state.shape.face_dirs:
+         out.append("Select:Edges|Z")
++    out += ext_edges.extra_selects(state.shape.face_dirs)  # taiga-expanded: edges of any face, |X, |Y
+     if any(n.type in SOLID_FEATURE_TYPES for n in state.tree):
+         out.append("Select:Tip")
+     if state.selection:
+diff --git a/freecad_s1/evaluate.py b/freecad_s1/evaluate.py
+index 6a96caa..80afa49 100644
+--- a/freecad_s1/evaluate.py
++++ b/freecad_s1/evaluate.py
+@@ -69,7 +69,7 @@ def offline_metrics(model: S1Model, ds: Dataset, device: torch.device, batch_siz
+ 
+ 
+ # Seed offsets keep suites that share a level (iid-L3, comp, comp2, comp3) on disjoint seeds.
+-SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000}
++SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000, "edges": 90_000}
+ 
+ SUITES = {
+     "iid": [(1, "iid"), (2, "iid"), (3, "iid")],  # training distribution, fresh goals
+@@ -83,6 +83,7 @@ SUITES = {
+     "outline": [(3, "outline")],  # taiga-expanded: curved outlines (bases, bosses, pockets, side windows)
+     "revolve": [(3, "revolve")],  # taiga-expanded: turned parts, ring grooves, collars (revolve / groove)
+     "pattern": [(3, "pattern")],  # taiga-expanded: patterns and mirrors about any axis, of any feature
++    "edges": [(3, "edges")],  # taiga-expanded: fillets / chamfers on chosen edges, features on chosen faces
+     "len3": [(6, "len")],  # held-out length: 11 intents (2.2x the training maximum)
+     "len4": [(7, "len")],  # stress: 13 intents
+     "len5": [(8, "len")],  # stress: 15 intents
+diff --git a/freecad_s1/expert.py b/freecad_s1/expert.py
+index 5e7867d..e9fc5b1 100644
+--- a/freecad_s1/expert.py
++++ b/freecad_s1/expert.py
+@@ -15,6 +15,7 @@ from __future__ import annotations
+ 
+ from dataclasses import dataclass, field
+ 
++from .ext.edges import select_for
+ from .ext.faces import support_for
+ from .goals import RECIPES
+ from .schema import Goal
+@@ -92,9 +93,10 @@ def expert_actions(goal: Goal, meta: Meta) -> list[str]:
+             return missing or ["Sketcher_LeaveSketch"]
+         return [recipe.feature]
+ 
+-    if meta.selection == [recipe.select]:
++    select = select_for(goal.features[i], recipe)  # taiga-expanded: chosen edges
++    if meta.selection == [select]:
+         return [recipe.feature]
+-    return [f"Select:{recipe.select}"]
++    return [f"Select:{select}"]
+ 
+ 
+ def expert_plan_length(goal: Goal, start_doc_open: bool, start_wb: str, start_body: bool) -> int:
+diff --git a/freecad_s1/ext/__init__.py b/freecad_s1/ext/__init__.py
+index a5ce827..b59d973 100644
+--- a/freecad_s1/ext/__init__.py
++++ b/freecad_s1/ext/__init__.py
+@@ -7,6 +7,7 @@ Kept in its own package so the changes to upstream files stay small hooks:
+            (Sketcher_CreateProfile) and fixed by Sketcher_ConstrainBlock
+   revolve  revolve / groove a profile about a global axis (turned parts, ring grooves)
+   patterns polar / linear patterns and mirrors about any axis
++  edges    fillets / chamfers on chosen edges; features on a chosen face (nearest to a point)
+   sampler  goals that use the new features, mixed into the training split and
+            exposed as new evaluation suites (original suites are unchanged)
+ Pure stdlib: imported by FreeCAD's interpreter (runtime) and the torch process.
+diff --git a/freecad_s1/ext/edges.py b/freecad_s1/ext/edges.py
+new file mode 100644
+index 0000000..23e76d4
+--- /dev/null
++++ b/freecad_s1/ext/edges.py
+@@ -0,0 +1,77 @@
++"""Dressups on chosen edges, and features on a chosen face.
++
++Fillet / chamfer intents "fillet_edges" (param r) and "chamfer_edges" (param size) pick
++their edges from the goal:
++  - with a normal (nx, ny, nz): the outer edge loop of a planar face with that outward
++    normal (Select:Edges@Face+X, Edges@Face-Z, ...);
++  - with an axis (ax, ay, az): every straight edge parallel to that axis (Select:Edges|X,
++    Edges|Y, Edges|Z).
++Which face: the largest one with that normal, as upstream does for the top face, unless the
++intent gives a point "at": [x, y, z] (global); then the face with that normal nearest to the
++point. "at" works the same for the sketch support of any sketched feature (Select:Face+Z,
++Face-X, ...): a hole on top of a boss, a boss on a step, a pocket in a lower face.
++Intents without these keys behave exactly as upstream.
++
++Pure stdlib; FreeCAD objects and helpers are passed in by the runtime.
++"""
++from __future__ import annotations
++
++from . import faces, revolve
++
++EDGE_KINDS = ("fillet_edges", "chamfer_edges")
++# new selections (appended to the catalogue); upstream has Edges@Face+Z and Edges|Z
++EXTRA_SELECTS = ["Edges@Face-Z", "Edges@Face+X", "Edges@Face-X", "Edges@Face+Y", "Edges@Face-Y", "Edges|X", "Edges|Y"]
++
++
++def has_at(f) -> bool:
++    at = None if f is None else f.params.get("at")
++    return isinstance(at, (list, tuple)) and len(at) == 3
++
++
++def select_for(f, recipe) -> str:
++    """Select argument for a non-sketched recipe (hook used by the expert)."""
++    if f.kind in EDGE_KINDS:
++        if revolve.has_axis(f):
++            return "Edges|" + faces.AXIS_NAMES[revolve.axis_index(f)]
++        return "Edges@" + faces.face_arg(f)
++    return recipe.select
++
++
++def extra_selects(face_dirs) -> list[str]:
++    """Valid new selections for a shape with these face directions / edge axes."""
++    out = [f"Select:{a}" for a in EXTRA_SELECTS if a.startswith("Edges@") and a[-2:] in face_dirs]
++    return out + [f"Select:{a}" for a in EXTRA_SELECTS if a.startswith("Edges|") and a[-2:] in face_dirs]
++
++
++def pick(shape, direction: str, f, pick_face, planar_faces, axis_vec, dist):
++    """Face for Select:Face<dir> / Edges@Face<dir>: upstream's largest face, or with "at" the
++    face with that normal nearest to the point. `dist(face, (x, y, z))` is the distance."""
++    if not has_at(f):
++        return pick_face(shape, direction)
++    cands = planar_faces(shape, axis_vec(direction))
++    if not cands:
++        return None
++    at = tuple(float(c) for c in f.params["at"])
++    return min(cands, key=lambda t: (round(dist(t[1], at), 6), -round(t[1].Area, 6)))
++
++
++def parallel_edges(shape, k: int, line_direction) -> list[str]:
++    """Names of the straight edges parallel to global axis k."""
++    out = []
++    for i, e in enumerate(shape.Edges):
++        d = line_direction(e)
++        if d is not None and abs(abs((d.x, d.y, d.z)[k]) - 1) < 1e-6:
++            out.append(f"Edge{i + 1}")
++    return out
++
++
++def parallel_dirs(shape, line_direction) -> list[str]:
++    """Edge-axis markers for ShapeInfo.face_dirs beyond upstream's "|Z"."""
++    return [f"|{faces.AXIS_NAMES[k]}" for k in (0, 1) if parallel_edges(shape, k, line_direction)]
++
++
++def extra_goal_num(f, scale: float) -> list[float]:
++    """"at" / scale (x, y, z) and a flag, for the goal encoding (zeros without it)."""
++    if not has_at(f):
++        return [0.0, 0.0, 0.0, 0.0]
++    return [max(-8.0, min(8.0, float(c) / scale)) for c in f.params["at"]] + [1.0]
+diff --git a/freecad_s1/ext/faces.py b/freecad_s1/ext/faces.py
+index df3818c..227a632 100644
+--- a/freecad_s1/ext/faces.py
++++ b/freecad_s1/ext/faces.py
+@@ -115,10 +115,10 @@ def local_box(sk, f, sx: float, sy: float, vec_cls):
+ 
+ # goal-feature encoding: extra block appended after upstream's goal numbers, so goals
+ # without these keys featurize exactly as before
+-# Layout (18 numbers): z/scale, nx, ny, nz, off/scale, outline n_line/10, n_arc/10, n_spline/10,
++# Layout (22 numbers): z/scale, nx, ny, nz, off/scale, outline n_line/10, n_arc/10, n_spline/10,
+ # outline width/scale, height/scale | flags: has z, has normal, has off, has outline |
+-# revolve axis ax, ay, az, angle/360 (ext.revolve).
+-EXT_NUM_DIM = 18
++# axis ax, ay, az (signed), angle/360 (ext.revolve, ext.patterns) | at x, y, z /scale, has at (ext.edges).
++EXT_NUM_DIM = 22
+ GOAL_ROW_DIM = 64  # numbers per token row (upstream: 48), room for the extra block
+ 
+ 
+@@ -139,4 +139,6 @@ def extra_goal_num(f, scale: float) -> list[float]:
+     flags = [float("z" in p), float(has_normal(f)), float("off" in p), float(summ is not None)]
+     from . import revolve
+ 
+-    return vals + flags + revolve.extra_goal_num(f)
++    from . import edges
++
++    return vals + flags + revolve.extra_goal_num(f) + edges.extra_goal_num(f, scale)
+diff --git a/freecad_s1/ext/sampler.py b/freecad_s1/ext/sampler.py
+index 7155151..9633985 100644
+--- a/freecad_s1/ext/sampler.py
++++ b/freecad_s1/ext/sampler.py
+@@ -16,7 +16,7 @@ from ..schema import Goal, GoalFeature
+ TRAIN_FRACTION = float(os.environ.get("TAIGA_EXT_FRACTION", "0.35"))
+ 
+ # new evaluation splits (each also feeds training through sample_train)
+-SPLITS = ("side", "plane", "outline", "revolve", "pattern")
++SPLITS = ("side", "plane", "outline", "revolve", "pattern", "edges")
+ 
+ 
+ def _u(rng: random.Random, lo: float, hi: float) -> float:
+@@ -559,8 +559,130 @@ def sample_pattern_goal(level: int, rng: random.Random) -> Goal:
+     raise ValueError("could not sample a pattern goal")
+ 
+ 
++def _dress(rng: random.Random, kind: str, limit: float, **sel) -> GoalFeature:
++    """fillet_edges / chamfer_edges no larger than `limit` x 0.3, with selector params."""
++    v = _u(rng, 0.4, max(0.5, limit * 0.3))
++    return GoalFeature(kind, {("r" if kind == "fillet_edges" else "size"): v, **sel})
++
++
++def _normal(axis: int, sign: float) -> dict:
++    p = {"nx": 0.0, "ny": 0.0, "nz": 0.0}
++    p[("nx", "ny", "nz")[axis]] = sign
++    return p
++
++
++def _edges_boss(rng: random.Random):
++    """A boss on top; its top edge filleted / chamfered, or a hole / smaller boss on its top face."""
++    from ..goals import _base, _on_top
++
++    base = _side_base(rng) if rng.random() < 0.5 else _base(rng, ["base_box", "base_cyl"])
++    h = base.params["h"]
++    kind = rng.choice(["boss_cyl", "boss_cyl", "boss_box"])
++    boss = _on_top(rng, kind, base)
++    x, y, bh = boss.params["x"], boss.params["y"], boss.params["h"]
++    top = [x, y, round(h + bh, 1)]
++    half = boss.params["r"] if kind == "boss_cyl" else min(boss.params["w"], boss.params["d"]) / 2
++    if kind == "boss_cyl" and rng.random() < 0.5:
++        if rng.random() < 0.6:
++            f = GoalFeature(rng.choice(["hole", "hole_std"]), {"r": _u(rng, 0.8, max(0.9, half * 0.5)), "x": x, "y": y, "at": top})
++        else:  # a smaller boss stacked on the boss (a hub)
++            f = GoalFeature("boss_cyl", {"r": _u(rng, 1, max(1.1, half * 0.7)), "x": x, "y": y, "h": _u(rng, 2, 12), "at": top})
++        return base, [boss, f]
++    kind_d = rng.choice(["fillet_edges", "chamfer_edges"])
++    return base, [boss, _dress(rng, kind_d, min(half, bh), **_normal(2, 1.0), at=top)]
++
++
++def _edges_parallel(rng: random.Random):
++    """A box (optionally with a top hole); fillet / chamfer every edge along X, Y or Z."""
++    from ..goals import _on_top
++
++    base = _side_base(rng)
++    w, d, h = base.params["w"], base.params["d"], base.params["h"]
++    k = rng.choice([0, 1, 2])
++    # a top hole's seam edge runs along Z: only with X / Y edges
++    feats = [_on_top(rng, rng.choice(["hole", "hole_std"]), base)] if k < 2 and rng.random() < 0.4 else []
++    across = [(d, h), (w, h), (w, d)][k]
++    kind = rng.choice(["fillet_edges", "chamfer_edges"])
++    sel = {"ax": 0.0, "ay": 0.0, "az": 0.0}
++    sel[("ax", "ay", "az")[k]] = 1.0
++    return base, feats + [_dress(rng, kind, min(across) * 0.5, **sel)]
++
++
++def _edges_face(rng: random.Random):
++    """A box; the outer edge loop of its bottom or a side face, optionally after a side feature on it."""
++    base = _side_base(rng)
++    w, d, h = base.params["w"], base.params["d"], base.params["h"]
++    face = rng.choice(["-Z", "+X", "-X", "+Y", "-Y"])
++    feats = []
++    if face != "-Z" and rng.random() < 0.4:
++        f = side_feature(rng, rng.choice(["hole", "pocket_rect"]), base, face)
++        if f is not None:
++            feats.append(f)
++    axis = "XYZ".index(face[1])
++    kind = rng.choice(["fillet_edges", "chamfer_edges"])
++    return base, feats + [_dress(rng, kind, min(w, d, h) * 0.5, **_normal(axis, 1.0 if face[0] == "+" else -1.0))]
++
++
++def _edges_turned(rng: random.Random):
++    """A stepped part turned about Z; fillet / chamfer the outer edge of a shoulder or an end."""
++    from . import revolve as rv
++
++    n_steps = rng.randint(2, 3)
++    lengths = [_u(rng, 6, 25) for _ in range(n_steps)]
++    radii = [_u(rng, 8, 35) for _ in range(n_steps)]
++    pts, a = [(0.0, 0.0), (0.0, radii[0])], 0.0
++    for i, (ln, r) in enumerate(zip(lengths, radii)):
++        a += ln
++        pts.append((a, r))
++        if i + 1 < n_steps:
++            pts.append((a, radii[i + 1]))
++    pts.append((a, 0.0))
++    base = GoalFeature("profile_revolve", rv.revolve_params(2, outline=rv.lathe_outline(2, pts), angle=360.0))
++    # candidate faces (sign of the normal, z, radius of a point on the face, size limit):
++    # the two ends, and shoulders between steps of different radius
++    cands = [(1.0, a, 0.0, min(radii[-1], lengths[-1])), (-1.0, 0.0, 0.0, min(radii[0], lengths[0]))]
++    for i in range(n_steps - 1):
++        z = sum(lengths[: i + 1])
++        r0, r1 = radii[i], radii[i + 1]
++        if abs(r0 - r1) < 2:
++            continue
++        lim = min(abs(r0 - r1), lengths[i], lengths[i + 1])
++        if r0 > r1:  # shoulder faces up; its outer edge is the lower step's rim
++            cands.append((1.0, z, (r0 + r1) / 2, lim))
++        else:  # faces down; outer edge is the upper step's rim
++            cands.append((-1.0, z, (r0 + r1) / 2, lim))
++    sign, z, rm, lim = rng.choice(cands)
++    at = [round(rm, 1), 0.0, round(z, 1)]
++    kind = rng.choice(["fillet_edges", "chamfer_edges"])
++    return base, [_dress(rng, kind, lim, **_normal(2, sign), at=at)], max(2 * max(radii), a)
++
++
++def sample_edges_goal(level: int, rng: random.Random) -> Goal:
++    """Fillets / chamfers on chosen edges (a boss's top edge, edges along X / Y / Z, the loop
++    of the bottom or a side face, a shoulder of a turned part) and features on a chosen face
++    (a hole or hub on top of a boss); optional top dressup at level 3."""
++    from ..goals import _dressup
++
++    makers = [_edges_boss, _edges_boss, _edges_parallel, _edges_face, _edges_turned]
++    for _ in range(200):
++        out = rng.choice(makers)(rng)
++        if out is None:
++            continue
++        base, group, scale = (*out, None) if len(out) == 2 else out
++        feats = [base, *group]
++        last = group[-1].kind
++        if (level >= 3 and base.kind == "base_box" and last in ("hole", "hole_std", "boss_cyl") and rng.random() < 0.4):
++            feats.append(_dressup(rng, "chamfer_top", base))
++        if scale is None:
++            p = base.params
++            scale = max(p["w"], p["d"], p["h"]) if base.kind == "base_box" else max(2 * p["r"], p["h"])
++        return Goal(feats, level=min(level, 3), scale=scale)
++    raise ValueError("could not sample an edges goal")
++
++
+ SAMPLERS = {"side": sample_side_goal, "plane": sample_plane_goal, "outline": _outline_split,
+-            "revolve": sample_revolve_goal, "pattern": sample_pattern_goal}
++            "revolve": sample_revolve_goal, "pattern": sample_pattern_goal,
++            "edges": sample_edges_goal}
+ 
+ 
+ def sample_split(split: str, level: int, rng: random.Random) -> Goal:
+diff --git a/freecad_s1/goals.py b/freecad_s1/goals.py
+index 0769252..f67c84b 100644
+--- a/freecad_s1/goals.py
++++ b/freecad_s1/goals.py
+@@ -58,6 +58,9 @@ RECIPES: dict[str, Recipe] = {
+     # taiga-expanded: revolve / groove a profile about a global axis (ext.revolve); sketched on an origin plane
+     "profile_revolve": Recipe("PartDesign_Revolution", "Face+Z", "Sketcher_CreateProfile", ("Sketcher_ConstrainBlock",)),
+     "profile_groove": Recipe("PartDesign_Groove", "Face+Z", "Sketcher_CreateProfile", ("Sketcher_ConstrainBlock",)),
++    # taiga-expanded: dressups on chosen edges (ext.edges); the selection comes from the intent
++    "fillet_edges": Recipe("PartDesign_Fillet", select="Edges@Face+Z"),
++    "chamfer_edges": Recipe("PartDesign_Chamfer", select="Edges@Face+Z"),
+ }
+ 
+ 
+@@ -257,7 +260,7 @@ def heldout_composition(goal: Goal) -> str | None:
+     return None
+ 
+ 
+-SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern")  # side .. pattern: taiga-expanded
++SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern", "edges")  # side .. edges: taiga-expanded
+ 
+ 
+ def goal_in_split(goal: Goal, split: str) -> bool:
+diff --git a/freecad_s1/runtime/params.py b/freecad_s1/runtime/params.py
+index aa020cf..1057e20 100644
+--- a/freecad_s1/runtime/params.py
++++ b/freecad_s1/runtime/params.py
+@@ -64,7 +64,7 @@ def hole_diameter(f: GoalFeature, scale: float) -> float:
+ def dressup_value(f: GoalFeature, command: str) -> float:
+     if command == "PartDesign_Fillet" and f.kind.startswith("fillet"):
+         return f.params["r"]
+-    if command == "PartDesign_Chamfer" and f.kind == "chamfer_top":
++    if command == "PartDesign_Chamfer" and f.kind in ("chamfer_top", "chamfer_edges"):  # taiga-expanded: chamfer_edges
+         return f.params["size"]
+     if command == "PartDesign_Thickness" and f.kind == "shell":
+         return f.params["t"]
+diff --git a/freecad_s1/runtime/session.py b/freecad_s1/runtime/session.py
+index b264004..cf50e57 100644
+--- a/freecad_s1/runtime/session.py
++++ b/freecad_s1/runtime/session.py
+@@ -24,6 +24,7 @@ import Sketcher
+ 
+ from ..actions import CATALOGUE, SOLID_FEATURE_TYPES, enumerate_actions
+ from ..expert import Meta, ObjMeta, expert_actions, progress
++from ..ext import edges as ext_edges
+ from ..ext import faces as ext_faces
+ from ..ext import profiles as ext_profiles
+ from ..ext import patterns as ext_patterns
+@@ -155,6 +156,7 @@ def shape_info(shape) -> ShapeInfo:
+             dirs.append(d)
+     if vertical_edges(shape):
+         dirs.append("|Z")
++    dirs += ext_edges.parallel_dirs(shape, line_direction)  # taiga-expanded: edges along X / Y
+     return ShapeInfo(
+         valid=shape.isValid(),
+         volume=shape.Volume,
+@@ -415,16 +417,22 @@ class HeadlessSession:
+         if shape is None:
+             return None
+         if arg.startswith("Face"):
+-            hit = pick_face(shape, arg[4:])
++            hit = self._pick(shape, arg[4:])  # taiga-expanded: nearest to the intent's "at", if any
+             return (tip.Name, [f"Face{hit[0] + 1}"], arg) if hit else None
+-        if arg == "Edges@Face+Z":
+-            hit = pick_face(shape, "+Z")
++        if arg.startswith("Edges@Face"):  # taiga-expanded: any face direction
++            hit = self._pick(shape, arg[10:])
+             return (tip.Name, edge_names(shape, hit[1].OuterWire.Edges), arg) if hit else None
+-        if arg == "Edges|Z":
+-            names = vertical_edges(shape)
++        if arg.startswith("Edges|"):  # taiga-expanded: Edges|X, Edges|Y too
++            names = vertical_edges(shape) if arg == "Edges|Z" else ext_edges.parallel_edges(shape, "XYZ".index(arg[-1]), line_direction)
+             return (tip.Name, names, arg) if names else None
+         return None
+ 
++    def _pick(self, shape, direction: str):  # taiga-expanded (ext.edges.pick)
++        f = self.intent_for() if self.goal is not None and self.goal.features else None
++        return ext_edges.pick(shape, direction, f, pick_face, planar_faces,
++                              lambda d: AXES[d[1]] * (1 if d[0] == "+" else -1),
++                              lambda face, p: face.distToShape(Part.Vertex(V(*p)))[0])
++
+     def _consume_selection(self) -> None:
+         self.sel_refs, self.meta.selection = [], []
+ 
+diff --git a/freecad_s1/schema.py b/freecad_s1/schema.py
+index 1c54a0c..006aa03 100644
+--- a/freecad_s1/schema.py
++++ b/freecad_s1/schema.py
+@@ -83,6 +83,7 @@ GOAL_KINDS = [
+     "fillet_top", "fillet_vertical", "chamfer_top", "shell",
+     "profile_base", "profile_boss", "profile_pocket",  # taiga-expanded: curved outlines (ext.profiles)
+     "profile_revolve", "profile_groove",  # taiga-expanded: revolve / groove with a profile (ext.revolve)
++    "fillet_edges", "chamfer_edges",  # taiga-expanded: dressups on chosen edges (ext.edges)
+ ]
+ GOAL_PARAM_KEYS = ["w", "d", "h", "r", "ri", "ro", "x", "y", "depth", "n", "length", "size", "t"]
+ GOAL_LENGTH_KEYS = {"w", "d", "h", "r", "ri", "ro", "x", "y", "depth", "length", "size", "t"}
+diff --git a/tests/test_ext_edges.py b/tests/test_ext_edges.py
+new file mode 100644
+index 0000000..1c8e9e2
+--- /dev/null
++++ b/tests/test_ext_edges.py
+@@ -0,0 +1,88 @@
++"""taiga-expanded: dressups on chosen edges, features on a chosen face (patch 0006), pure-Python parts."""
++import random
++
++import numpy as np
++
++from freecad_s1.actions import ACTION_IDS, CATALOGUE, action_vector
++from freecad_s1.expert import Meta, ObjMeta, expert_actions
++from freecad_s1.ext import edges, sampler
++from freecad_s1.goals import RECIPES
++from freecad_s1.model.featurize import SEG_GOAL, encode_state
++from freecad_s1.runtime.params import dressup_value
++from freecad_s1.schema import GOAL_KINDS, Goal, GoalFeature, State
++
++BOX = GoalFeature("base_box", {"w": 40, "d": 30, "h": 20})
++
++
++def test_kinds_and_selections_are_appended():
++    assert GOAL_KINDS[-2:] == ["fillet_edges", "chamfer_edges"]
++    assert ACTION_IDS[-len(edges.EXTRA_SELECTS):] == [f"Select:{a}" for a in edges.EXTRA_SELECTS]
++    assert CATALOGUE["Select:Edges|X"].category == "select"
++    assert action_vector("Select:Edges|X") == [1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
++    assert action_vector("Select:Edges|Z") == [0.0, 0.0, 1.0, 0.0, 0.0, 1.0]  # upstream, unchanged
++    assert action_vector("Select:Edges@Face-X")[:3] == [-1.0, 0.0, 0.0]  # direction from "Face-X", as upstream's Edges@Face+Z
++
++
++def test_selection_follows_the_intent():
++    f = GoalFeature("chamfer_edges", {"size": 1.0, "nx": -1.0, "ny": 0.0, "nz": 0.0})
++    assert edges.select_for(f, RECIPES[f.kind]) == "Edges@Face-X"
++    f = GoalFeature("fillet_edges", {"r": 1.0, "ax": 0.0, "ay": 1.0, "az": 0.0})
++    assert edges.select_for(f, RECIPES[f.kind]) == "Edges|Y"
++    up = GoalFeature("fillet_top", {"r": 1.0})
++    assert edges.select_for(up, RECIPES["fillet_top"]) == "Edges@Face+Z"
++    meta = Meta(doc_open=True, workbench="PartDesignWorkbench", body="Body")
++    meta.objects["Body"] = ObjMeta("Body", "body")
++    meta.objects["Pad"] = ObjMeta("Pad", "feature", goal_ref=0)
++    assert expert_actions(Goal([BOX, f], level=2, scale=40), meta) == ["Select:Edges|Y"]
++    meta.selection = ["Edges|Y"]
++    assert expert_actions(Goal([BOX, f], level=2, scale=40), meta) == ["PartDesign_Fillet"]
++    assert dressup_value(GoalFeature("chamfer_edges", {"size": 1.5}), "PartDesign_Chamfer") == 1.5
++    assert dressup_value(GoalFeature("fillet_edges", {"r": 2.5}), "PartDesign_Fillet") == 2.5
++
++
++def test_extra_selects_need_the_shape():
++    assert edges.extra_selects(["+Z", "-Z", "+X", "|Z", "|X"]) == ["Select:Edges@Face-Z", "Select:Edges@Face+X", "Select:Edges|X"]
++    assert edges.extra_selects(["+Z"]) == []
++
++
++class _Face:
++    def __init__(self, area, z):
++        self.Area, self.z = area, z
++
++
++def test_pick_nearest_face_to_at_else_largest():
++    big, small = _Face(1200.0, 20.0), _Face(50.0, 32.0)
++    cands = [(0, big), (5, small)]
++
++    def pick_face(shape, d):
++        return max(cands, key=lambda t: t[1].Area)
++
++    def dist(face, p):
++        return abs(face.z - p[2])
++
++    up = GoalFeature("hole", {"r": 2, "x": 0, "y": 0})
++    assert edges.pick(None, "+Z", up, pick_face, lambda s, a: cands, lambda d: d, dist)[0] == 0
++    at = GoalFeature("hole", {"r": 2, "x": 0, "y": 0, "at": [0, 0, 32]})
++    assert edges.pick(None, "+Z", at, pick_face, lambda s, a: cands, lambda d: d, dist)[0] == 5
++
++
++def test_at_is_encoded():
++    f = GoalFeature("hole", {"r": 2, "x": 4, "y": -2, "at": [4, -2, 30]})
++    tok = encode_state(State(doc_open=True), Goal([BOX, f], level=2, scale=40), invariant=True, sentinel=True)
++    row = tok.num[np.flatnonzero(tok.seg == SEG_GOAL)[1]]
++    assert np.allclose(row[47:51], [0.1, -0.05, 0.75, 1.0], atol=1e-3)
++    assert not row[51:].any()
++
++
++def test_edges_sampler_selections_and_points():
++    rng = random.Random(4)
++    allowed = set(edges.EXTRA_SELECTS) | {"Edges@Face+Z", "Edges|Z"}
++    for _ in range(1500):
++        g = sampler.sample_edges_goal(3, rng)
++        for i, f in enumerate(g.features):
++            if f.kind in edges.EDGE_KINDS:
++                assert edges.select_for(f, RECIPES[f.kind]) in allowed
++                assert (f.params.get("r") or f.params.get("size")) > 0
++            if edges.has_at(f) and g.features[1].kind in ("boss_cyl", "boss_box") and i == 2:
++                boss, base = g.features[1].params, g.features[0].params
++                assert f.params["at"] == [boss["x"], boss["y"], round(base["h"] + boss["h"], 1)]
+diff --git a/tests/test_ext_profiles.py b/tests/test_ext_profiles.py
+index 473a96e..8e617ec 100644
+--- a/tests/test_ext_profiles.py
++++ b/tests/test_ext_profiles.py
+@@ -24,8 +24,8 @@ def _inside(pt, poly):
+ 
+ def test_upstream_action_ids_unchanged():
+     # new commands are appended: every upstream id keeps its index
+-    assert ACTION_IDS[-2:] == ["Sketcher_CreateProfile", "Sketcher_ConstrainBlock"]
+-    assert ACTION_IDS.index("Sketcher_LeaveSketch") == len(ACTION_IDS) - 3
++    i = ACTION_IDS.index("Sketcher_LeaveSketch")  # upstream's last command
++    assert ACTION_IDS[i + 1:i + 3] == ["Sketcher_CreateProfile", "Sketcher_ConstrainBlock"]
+     i = GOAL_KINDS.index("profile_base")
+     assert GOAL_KINDS[i:i + 3] == ["profile_base", "profile_boss", "profile_pocket"]
+     assert CATALOGUE["Sketcher_ConstrainBlock"].category == "sketch_constraint"
+diff --git a/tests/test_ext_revolve.py b/tests/test_ext_revolve.py
+index c8fda00..787863f 100644
+--- a/tests/test_ext_revolve.py
++++ b/tests/test_ext_revolve.py
+@@ -16,7 +16,8 @@ def _shaft(axis=2):
+ 
+ 
+ def test_kinds_recipes_and_plane():
+-    assert GOAL_KINDS[-2:] == ["profile_revolve", "profile_groove"]
++    i = GOAL_KINDS.index("profile_revolve")
++    assert GOAL_KINDS[i:i + 2] == ["profile_revolve", "profile_groove"]
+     assert RECIPES["profile_revolve"].feature == "PartDesign_Revolution"
+     assert RECIPES["profile_groove"].feature == "PartDesign_Groove"
+     assert faces.support_for(_shaft(2), RECIPES["profile_revolve"]) == "Plane:XZ"
