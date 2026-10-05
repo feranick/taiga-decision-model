@@ -10,9 +10,9 @@ Extends Taiga-S1's vocabulary so it can build real parts like the Victor S 80 pu
 | 2 | **Features on origin planes with an offset**, extruded symmetrically: cross bores (e.g. a piston-pin bore through a cylinder wall), through windows, cross pins and lugs; new evaluation suite `plane` | Patch 0002. All tests pass, including FreeCAD (DGX, FreeCAD 1.1.3, 2026-10-05) |
 | 3 | **Curved outlines**: closed profiles of lines, arcs and splines, drawn by one command (`Sketcher_CreateProfile`) and fixed by `Sketcher_ConstrainBlock`; outline bases, bosses and pockets on any face or plane; new evaluation suite `outline` | Patch 0003. All 50 tests pass, including FreeCAD with sketch B-splines (DGX, FreeCAD 1.1.3, 2026-10-05) |
 | 4 | **Revolve and groove with a profile**: a closed outline turned about the X, Y or Z axis (`PartDesign_Revolution`, `PartDesign_Groove`), drawn like a lathe drawing (position along the axis, radius); turned bases, collars, ring grooves, bores; new evaluation suite `revolve`. (Pads and pockets of a given depth from any face are already covered by primitives 1–3.) | Patch 0004. All 55 tests pass, including FreeCAD revolve and groove builds (DGX, FreeCAD 1.1.3, 2026-10-05) |
-| 5 | **Patterns and mirrors about any axis**, of any feature: polar about X, Y or Z (full or part circle), linear along ±X, ±Y, ±Z, mirror across any origin plane; goal rows widened from 48 to 64 numbers; new suite `pattern` | Patch 0005. Pure-Python tests pass; FreeCAD tests run during `setup` |
-| 5b | **Fillets and chamfers on chosen edges** (`fillet_edges`, `chamfer_edges`): the edge loop of a face with any normal, or all edges along X, Y or Z; **features on a chosen face** (point `at`), e.g. a hole or hub on top of a boss, a chamfer on a shoulder; new suite `edges` | Patch 0006. Pure-Python tests pass; FreeCAD tests run during `setup` |
-| 6 | Training: size range up to ~400 mm; perturbed DAgger (`--dagger-perturb`); new suites per primitive | Planned |
+| 5 | **Patterns and mirrors about any axis**, of any feature: polar about X, Y or Z (full or part circle), linear along ±X, ±Y, ±Z, mirror across any origin plane; goal rows widened from 48 to 64 numbers; new suite `pattern` | Patch 0005. All 67 tests pass, including FreeCAD (DGX, FreeCAD 1.1.3, 2026-10-05) |
+| 5b | **Fillets and chamfers on chosen edges** (`fillet_edges`, `chamfer_edges`): the edge loop of a face with any normal, or all edges along X, Y or Z; **features on a chosen face** (point `at`), e.g. a hole or hub on top of a boss, a chamfer on a shoulder; new suite `edges` | Patch 0006. All 67 tests pass, including FreeCAD (DGX, FreeCAD 1.1.3, 2026-10-05) |
+| 6 | **Training options**: size test suites `large` and `large_ext` (goals ×4, up to ~360 mm) and optional size augmentation (`TAIGA_SIZE_AUG`); perturbed DAgger (`DAGGER_PERTURB`) in the training scripts; data and experiment names follow these settings | Patch 0007 + training scripts. Pure-Python tests pass; FreeCAD tests run during `setup` |
 
 Out of scope for now (Phase 2): sweep, loft, helix, multi-body parts, assemblies.
 
@@ -154,6 +154,31 @@ New kinds `fillet_edges` (`r`) and `chamfer_edges` (`size`) take their edges fro
 
 Together with primitives 1–4, these cover the S 80's bolt circles (port flanges, covers, motor flange), the impeller's blade ring, and the edge breaks on its machined parts.
 
+### Primitive 6: training options
+
+**Sizes.** The goal samplers make parts up to about 80 mm; the S 80 casing is 360 mm. The goal encoding divides every length by the part's scale, so a part scaled by k looks the same to the model (a test checks this), but FreeCAD may behave differently at other sizes. Rather than widening the samplers blindly, patch 0007 first measures it:
+
+- **Suite `large`:** the `iid` goals, from the same seeds, with every length ×4 (`TAIGA_LARGE_FACTOR`). Comparing `large` with `iid` isolates the effect of size.
+- **Suite `large_ext`:** expanded goals (a random new family each) ×4.
+- **Size augmentation, off by default:** `TAIGA_SIZE_AUG=p` scales a fraction p of the training goals by a log-uniform factor in [1, `TAIGA_SIZE_MAX`] (5). With the default 0 the training data are exactly as without the patch.
+
+**Perturbed DAgger.** Upstream's `--dagger-perturb` (in `4a31bcf`, not in the `a6e81d3` used by the variance study) makes DAgger rollouts take random off-plan commands, so the model learns to recover from mistakes. The training scripts pass it when `DAGGER_PERTURB` > 0 (upstream's Mesa-S1 uses 0.2, in half of the rollout batches: `DAGGER_PERTURB_FRAC=0.5`). It applies to the baseline too (`BASELINE=1`), so it can be compared on both.
+
+**Names.** Settings that change the training data (`TAIGA_EXT_FRACTION`, `TAIGA_SIZE_AUG`, `TAIGA_SIZE_MAX`) are added to the data folder name, so runs with different settings never share data; they and `DAGGER_PERTURB` are also added to the experiment name and recorded in `manifest.json` (`taiga_env`, `dagger_perturb`).
+
+### Training plan
+
+Each step as a sweep on the same machine (DGX shown), with fixed data (`DATA_SEED=2`), so differences come from the model:
+
+| # | Question | Commands |
+|---|---|---|
+| 1 | No regression, and how well the new families are learned at the default budget | `BASELINE=1 DATA_SEED=2 ./train_expanded.sh dgx sweep` and `DATA_SEED=2 ./train_expanded.sh dgx sweep` |
+| 2 | Is the budget too small for the larger task? | `DATA_SEED=2 DATA_SCALE=2 ./train_expanded.sh dgx sweep` (and `EPOCHS=8` if the training loss is still falling) |
+| 3 | Does perturbed DAgger help, on both? | Step 1 with `DAGGER_PERTURB=0.2` |
+| 4 | Only if `large` is clearly below `iid`: size augmentation | `DATA_SEED=2 TAIGA_SIZE_AUG=0.3 ./train_expanded.sh dgx sweep` |
+
+Compare with `../training/taiga_aggregate.py` on the run folders (`~/taiga-head/taiga-s1/runs/data2`, `~/taiga-expanded/taiga-s1/runs/data2`, `.../x2_data2`, ...).
+
 ## Workflow
 
 ### Develop
@@ -172,7 +197,7 @@ For `check_patches.sh`, run `source ~/taiga/freecad.env` first to include the Fr
 
 ```bash
 ./train_expanded.sh 5060ti setup                                # ~/taiga-expanded: clone, apply patches, venv, FreeCAD, tests
-DATA_SEED=2 ./train_expanded.sh 5060ti sweep                    # expanded model, 5 seeds, suites incl. "side", "plane", "outline", "revolve", "pattern", "edges"
+DATA_SEED=2 ./train_expanded.sh 5060ti sweep                    # expanded model, 5 seeds, suites incl. "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext"
 BASELINE=1 ./train_expanded.sh 5060ti setup                     # ~/taiga-head: same upstream commit, no patches
 BASELINE=1 DATA_SEED=2 ./train_expanded.sh 5060ti sweep         # baseline for the no-regression check
 ```
@@ -189,6 +214,6 @@ Compare the original suites between the two with `../training/taiga_aggregate.py
 
 | File | Version |
 |---|---|
-| `train_expanded.sh` | 2026.10.05.6 |
+| `train_expanded.sh` | 2026.10.05.7 |
 | `dev/*.sh` | 2026.10.05.1 (`export_patches.sh` 2026.10.05.2) |
-| `patches/` | 0001 (features on any planar face), 0002 (features on origin planes with an offset), 0003 (curved outlines), 0004 (revolve and groove with a profile), 0005 (patterns and mirrors about any axis, wider goal rows), 0006 (fillets and chamfers on chosen edges, features on a chosen face), against upstream `4a31bcf` |
+| `patches/` | 0001 (features on any planar face), 0002 (features on origin planes with an offset), 0003 (curved outlines), 0004 (revolve and groove with a profile), 0005 (patterns and mirrors about any axis, wider goal rows), 0006 (fillets and chamfers on chosen edges, features on a chosen face), 0007 (goals at other sizes), against upstream `4a31bcf` |

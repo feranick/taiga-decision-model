@@ -88,6 +88,8 @@ Run them one at a time or several in sequence, for example `./script.sh train ex
 | `DATA_SCALE` | `1` | Multiplies the number of training episodes (e.g. `0.5`, `2`) |
 | `EPOCHS` | `4` | Supervised training epochs |
 | `DAGGER_ROUNDS`, `DAGGER_EPISODES`, `DAGGER_EPOCHS` | `2`, `400`, `2` | DAgger rounds, episodes per level per round, training epochs per round |
+| `DAGGER_PERTURB`, `DAGGER_PERTURB_FRAC` | `0`, `0.5` | `> 0`: perturbed DAgger. In that fraction of the rollout batches, each step takes a random off-plan command with this probability, so the model learns to notice and repair mistakes (upstream `--dagger-perturb`; upstream's Mesa-S1 uses `0.2`). Needs a `REPO_REF` that has it, e.g. `4a31bcf`; the pinned `a6e81d3` does not. |
+| `TAIGA_EXT_FRACTION`, `TAIGA_SIZE_AUG`, `TAIGA_SIZE_MAX` | unset | `taiga-expanded` only: share of expanded training goals (0.35), share of training goals scaled up (0), largest scale factor (5). See `../taiga-expanded/README.md`. Recorded in `manifest.json` and added to the data and experiment names. |
 | `DETERMINISTIC` | `0` | `1`: deterministic PyTorch (stops on a non-deterministic operation); `warn`: only warns. Pins DAgger workers to `DAGGER_WORKERS` (8). |
 | `EXP` | derived | Experiment name; runs go to `runs/<EXP>/seed<N>`. Derived from the settings that differ from the defaults (e.g. `e8_x2_data2`); empty for the defaults, so plain runs stay in `runs/seed<N>`. |
 | `SEEDS` | `"2 12 22 32 42"` | Seeds used by `sweep` |
@@ -249,6 +251,7 @@ Run each as a sweep. The experiment name, and so its folder, is derived from the
 | Is it under-trained? | `DATA_SEED=2 EPOCHS=8 ./taiga_repro_5060ti.sh sweep` |
 | Is there too little data? | `DATA_SEED=2 DATA_SCALE=2 ./taiga_repro_5060ti.sh sweep` |
 | Does more DAgger help? | `DATA_SEED=2 DAGGER_ROUNDS=4 ./taiga_repro_5060ti.sh sweep` |
+| Does perturbed DAgger help? | `BASELINE=1 DATA_SEED=2 DAGGER_PERTURB=0.2 ../taiga-expanded/train_expanded.sh 5060ti sweep` (upstream `4a31bcf`, unpatched; compare with the same command without `DAGGER_PERTURB`) |
 | Is a single run reproducible? | `DETERMINISTIC=1 EXP=det_a SEEDS=2 ./taiga_repro_5060ti.sh sweep`, then the same with `EXP=det_b`; compare `sha256sum runs/det_*/seed2/last.pt` |
 
 Compare experiments side by side (mean ± sd over runs):
@@ -355,8 +358,8 @@ Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header 
 
 | Script | Version |
 |---|---|
-| `taiga_repro_DGX.sh` | 2026.10.05.4 |
-| `taiga_repro_5060ti.sh` | 2026.10.05.3 |
-| `taiga_repro_Quadro6000.sh` | 2026.10.05.3 |
+| `taiga_repro_DGX.sh` | 2026.10.05.5 |
+| `taiga_repro_5060ti.sh` | 2026.10.05.4 |
+| `taiga_repro_Quadro6000.sh` | 2026.10.05.4 |
 | `taiga_aggregate.py` | 2026.10.04.3 |
 | `taiga_run.py` | 2026.10.04.1 |

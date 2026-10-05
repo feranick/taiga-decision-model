@@ -1,0 +1,267 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Mon, 5 Oct 2026 17:35:02 -0400
+Subject: [PATCH] ext: goals at other sizes (large suites, optional size
+ augmentation)
+
+---
+ freecad_s1/evaluate.py     |  4 ++-
+ freecad_s1/ext/__init__.py |  1 +
+ freecad_s1/ext/sizes.py    | 74 ++++++++++++++++++++++++++++++++++++++
+ freecad_s1/goals.py        |  8 +++--
+ scripts/smoke_ext.py       |  8 ++---
+ tests/test_ext_runtime.py  |  4 +--
+ tests/test_ext_sizes.py    | 52 +++++++++++++++++++++++++++
+ 7 files changed, 142 insertions(+), 9 deletions(-)
+ create mode 100644 freecad_s1/ext/sizes.py
+ create mode 100644 tests/test_ext_sizes.py
+
+diff --git a/freecad_s1/evaluate.py b/freecad_s1/evaluate.py
+index 80afa49..92fa225 100644
+--- a/freecad_s1/evaluate.py
++++ b/freecad_s1/evaluate.py
+@@ -69,7 +69,7 @@ def offline_metrics(model: S1Model, ds: Dataset, device: torch.device, batch_siz
+ 
+ 
+ # Seed offsets keep suites that share a level (iid-L3, comp, comp2, comp3) on disjoint seeds.
+-SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000, "edges": 90_000}
++SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000, "edges": 90_000, "large": 0, "large_ext": 95_000}  # large: the iid seeds
+ 
+ SUITES = {
+     "iid": [(1, "iid"), (2, "iid"), (3, "iid")],  # training distribution, fresh goals
+@@ -84,6 +84,8 @@ SUITES = {
+     "revolve": [(3, "revolve")],  # taiga-expanded: turned parts, ring grooves, collars (revolve / groove)
+     "pattern": [(3, "pattern")],  # taiga-expanded: patterns and mirrors about any axis, of any feature
+     "edges": [(3, "edges")],  # taiga-expanded: fillets / chamfers on chosen edges, features on chosen faces
++    "large": [(1, "large"), (2, "large"), (3, "large")],  # taiga-expanded: the iid goals, every length x4 (ext.sizes)
++    "large_ext": [(3, "large_ext")],  # taiga-expanded: expanded goals x4
+     "len3": [(6, "len")],  # held-out length: 11 intents (2.2x the training maximum)
+     "len4": [(7, "len")],  # stress: 13 intents
+     "len5": [(8, "len")],  # stress: 15 intents
+diff --git a/freecad_s1/ext/__init__.py b/freecad_s1/ext/__init__.py
+index b59d973..0236647 100644
+--- a/freecad_s1/ext/__init__.py
++++ b/freecad_s1/ext/__init__.py
+@@ -8,6 +8,7 @@ Kept in its own package so the changes to upstream files stay small hooks:
+   revolve  revolve / groove a profile about a global axis (turned parts, ring grooves)
+   patterns polar / linear patterns and mirrors about any axis
+   edges    fillets / chamfers on chosen edges; features on a chosen face (nearest to a point)
++  sizes    goals at other sizes: "large" suites, optional size augmentation in training
+   sampler  goals that use the new features, mixed into the training split and
+            exposed as new evaluation suites (original suites are unchanged)
+ Pure stdlib: imported by FreeCAD's interpreter (runtime) and the torch process.
+diff --git a/freecad_s1/ext/sizes.py b/freecad_s1/ext/sizes.py
+new file mode 100644
+index 0000000..91f9319
+--- /dev/null
++++ b/freecad_s1/ext/sizes.py
+@@ -0,0 +1,74 @@
++"""Goals at other sizes: a size-generalization test, and optional size augmentation.
++
++The goal samplers make parts up to about 80 mm; real parts (e.g. the S 80 pump casing,
++360 mm) are larger. The goal encoding divides lengths by the goal's scale, so a goal scaled
++by k should look the same to the model, apart from what FreeCAD does differently at that size.
++
++  suite "large"      the iid goals (same seeds) with every length x TAIGA_LARGE_FACTOR (4):
++                     compare with "iid" to see the effect of size alone
++  suite "large_ext"  expanded goals (a random new family each) x TAIGA_LARGE_FACTOR
++  training           with TAIGA_SIZE_AUG = p > 0, a fraction p of training goals is scaled
++                     by a log-uniform factor in [1, TAIGA_SIZE_MAX] (5); default 0 (off),
++                     and then the training data are exactly as without this module
++"""
++from __future__ import annotations
++
++import copy
++import math
++import os
++
++from ..schema import GOAL_LENGTH_KEYS, Goal
++
++LARGE_FACTOR = float(os.environ.get("TAIGA_LARGE_FACTOR", "4"))
++SIZE_AUG = float(os.environ.get("TAIGA_SIZE_AUG", "0"))
++SIZE_MAX = float(os.environ.get("TAIGA_SIZE_MAX", "5"))
++SIZE_SPLITS = ("large", "large_ext")
++EXTRA_LENGTH_KEYS = ("z", "off")  # lengths added by the expanded features
++
++
++def _s(v, k: float):
++    return round(float(v) * k, 2)
++
++
++def scale_outline(o: dict, k: float) -> dict:
++    segs = []
++    for seg in o["segs"]:
++        if seg[0] == "S":
++            segs.append(["S", [[_s(u, k), _s(v, k)] for u, v in seg[1]]])
++        else:
++            segs.append([seg[0], *(_s(c, k) for c in seg[1:])])
++    return {"start": [_s(c, k) for c in o["start"]], "segs": segs}
++
++
++def scale_goal(goal: Goal, k: float) -> Goal:
++    """Copy of `goal` with every length multiplied by k (counts, angles, directions unchanged)."""
++    g = copy.deepcopy(goal)
++    for f in g.features:
++        p = f.params
++        for key in list(p):
++            if key in GOAL_LENGTH_KEYS or key in EXTRA_LENGTH_KEYS:
++                p[key] = _s(p[key], k)
++            elif key == "outline":
++                p[key] = scale_outline(p[key], k)
++            elif key == "at":
++                p[key] = [_s(c, k) for c in p[key]]
++    g.scale = goal.scale * k
++    return g
++
++
++def applies(split: str) -> bool:
++    return split in SIZE_SPLITS or (split == "train" and SIZE_AUG > 0)
++
++
++def sample(split: str, level: int, rng, inner) -> Goal:
++    """`inner(split)` samples an unscaled goal (goals.sample_split_goal)."""
++    if split == "train":
++        goal = inner("train")
++        if rng.random() < SIZE_AUG:
++            goal = scale_goal(goal, math.exp(rng.uniform(0.0, math.log(SIZE_MAX))))
++        return goal
++    if split == "large":
++        return scale_goal(inner("iid"), LARGE_FACTOR)
++    from . import sampler
++
++    return scale_goal(inner(rng.choice(sampler.SPLITS)), LARGE_FACTOR)
+diff --git a/freecad_s1/goals.py b/freecad_s1/goals.py
+index f67c84b..1522986 100644
+--- a/freecad_s1/goals.py
++++ b/freecad_s1/goals.py
+@@ -260,7 +260,7 @@ def heldout_composition(goal: Goal) -> str | None:
+     return None
+ 
+ 
+-SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern", "edges")  # side .. edges: taiga-expanded
++SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext")  # side .. large_ext: taiga-expanded
+ 
+ 
+ def goal_in_split(goal: Goal, split: str) -> bool:
+@@ -311,8 +311,12 @@ def _patterned_pocket_goal(rng: random.Random) -> Goal:
+     return Goal(feats, level=3, scale=_scale(base))
+ 
+ 
+-def sample_split_goal(split: str, level: int, rng: random.Random, tries: int = 2000) -> Goal:
++def sample_split_goal(split: str, level: int, rng: random.Random, tries: int = 2000, _sized: bool = False) -> Goal:
+     from .ext import sampler as ext  # taiga-expanded: new splits, and expanded goals mixed into training
++    from .ext import sizes
++
++    if not _sized and sizes.applies(split):  # taiga-expanded: goals at other sizes
++        return sizes.sample(split, level, rng, lambda s: sample_split_goal(s, level, rng, tries, _sized=True))
+ 
+     if split in ext.SPLITS or (split == "train" and level >= 2 and ext.use_expanded_for_train(rng)):
+         for _ in range(tries):  # never a composition upstream holds out for its comp suites
+diff --git a/scripts/smoke_ext.py b/scripts/smoke_ext.py
+index 5700634..509bb3d 100644
+--- a/scripts/smoke_ext.py
++++ b/scripts/smoke_ext.py
+@@ -5,8 +5,8 @@ import random
+ import sys
+ import time
+ 
+-from freecad_s1.ext import sampler
+-from freecad_s1.goals import sample_start
++from freecad_s1.ext import sampler, sizes
++from freecad_s1.goals import sample_split_goal, sample_start
+ from freecad_s1.runtime.episode import GoalBuildError, build_target, score, step_budget
+ from freecad_s1.runtime.session import HeadlessSession
+ 
+@@ -15,10 +15,10 @@ rng = random.Random(0)
+ stats = collections.Counter()
+ t0, nsteps = time.time(), 0
+ n_eps = int(sys.argv[1]) if len(sys.argv) > 1 else 10
+-for split in sampler.SPLITS:
++for split in sampler.SPLITS + sizes.SIZE_SPLITS:  # expanded families, and goals x4
+     for level in (2, 3):
+         for _ in range(n_eps):
+-            goal = sampler.sample_split(split, level, rng)
++            goal = sample_split_goal(split, level, rng)
+             try:
+                 target = build_target(s, goal)
+             except GoalBuildError as exc:
+diff --git a/tests/test_ext_runtime.py b/tests/test_ext_runtime.py
+index 8065699..bf029b1 100644
+--- a/tests/test_ext_runtime.py
++++ b/tests/test_ext_runtime.py
+@@ -3,7 +3,7 @@ import subprocess
+ 
+ import pytest
+ 
+-from freecad_s1.ext import sampler
++from freecad_s1.ext import sampler, sizes
+ from freecad_s1.runtime.fcenv import REPO_ROOT, freecad_available, freecad_env, freecad_python
+ 
+ pytestmark = pytest.mark.skipif(not freecad_available(), reason="FreeCAD not installed")
+@@ -15,7 +15,7 @@ def test_expanded_goals_are_buildable_and_expert_succeeds():
+                          capture_output=True, text=True, timeout=900)
+     stats = dict(line.rsplit(" ", 1) for line in out.stdout.splitlines() if " " in line and not line[0].isdigit())
+     msg = out.stdout + out.stderr[-3000:]
+-    for split in sampler.SPLITS:
++    for split in sampler.SPLITS + sizes.SIZE_SPLITS:
+         for level in (2, 3):
+             feasible = int(stats.get(f"{split}{level}_feasible", 0))
+             infeasible = int(stats.get(f"{split}{level}_infeasible", 0))
+diff --git a/tests/test_ext_sizes.py b/tests/test_ext_sizes.py
+new file mode 100644
+index 0000000..ce872fb
+--- /dev/null
++++ b/tests/test_ext_sizes.py
+@@ -0,0 +1,52 @@
++"""taiga-expanded: goals at other sizes (patch 0007)."""
++import random
++
++import numpy as np
++
++from freecad_s1.ext import profiles as pr, sizes
++from freecad_s1.goals import sample_split_goal
++from freecad_s1.model.featurize import SEG_GOAL, encode_state
++from freecad_s1.schema import Goal, GoalFeature, State
++
++
++def _goal():
++    return Goal([GoalFeature("base_box", {"w": 40, "d": 30, "h": 20}),
++                 GoalFeature("profile_pocket", {"outline": pr.slot(5, 0, 16, 6), "w": 16, "d": 6, "x": 5, "y": 0, "depth": 4}),
++                 GoalFeature("hole", {"r": 2, "x": 20, "y": 3, "z": 10, "nx": 1.0, "ny": 0.0, "nz": 0.0, "at": [20, 3, 10]}),
++                 GoalFeature("polar_pattern", {"n": 4.0, "angle": 180.0, "ax": 0.0, "ay": 0.0, "az": -1.0})],
++                level=3, scale=40)
++
++
++def test_scale_goal_scales_lengths_only():
++    g = sizes.scale_goal(_goal(), 4)
++    assert g.scale == 160
++    assert g.features[0].params == {"w": 160, "d": 120, "h": 80}
++    assert pr.bbox(g.features[1].params["outline"]) == tuple(4 * c for c in pr.bbox(_goal().features[1].params["outline"]))
++    h = g.features[2].params
++    assert (h["r"], h["x"], h["z"], h["nx"], h["at"]) == (8, 80, 40, 1.0, [80, 12, 40])
++    assert g.features[3].params == _goal().features[3].params  # counts, angles, axes unchanged
++
++
++def test_scaled_goals_encode_the_same():
++    a, b = _goal(), sizes.scale_goal(_goal(), 4)
++    ta = encode_state(State(doc_open=True), a, invariant=True, sentinel=True)
++    tb = encode_state(State(doc_open=True), b, invariant=True, sentinel=True)
++    rows = np.flatnonzero(ta.seg == SEG_GOAL)
++    assert np.allclose(ta.num[rows].astype(np.float32), tb.num[rows].astype(np.float32), atol=2e-3)
++
++
++def test_large_suite_is_iid_scaled():
++    for level in (1, 2, 3):
++        a = sample_split_goal("iid", level, random.Random(17 + level))
++        b = sample_split_goal("large", level, random.Random(17 + level))
++        assert b == sizes.scale_goal(a, sizes.LARGE_FACTOR)
++
++
++def test_training_unchanged_unless_augmentation_is_on(monkeypatch):
++    a = [sample_split_goal("train", 3, r) for r in [random.Random(5)] * 50]
++    assert not sizes.applies("train")
++    monkeypatch.setattr(sizes, "SIZE_AUG", 0.5)
++    rng = random.Random(5)
++    big = sum(sample_split_goal("train", 3, rng).scale > 100 for _ in range(300))
++    assert 30 < big < 270
++    assert all(g.scale <= 100 for g in a)

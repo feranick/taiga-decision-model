@@ -2,7 +2,7 @@
 # =============================================================================
 # taiga_repro_Quadro6000.sh — reproduce Taiga-S1 from scratch on a dual Quadro RTX 6000
 # (Turing, sm_75, 2 x 24 GB) workstation, Ubuntu 24.04 or 26.04, driver 595-open
-# Version: 2026.10.05.3
+# Version: 2026.10.05.4
 #
 # Same pipeline as the Spark/mochi scripts; differences:
 #   - FreeCAD from your PPA matching the release: noble -> bleedingedge/noble-bleed,
@@ -38,6 +38,11 @@
 #   DATA_SEED=   unset: training data follows SEED; set: every run uses that data
 #   DATA_SCALE=1 multiplies the 4000/8000/12000 training episodes
 #   EPOCHS=4  DAGGER_ROUNDS=2  DAGGER_EPISODES=400  DAGGER_EPOCHS=2
+#   DAGGER_PERTURB=0  >0: off-plan action rate in DAgger rollouts, so the model learns to
+#                recover (upstream --dagger-perturb, in DAGGER_PERTURB_FRAC=0.5 of the
+#                rollout batches; needs a REPO_REF that has it, e.g. 4a31bcf)
+#   TAIGA_*      taiga-expanded settings (TAIGA_EXT_FRACTION, TAIGA_SIZE_AUG, TAIGA_SIZE_MAX):
+#                recorded in manifest.json and in the data and experiment names
 #   DETERMINISTIC=0  1: deterministic PyTorch (fails on non-deterministic ops),
 #                    warn: only warn; DAgger workers pinned to DAGGER_WORKERS=8
 #   EXP=         experiment name; default derived from the settings above
@@ -54,6 +59,8 @@ DAGGER_ROUNDS=${DAGGER_ROUNDS:-2}
 DAGGER_EPISODES=${DAGGER_EPISODES:-400}
 DAGGER_EPOCHS=${DAGGER_EPOCHS:-2}
 DETERMINISTIC=${DETERMINISTIC:-0}; export DETERMINISTIC
+DAGGER_PERTURB=${DAGGER_PERTURB:-0}
+DAGGER_PERTURB_FRAC=${DAGGER_PERTURB_FRAC:-0.5}
 SEEDS=${SEEDS:-"2 12 22 32 42"}
 SWEEP_STAGES=${SWEEP_STAGES:-"data train export eval"}
 DATA_WORKERS=${DATA_WORKERS:-8}
@@ -82,8 +89,16 @@ REPO=$WORK/taiga-s1
 VENV=$REPO/.venv
 PY=$VENV/bin/python
 FCWRAP=$WORK/bin/freecad-python
+data_tag() {  # taiga-expanded settings that change the training data
+  local t=""
+  [[ -n ${TAIGA_EXT_FRACTION:-} ]] && t+="_ext$TAIGA_EXT_FRACTION"
+  [[ ${TAIGA_SIZE_AUG:-0} != 0 ]] && t+="_size$TAIGA_SIZE_AUG${TAIGA_SIZE_MAX:+x$TAIGA_SIZE_MAX}"
+  echo "$t"
+}
 exp_tag() {  # experiment name from non-default settings; empty for the defaults
-  local t=()
+  local t=() d
+  d=$(data_tag); [[ -n $d ]] && t+=("${d#_}")
+  [[ $DAGGER_PERTURB != 0 ]] && t+=("pt$DAGGER_PERTURB")
   [[ $EPOCHS != 4 ]] && t+=("e$EPOCHS")
   [[ "$DAGGER_ROUNDS/$DAGGER_EPISODES/$DAGGER_EPOCHS" != 2/400/2 ]] && t+=("dg${DAGGER_ROUNDS}x${DAGGER_EPISODES}x${DAGGER_EPOCHS}")
   [[ $DATA_SCALE != 1 ]] && t+=("x$DATA_SCALE")
@@ -95,6 +110,7 @@ EXP=${EXP:-$(exp_tag)}
 GROUP=$REPO/runs${EXP:+/$EXP}
 RUN=$GROUP/seed${SEED}
 TRAIN_DATA=data/gen_train_seed${DATA_SEED:-$SEED}; [[ $DATA_SCALE == 1 ]] || TRAIN_DATA+=_x$DATA_SCALE
+TRAIN_DATA+=$(data_tag)
 LOGTAG=${EXP:+${EXP}_}seed${SEED}
 SELF=$(realpath "$0")
 AGG=$(dirname "$SELF")/taiga_aggregate.py
@@ -371,7 +387,9 @@ stage_train() {
     dw=${DAGGER_WORKERS:-8}
     log "Deterministic training (DETERMINISTIC=$DETERMINISTIC), DAgger workers pinned to $dw"
   fi
-  log "Run $RUN | data $TRAIN_DATA | epochs $EPOCHS | DAgger ${DAGGER_ROUNDS}x${DAGGER_EPISODES}, ${DAGGER_EPOCHS} epochs"
+  local pt=()
+  [[ $DAGGER_PERTURB != 0 ]] && pt=(--dagger-perturb "$DAGGER_PERTURB" --dagger-perturb-frac "$DAGGER_PERTURB_FRAC")
+  log "Run $RUN | data $TRAIN_DATA | epochs $EPOCHS | DAgger ${DAGGER_ROUNDS}x${DAGGER_EPISODES}, ${DAGGER_EPOCHS} epochs${pt[*]:+ | ${pt[*]}}"
   # Upstream train_final.sh flags, plus EXTRA="--type-dropout 0.15" from the README; budgets are tunable.
   : > "$RUN/crashes_train.jsonl"   # 0 lines = no crash
   timed train env S1_CRASH_LOG="$RUN/crashes_train.jsonl" "$PY" "$RUNNER" freecad_s1.train_sft \
@@ -379,7 +397,7 @@ stage_train() {
     --epochs "$EPOCHS" --pos-mode rand --ordinal --invariant-numerics --modular --pointer "done" \
     --index-eval identity --type-dropout 0.15 \
     --dagger-rounds "$DAGGER_ROUNDS" --dagger-episodes "$DAGGER_EPISODES" --dagger-epochs "$DAGGER_EPOCHS" \
-    --dagger-workers "$dw" --seed "$SEED" --device auto
+    --dagger-workers "$dw" --seed "$SEED" --device auto "${pt[@]}"
   cp "$LOGDIR/train_${LOGTAG}.log" "$RUN/train.log"   # read by taiga_aggregate.py
 }
 
@@ -577,13 +595,15 @@ write_manifest() {
   [[ -x $PY ]] || return 0
   mkdir -p "$RUN"
   "$PY" - "$RUN/manifest.json" <<EOF
-import json, platform, subprocess, sys, torch
+import json, os, platform, subprocess, sys, torch
 def sh(c):
     try: return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
     except Exception: return None
 json.dump({
-  "script_version": "2026.10.05.3", "script": "taiga_repro_Quadro6000.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
+  "script_version": "2026.10.05.4", "script": "taiga_repro_Quadro6000.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
   "dagger_rounds": $DAGGER_ROUNDS, "dagger_episodes": $DAGGER_EPISODES, "dagger_epochs": $DAGGER_EPOCHS, "deterministic": "$DETERMINISTIC",
+  "dagger_perturb": $DAGGER_PERTURB, "dagger_perturb_frac": $DAGGER_PERTURB_FRAC,
+  "taiga_env": {k: v for k, v in sorted(os.environ.items()) if k.startswith("TAIGA_")},
   "gpu": "${GPU:-all}", "data_workers": $DATA_WORKERS, "workers": $WORKERS,
   "repo_commit": sh("git -C '$REPO' rev-parse HEAD"), "patches": "$(cat "$WORK/patches.sha" 2>/dev/null || true)", "host": platform.node(), "arch": platform.machine(),
   "python": sys.version.split()[0], "torch": torch.__version__, "cuda": torch.version.cuda,
