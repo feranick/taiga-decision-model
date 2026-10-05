@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.05.6
+Version: 2026.10.05.7
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -138,6 +138,16 @@ def base_scale(goal: dict) -> float:
 
         _, _, w, d = bbox(p["outline"])
         return max(w, d, p["h"])
+    if f["kind"] == "profile_revolve":  # taiga-expanded: turned base, 2 x largest radius or length
+        from freecad_s1.ext import profiles, revolve
+        from freecad_s1.schema import GoalFeature
+
+        k = revolve.axis_index(GoalFeature(f["kind"], p))
+        radial_is_u = revolve.to_uv(k, 0.0, 1.0) == (1.0, 0.0)
+        pts = profiles.polyline(p["outline"])
+        rad = [abs(u if radial_is_u else v) for u, v in pts]
+        along = [v if radial_is_u else u for u, v in pts]
+        return max(2 * max(rad), max(along) - min(along))
     return max(2 * p["r"], p["h"])  # base_cyl, base_hex
 
 

@@ -7,9 +7,9 @@ Extends Taiga-S1's vocabulary so it can build real parts like the Victor S 80 pu
 | # | Primitive | State |
 |---|---|---|
 | 1 | **Features on any planar face** (±X, ±Y, ±Z): holes, pockets, bosses on side faces; new evaluation suite `side` | Patch 0001. All 38 tests pass, including the FreeCAD ones (DGX, FreeCAD 1.1.3, 2026-10-05) |
-| 2 | **Features on origin planes with an offset**, extruded symmetrically: cross bores (e.g. a piston-pin bore through a cylinder wall), through windows, cross pins and lugs; new evaluation suite `plane` | Patch 0002. Pure-Python tests pass; FreeCAD tests run during `setup` |
-| 3 | **Curved outlines**: closed profiles of lines, arcs and splines, drawn by one command (`Sketcher_CreateProfile`) and fixed by `Sketcher_ConstrainBlock`; outline bases, bosses and pockets on any face or plane; new evaluation suite `outline` | Patch 0003. Pure-Python tests pass; FreeCAD tests run during `setup` |
-| 4 | Pad/pocket of a given depth from any face; revolve and groove with a profile | Planned |
+| 2 | **Features on origin planes with an offset**, extruded symmetrically: cross bores (e.g. a piston-pin bore through a cylinder wall), through windows, cross pins and lugs; new evaluation suite `plane` | Patch 0002. All tests pass, including FreeCAD (DGX, FreeCAD 1.1.3, 2026-10-05) |
+| 3 | **Curved outlines**: closed profiles of lines, arcs and splines, drawn by one command (`Sketcher_CreateProfile`) and fixed by `Sketcher_ConstrainBlock`; outline bases, bosses and pockets on any face or plane; new evaluation suite `outline` | Patch 0003. All 50 tests pass, including FreeCAD with sketch B-splines (DGX, FreeCAD 1.1.3, 2026-10-05) |
+| 4 | **Revolve and groove with a profile**: a closed outline turned about the X, Y or Z axis (`PartDesign_Revolution`, `PartDesign_Groove`), drawn like a lathe drawing (position along the axis, radius); turned bases, collars, ring grooves, bores; new evaluation suite `revolve`. (Pads and pockets of a given depth from any face are already covered by primitives 1–3.) | Patch 0004. Pure-Python tests pass; FreeCAD tests run during `setup` |
 | 5 | Patterns of any feature (bosses included); fillet/chamfer on chosen edges | Planned |
 | 6 | Training: size range up to ~400 mm; perturbed DAgger (`--dagger-perturb`); new suites per primitive | Planned |
 
@@ -94,6 +94,26 @@ New kinds `profile_base`, `profile_boss` and `profile_pocket` carry a closed out
 
 This is what the S 80's curved casing outline, its blades, the covers and the wear-plate cutter need, apart from the revolve parts (primitive 4).
 
+### Primitive 4: revolve and groove with a profile
+
+New kinds `profile_revolve` (adds material) and `profile_groove` (removes it) turn a closed outline about a global axis through the origin:
+
+```json
+{"kind": "profile_revolve", "params": {"ax": 0, "ay": 0, "az": 1, "angle": 360,
+  "nx": 0, "ny": 1, "nz": 0, "off": 0, "x": 0, "y": 0, "z": 0,
+  "outline": {"start": [0, 0], "segs": [["L", 10, 0], ["L", 10, 20], ["L", 6, 20], ["L", 6, 40], ["L", 0, 40], ["L", 0, 0]]}}}
+```
+
+- **Axis:** (ax, ay, az), one of them 1. `angle` is the sweep in degrees (default 360).
+- **Sketch plane:** an origin plane that contains the axis, given like a primitive 2 feature (`off: 0`): XZ (normal Y) for the Z and X axes, YZ (normal X) for the Y axis.
+- **Outline:** same format and (u, v) convention as primitive 3. About Z on the XZ plane, u = X is the radius and v = Z the position along the axis (the example above is a stepped shaft, Ø20 × 20 then Ø12 × 20). About X, u = X is along the axis and v = Z the radius. About Y, u = Y is along and v = Z the radius. The outline must stay on one side of the axis (radius ≥ 0).
+- **No new commands:** the outline is drawn by `Sketcher_CreateProfile` and fixed by `Sketcher_ConstrainBlock`, as in primitive 3. The model chooses `PartDesign_Revolution` or `PartDesign_Groove`; the runtime revolves about the sketch axis that runs along the goal's axis (`H_Axis` or `V_Axis`, found from the sketch placement) by the goal's angle. Upstream's own revolve goals are unchanged (`V_Axis`, 360°).
+- **Encoding:** the axis and angle / 360 are added to the extra block of the goal encoding (positions 43–46). The goal row now uses 47 of its 48 numbers, so primitive 5 will have to widen it.
+- **New training goals:** stepped turned parts (1–3 steps, optionally hollow) about Z (mostly), X or Y, with ring grooves, revolved collars and, for solid parts turned about Z whose top step is the widest, an axial hole and a top chamfer.
+- **New evaluation suite `revolve`:** level 3.
+
+This covers the S 80's shaft, bearing bracket, seal housing, wear ring and the round parts of the casing.
+
 ## Workflow
 
 ### Develop
@@ -112,7 +132,7 @@ For `check_patches.sh`, run `source ~/taiga/freecad.env` first to include the Fr
 
 ```bash
 ./train_expanded.sh 5060ti setup                                # ~/taiga-expanded: clone, apply patches, venv, FreeCAD, tests
-DATA_SEED=2 ./train_expanded.sh 5060ti sweep                    # expanded model, 5 seeds, suites incl. "side"
+DATA_SEED=2 ./train_expanded.sh 5060ti sweep                    # expanded model, 5 seeds, suites incl. "side", "plane", "outline", "revolve"
 BASELINE=1 ./train_expanded.sh 5060ti setup                     # ~/taiga-head: same upstream commit, no patches
 BASELINE=1 DATA_SEED=2 ./train_expanded.sh 5060ti sweep         # baseline for the no-regression check
 ```
@@ -129,6 +149,6 @@ Compare the original suites between the two with `../training/taiga_aggregate.py
 
 | File | Version |
 |---|---|
-| `train_expanded.sh` | 2026.10.05.4 |
+| `train_expanded.sh` | 2026.10.05.5 |
 | `dev/*.sh` | 2026.10.05.1 (`export_patches.sh` 2026.10.05.2) |
-| `patches/` | 0001 (features on any planar face), 0002 (features on origin planes with an offset), 0003 (curved outlines), against upstream `4a31bcf` |
+| `patches/` | 0001 (features on any planar face), 0002 (features on origin planes with an offset), 0003 (curved outlines), 0004 (revolve and groove with a profile), against upstream `4a31bcf` |

@@ -1,0 +1,463 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Mon, 5 Oct 2026 17:02:09 -0400
+Subject: [PATCH] ext: revolve and groove with a profile
+
+---
+ freecad_s1/evaluate.py        |  3 +-
+ freecad_s1/ext/__init__.py    |  1 +
+ freecad_s1/ext/faces.py       | 11 ++--
+ freecad_s1/ext/profiles.py    |  2 +-
+ freecad_s1/ext/revolve.py     | 88 +++++++++++++++++++++++++++++++
+ freecad_s1/ext/sampler.py     | 72 +++++++++++++++++++++++++-
+ freecad_s1/goals.py           |  5 +-
+ freecad_s1/runtime/session.py |  2 +
+ freecad_s1/schema.py          |  1 +
+ tests/test_ext_faces.py       |  2 +-
+ tests/test_ext_profiles.py    |  3 +-
+ tests/test_ext_revolve.py     | 97 +++++++++++++++++++++++++++++++++++
+ 12 files changed, 276 insertions(+), 11 deletions(-)
+ create mode 100644 freecad_s1/ext/revolve.py
+ create mode 100644 tests/test_ext_revolve.py
+
+diff --git a/freecad_s1/evaluate.py b/freecad_s1/evaluate.py
+index 0b553e3..6f6b1d1 100644
+--- a/freecad_s1/evaluate.py
++++ b/freecad_s1/evaluate.py
+@@ -69,7 +69,7 @@ def offline_metrics(model: S1Model, ds: Dataset, device: torch.device, batch_siz
+ 
+ 
+ # Seed offsets keep suites that share a level (iid-L3, comp, comp2, comp3) on disjoint seeds.
+-SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000}
++SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000}
+ 
+ SUITES = {
+     "iid": [(1, "iid"), (2, "iid"), (3, "iid")],  # training distribution, fresh goals
+@@ -81,6 +81,7 @@ SUITES = {
+     "side": [(3, "side")],  # taiga-expanded: features on side faces (box base, 1-2 side features)
+     "plane": [(3, "plane")],  # taiga-expanded: datum-plane features (cross bores, windows, cross bosses)
+     "outline": [(3, "outline")],  # taiga-expanded: curved outlines (bases, bosses, pockets, side windows)
++    "revolve": [(3, "revolve")],  # taiga-expanded: turned parts, ring grooves, collars (revolve / groove)
+     "len3": [(6, "len")],  # held-out length: 11 intents (2.2x the training maximum)
+     "len4": [(7, "len")],  # stress: 13 intents
+     "len5": [(8, "len")],  # stress: 15 intents
+diff --git a/freecad_s1/ext/__init__.py b/freecad_s1/ext/__init__.py
+index b0a7b8e..f73871d 100644
+--- a/freecad_s1/ext/__init__.py
++++ b/freecad_s1/ext/__init__.py
+@@ -5,6 +5,7 @@ Kept in its own package so the changes to upstream files stay small hooks:
+            origin planes with an offset, extruded symmetrically (cross bores, windows, pins)
+   profiles closed outlines of lines, arcs and splines, drawn by one command
+            (Sketcher_CreateProfile) and fixed by Sketcher_ConstrainBlock
++  revolve  revolve / groove a profile about a global axis (turned parts, ring grooves)
+   sampler  goals that use the new features, mixed into the training split and
+            exposed as new evaluation suites (original suites are unchanged)
+ Pure stdlib: imported by FreeCAD's interpreter (runtime) and the torch process.
+diff --git a/freecad_s1/ext/faces.py b/freecad_s1/ext/faces.py
+index 3e4e93a..aa4c5ef 100644
+--- a/freecad_s1/ext/faces.py
++++ b/freecad_s1/ext/faces.py
+@@ -115,9 +115,10 @@ def local_box(sk, f, sx: float, sy: float, vec_cls):
+ 
+ # goal-feature encoding: extra block appended after upstream's goal numbers, so goals
+ # without these keys featurize exactly as before
+-# Layout (14 numbers): z/scale, nx, ny, nz, off/scale, outline n_line/10, n_arc/10, n_spline/10,
+-# outline width/scale, height/scale | flags: has z, has normal, has off, has outline.
+-EXT_NUM_DIM = 14
++# Layout (18 numbers): z/scale, nx, ny, nz, off/scale, outline n_line/10, n_arc/10, n_spline/10,
++# outline width/scale, height/scale | flags: has z, has normal, has off, has outline |
++# revolve axis ax, ay, az, angle/360 (ext.revolve).
++EXT_NUM_DIM = 18
+ 
+ 
+ def _clip(x: float) -> float:
+@@ -135,4 +136,6 @@ def extra_goal_num(f, scale: float) -> list[float]:
+     else:
+         vals += [summ[0], summ[1], summ[2], _clip(summ[3] / scale), _clip(summ[4] / scale)]
+     flags = [float("z" in p), float(has_normal(f)), float("off" in p), float(summ is not None)]
+-    return vals + flags
++    from . import revolve
++
++    return vals + flags + revolve.extra_goal_num(f)
+diff --git a/freecad_s1/ext/profiles.py b/freecad_s1/ext/profiles.py
+index c884b7a..36ec5c2 100644
+--- a/freecad_s1/ext/profiles.py
++++ b/freecad_s1/ext/profiles.py
+@@ -26,7 +26,7 @@ import os
+ 
+ from . import faces
+ 
+-OUTLINE_KINDS = ("profile_base", "profile_boss", "profile_pocket")
++OUTLINE_KINDS = ("profile_base", "profile_boss", "profile_pocket", "profile_revolve", "profile_groove")
+ # how splines are drawn: "bspline" (sketch B-spline) or "polyline" (short lines; fallback
+ # if a FreeCAD build has trouble with B-splines in sketches)
+ SPLINE_MODE = os.environ.get("TAIGA_SPLINE", "bspline")
+diff --git a/freecad_s1/ext/revolve.py b/freecad_s1/ext/revolve.py
+new file mode 100644
+index 0000000..8bb8b03
+--- /dev/null
++++ b/freecad_s1/ext/revolve.py
+@@ -0,0 +1,88 @@
++"""Revolve and groove with a profile.
++
++profile_revolve (additive, PartDesign_Revolution) and profile_groove (subtractive,
++PartDesign_Groove) turn a closed outline (ext.profiles) around a global axis through the
++origin. The outline is sketched on an origin plane that contains the axis, given like a
++datum feature (ext.faces): normal (nx, ny, nz) and "off": 0. The axis is (ax, ay, az), one
++of them 1, and "angle" (degrees, default 360) the sweep.
++
++Outlines are written in the plane's (u, v) coordinates (ext.faces convention). Helpers
++below build them from (along-axis, radius) pairs, so a turned part is described like a
++lathe drawing: radius >= 0, the axis is r = 0.
++
++Pure stdlib except set_axis(), which works on FreeCAD objects passed in.
++"""
++from __future__ import annotations
++
++from . import faces
++
++AXIS_KEYS = ("ax", "ay", "az")
++REVOLVE_KINDS = ("profile_revolve", "profile_groove")
++
++
++def has_axis(f) -> bool:
++    return any(k in f.params for k in AXIS_KEYS)
++
++
++def axis_index(f) -> int:
++    vec = [abs(float(f.params.get(k, 0.0))) for k in AXIS_KEYS]
++    return max(range(3), key=lambda i: vec[i])
++
++
++def angle(f) -> float:
++    return float(f.params.get("angle", 360.0))
++
++
++def plane_for_axis(axis: int) -> int:
++    """Normal (axis index) of the origin plane used to sketch a profile turned about `axis`:
++    Z -> XZ plane (normal Y), X -> XZ plane (normal Y), Y -> YZ plane (normal X)."""
++    return 0 if axis == 1 else 1
++
++
++def to_uv(axis: int, a: float, r: float) -> tuple[float, float]:
++    """(along-axis a, radius r) -> (u, v) on the plane from plane_for_axis(axis)."""
++    k = plane_for_axis(axis)
++    ua, va = faces.inplane_axes(k)  # global axes of u and v
++    return (a, r) if ua == axis else (r, a)
++
++
++def lathe_outline(axis: int, pts_ar: list[tuple[float, float]]) -> dict:
++    """Closed outline from (a, r) points (lines between them, closed back to the first)."""
++    uv = [list(map(lambda x: round(x, 3), to_uv(axis, a, r))) for a, r in pts_ar]
++    return {"start": uv[0], "segs": [["L", *p] for p in uv[1:]] + [["L", *uv[0]]]}
++
++
++def revolve_params(axis: int, **extra) -> dict:
++    """Common params of a revolve/groove feature turned about global `axis` (0, 1, 2)."""
++    k = plane_for_axis(axis)
++    p = {"nx": 0.0, "ny": 0.0, "nz": 0.0, "off": 0.0, "ax": 0.0, "ay": 0.0, "az": 0.0}
++    p[("nx", "ny", "nz")[k]] = 1.0
++    p[AXIS_KEYS[axis]] = 1.0
++    p.update(x=0.0, y=0.0, z=0.0)
++    p.update(extra)
++    return p
++
++
++def set_axis(feat, sk, f, vec_cls) -> None:
++    """Revolution/Groove hook: revolve about the sketch axis that runs along the intent's
++    global axis (H_Axis or V_Axis), with the intent's angle. Intents without an axis keep
++    upstream's behaviour (V_Axis, 360)."""
++    if f is None or not has_axis(f):
++        return
++    k = axis_index(f)
++    rot = sk.Placement.Rotation
++    xdir, ydir = rot.multVec(vec_cls(1, 0, 0)), rot.multVec(vec_cls(0, 1, 0))
++    if abs((xdir.x, xdir.y, xdir.z)[k]) > 0.99:
++        feat.ReferenceAxis = (sk, ["H_Axis"])
++    elif abs((ydir.x, ydir.y, ydir.z)[k]) > 0.99:
++        feat.ReferenceAxis = (sk, ["V_Axis"])
++    feat.Angle = angle(f)
++
++
++def extra_goal_num(f) -> list[float]:
++    """Axis (ax, ay, az) and angle / 360 for the goal encoding (zeros without an axis)."""
++    if not has_axis(f):
++        return [0.0, 0.0, 0.0, 0.0]
++    vec = [0.0, 0.0, 0.0]
++    vec[axis_index(f)] = 1.0
++    return vec + [angle(f) / 360.0]
+diff --git a/freecad_s1/ext/sampler.py b/freecad_s1/ext/sampler.py
+index d84a8c6..637cdc4 100644
+--- a/freecad_s1/ext/sampler.py
++++ b/freecad_s1/ext/sampler.py
+@@ -16,7 +16,7 @@ from ..schema import Goal, GoalFeature
+ TRAIN_FRACTION = float(os.environ.get("TAIGA_EXT_FRACTION", "0.35"))
+ 
+ # new evaluation splits (each also feeds training through sample_train)
+-SPLITS = ("side", "plane", "outline")
++SPLITS = ("side", "plane", "outline", "revolve")
+ 
+ 
+ def _u(rng: random.Random, lo: float, hi: float) -> float:
+@@ -290,7 +290,75 @@ def _outline_split(level: int, rng: random.Random) -> Goal:
+     return sample_side_window_goal(level, rng) if rng.random() < 0.25 else sample_outline_goal(level, rng)
+ 
+ 
+-SAMPLERS = {"side": sample_side_goal, "plane": sample_plane_goal, "outline": _outline_split}
++def sample_revolve_goal(level: int, rng: random.Random) -> Goal:
++    """Turned parts: a stepped profile revolved about Z (mostly), X or Y, optionally hollow;
++    then ring grooves, a revolved collar, an axial hole and a top chamfer (Z parts)."""
++    from . import revolve as rv
++
++    for _ in range(100):
++        axis = rng.choice([2, 2, 2, 0, 1])
++        n_steps = rng.randint(1, 3)
++        lengths = [_u(rng, 6, 30) for _ in range(n_steps)]
++        radii = [_u(rng, 8, 35) for _ in range(n_steps)]
++        r_in = _u(rng, 2, min(radii) - 4) if rng.random() < 0.3 and min(radii) > 7 else 0.0
++        pts, a = [(0.0, r_in), (0.0, radii[0])], 0.0
++        for i, (ln, r) in enumerate(zip(lengths, radii)):
++            a += ln
++            pts.append((a, r))
++            if i + 1 < n_steps:
++                pts.append((a, radii[i + 1]))
++        pts.append((a, r_in))
++        total = a
++        base = GoalFeature("profile_revolve", rv.revolve_params(axis, outline=rv.lathe_outline(axis, pts), angle=360.0))
++        feats = [base]
++        r_max = max(radii)
++
++        def top_ok(fs):
++            # "Face+Z" picks the largest +Z face: make sure that is the end face (widest step on
++            # top, no collar yet), solid so an axial hole has material to cut
++            return r_in == 0.0 and radii[-1] >= r_max and not any(x.kind == "profile_revolve" for x in fs[1:])
++
++        budget = 1 if level <= 2 else 4
++        n_extra = 1 if level <= 2 else rng.randint(1, 3)
++        for _ in range(n_extra):
++            if len(feats) - 1 >= budget:
++                break
++            what = rng.choice(["groove", "groove", "collar", "hole"] if axis == 2 else ["groove", "groove", "collar"])
++            if what == "groove":
++                i = rng.randrange(n_steps)
++                a0 = sum(lengths[:i])
++                w = _u(rng, 1.5, max(1.6, min(6.0, lengths[i] * 0.4)))
++                if lengths[i] < w + 3:
++                    continue
++                ag = _u(rng, a0 + w / 2 + 1.5, a0 + lengths[i] - w / 2 - 1.5)
++                depth = _u(rng, 1.0, max(1.1, (radii[i] - r_in) * 0.35))
++                ring = [(ag - w / 2, radii[i] - depth), (ag + w / 2, radii[i] - depth),
++                        (ag + w / 2, radii[i] + 2), (ag - w / 2, radii[i] + 2)]
++                feats.append(GoalFeature("profile_groove", rv.revolve_params(axis, outline=rv.lathe_outline(axis, ring),
++                                                                             angle=360.0)))
++            elif what == "collar":
++                i = rng.randrange(n_steps)
++                a0 = sum(lengths[:i])
++                w = _u(rng, 2, max(2.1, lengths[i] * 0.5))
++                ac = _u(rng, a0 + w / 2, a0 + lengths[i] - w / 2)
++                r_out = radii[i] + _u(rng, 2, 10)
++                r_max = max(r_max, r_out)
++                collar = [(ac - w / 2, max(r_in, radii[i] - 2)), (ac + w / 2, max(r_in, radii[i] - 2)),
++                          (ac + w / 2, r_out), (ac - w / 2, r_out)]
++                feats.append(GoalFeature("profile_revolve", rv.revolve_params(axis, outline=rv.lathe_outline(axis, collar),
++                                                                              angle=360.0)))
++            elif top_ok(feats):  # axial hole through the top face of a part turned about Z
++                r_top = radii[-1]
++                feats.append(GoalFeature("hole", {"r": _u(rng, 1.5, max(1.6, r_top * 0.35)), "x": 0.0, "y": 0.0}))
++        if axis == 2 and level >= 3 and len(feats) - 1 < budget and top_ok(feats) and rng.random() < 0.6:
++            feats.append(GoalFeature("chamfer_top", {"size": _u(rng, 0.5, 1.5)}))
++        scale = max(2 * r_max, total)
++        return Goal(feats, level=min(level, 3), scale=scale)
++    raise ValueError("could not sample a revolve goal")
++
++
++SAMPLERS = {"side": sample_side_goal, "plane": sample_plane_goal, "outline": _outline_split,
++            "revolve": sample_revolve_goal}
+ 
+ 
+ def sample_split(split: str, level: int, rng: random.Random) -> Goal:
+diff --git a/freecad_s1/goals.py b/freecad_s1/goals.py
+index eb34fd2..b02b450 100644
+--- a/freecad_s1/goals.py
++++ b/freecad_s1/goals.py
+@@ -55,6 +55,9 @@ RECIPES: dict[str, Recipe] = {
+     "profile_base": Recipe("PartDesign_Pad", "Plane:XY", "Sketcher_CreateProfile", ("Sketcher_ConstrainBlock",)),
+     "profile_boss": Recipe("PartDesign_Pad", "Face+Z", "Sketcher_CreateProfile", ("Sketcher_ConstrainBlock",)),
+     "profile_pocket": Recipe("PartDesign_Pocket", "Face+Z", "Sketcher_CreateProfile", ("Sketcher_ConstrainBlock",)),
++    # taiga-expanded: revolve / groove a profile about a global axis (ext.revolve); sketched on an origin plane
++    "profile_revolve": Recipe("PartDesign_Revolution", "Face+Z", "Sketcher_CreateProfile", ("Sketcher_ConstrainBlock",)),
++    "profile_groove": Recipe("PartDesign_Groove", "Face+Z", "Sketcher_CreateProfile", ("Sketcher_ConstrainBlock",)),
+ }
+ 
+ 
+@@ -254,7 +257,7 @@ def heldout_composition(goal: Goal) -> str | None:
+     return None
+ 
+ 
+-SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline")  # side, plane, outline: taiga-expanded
++SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve")  # side .. revolve: taiga-expanded
+ 
+ 
+ def goal_in_split(goal: Goal, split: str) -> bool:
+diff --git a/freecad_s1/runtime/session.py b/freecad_s1/runtime/session.py
+index 2f5fbd6..ee2e19d 100644
+--- a/freecad_s1/runtime/session.py
++++ b/freecad_s1/runtime/session.py
+@@ -26,6 +26,7 @@ from ..actions import CATALOGUE, SOLID_FEATURE_TYPES, enumerate_actions
+ from ..expert import Meta, ObjMeta, expert_actions, progress
+ from ..ext import faces as ext_faces
+ from ..ext import profiles as ext_profiles
++from ..ext import revolve as ext_revolve
+ from ..goals import StartSpec
+ from ..schema import CONSTRAINT_KINDS, Goal, Node, SelItem, ShapeInfo, State, RECENT_ACTIONS
+ from . import params as P
+@@ -616,6 +617,7 @@ def ex_profile_feature(s: HeadlessSession, a: str) -> bool:
+     elif a in ("PartDesign_Revolution", "PartDesign_Groove"):
+         feat.ReferenceAxis = (sk, ["V_Axis"])
+         feat.Angle = 360
++        ext_revolve.set_axis(feat, sk, f, V)  # taiga-expanded: axis and angle from the intent
+     elif a == "PartDesign_Hole":
+         feat.Diameter = P.hole_diameter(f, scale)
+         feat.DepthType = "ThroughAll"
+diff --git a/freecad_s1/schema.py b/freecad_s1/schema.py
+index f7359f0..1c54a0c 100644
+--- a/freecad_s1/schema.py
++++ b/freecad_s1/schema.py
+@@ -82,6 +82,7 @@ GOAL_KINDS = [
+     "polar_pattern", "linear_pattern", "mirror",
+     "fillet_top", "fillet_vertical", "chamfer_top", "shell",
+     "profile_base", "profile_boss", "profile_pocket",  # taiga-expanded: curved outlines (ext.profiles)
++    "profile_revolve", "profile_groove",  # taiga-expanded: revolve / groove with a profile (ext.revolve)
+ ]
+ GOAL_PARAM_KEYS = ["w", "d", "h", "r", "ri", "ro", "x", "y", "depth", "n", "length", "size", "t"]
+ GOAL_LENGTH_KEYS = {"w", "d", "h", "r", "ri", "ro", "x", "y", "depth", "length", "size", "t"}
+diff --git a/tests/test_ext_faces.py b/tests/test_ext_faces.py
+index febe0a9..047c6a2 100644
+--- a/tests/test_ext_faces.py
++++ b/tests/test_ext_faces.py
+@@ -43,7 +43,7 @@ def test_original_goals_featurize_exactly_as_before():
+     for lvl in (1, 2, 3, 4):
+         g = sample_goal(lvl, rng)
+         tok = encode_state(st, g, invariant=True, sentinel=True)
+-        assert np.all(tok.num[:, 29:43] == 0)  # the extra block is all zeros without ext keys
++        assert np.all(tok.num[:, 29:47] == 0)  # the extra block is all zeros without ext keys
+ 
+ 
+ def test_side_goal_features_are_encoded():
+diff --git a/tests/test_ext_profiles.py b/tests/test_ext_profiles.py
+index 34eed05..473a96e 100644
+--- a/tests/test_ext_profiles.py
++++ b/tests/test_ext_profiles.py
+@@ -26,7 +26,8 @@ def test_upstream_action_ids_unchanged():
+     # new commands are appended: every upstream id keeps its index
+     assert ACTION_IDS[-2:] == ["Sketcher_CreateProfile", "Sketcher_ConstrainBlock"]
+     assert ACTION_IDS.index("Sketcher_LeaveSketch") == len(ACTION_IDS) - 3
+-    assert GOAL_KINDS[-3:] == ["profile_base", "profile_boss", "profile_pocket"]
++    i = GOAL_KINDS.index("profile_base")
++    assert GOAL_KINDS[i:i + 3] == ["profile_base", "profile_boss", "profile_pocket"]
+     assert CATALOGUE["Sketcher_ConstrainBlock"].category == "sketch_constraint"
+ 
+ 
+diff --git a/tests/test_ext_revolve.py b/tests/test_ext_revolve.py
+new file mode 100644
+index 0000000..c8fda00
+--- /dev/null
++++ b/tests/test_ext_revolve.py
+@@ -0,0 +1,97 @@
++"""taiga-expanded: revolve / groove with a profile (patch 0004), pure-Python parts."""
++import random
++
++import numpy as np
++
++from freecad_s1.expert import Meta, ObjMeta, expert_actions
++from freecad_s1.ext import faces, profiles as pr, revolve as rv, sampler
++from freecad_s1.goals import RECIPES
++from freecad_s1.model.featurize import SEG_GOAL, encode_state
++from freecad_s1.schema import GOAL_KINDS, Goal, GoalFeature, State
++
++
++def _shaft(axis=2):
++    pts = [(0, 0), (0, 10), (20, 10), (20, 6), (40, 6), (40, 0)]
++    return GoalFeature("profile_revolve", rv.revolve_params(axis, outline=rv.lathe_outline(axis, pts), angle=360.0))
++
++
++def test_kinds_recipes_and_plane():
++    assert GOAL_KINDS[-2:] == ["profile_revolve", "profile_groove"]
++    assert RECIPES["profile_revolve"].feature == "PartDesign_Revolution"
++    assert RECIPES["profile_groove"].feature == "PartDesign_Groove"
++    assert faces.support_for(_shaft(2), RECIPES["profile_revolve"]) == "Plane:XZ"
++    assert faces.support_for(_shaft(0), RECIPES["profile_revolve"]) == "Plane:XZ"
++    assert faces.support_for(_shaft(1), RECIPES["profile_revolve"]) == "Plane:YZ"
++    meta = Meta(doc_open=True, workbench="PartDesignWorkbench", body="Body")
++    meta.objects["Body"] = ObjMeta("Body", "body")
++    assert expert_actions(Goal([_shaft(2)], level=1, scale=40), meta) == ["Select:Plane:XZ"]
++
++
++def test_lathe_outline_maps_axis_and_radius():
++    # about Z on the XZ plane: u = X = radius, v = Z = along the axis
++    o = rv.lathe_outline(2, [(0, 0), (0, 10), (30, 10), (30, 0)])
++    assert pr.bbox(o) == (5.0, 15.0, 10.0, 30.0)
++    # about X on the XZ plane: u = X = along, v = Z = radius
++    o = rv.lathe_outline(0, [(0, 0), (0, 10), (30, 10), (30, 0)])
++    assert pr.bbox(o) == (15.0, 5.0, 30.0, 10.0)
++    # about Y on the YZ plane: u = Y = along, v = Z = radius
++    o = rv.lathe_outline(1, [(0, 0), (0, 10), (30, 10), (30, 0)])
++    assert pr.bbox(o) == (15.0, 5.0, 30.0, 10.0)
++
++
++class _V:
++    def __init__(self, x=0.0, y=0.0, z=0.0):
++        self.x, self.y, self.z = float(x), float(y), float(z)
++
++
++class _Rot:
++    def __init__(self, cols):
++        self.R = np.array(cols, float).T
++
++    def multVec(self, v):  # noqa: N802
++        return _V(*(self.R @ np.array([v.x, v.y, v.z])))
++
++
++class _Sk:
++    def __init__(self, cols):
++        self.Placement = type("P", (), {"Rotation": _Rot(cols)})()
++
++
++class _Feat:
++    ReferenceAxis = None
++    Angle = None
++
++
++def test_set_axis_picks_the_sketch_axis_along_the_global_axis():
++    xz = [(1, 0, 0), (0, 0, 1), (0, -1, 0)]  # XZ plane: sketch x -> X, y -> Z
++    yz = [(0, 1, 0), (0, 0, 1), (1, 0, 0)]  # YZ plane: sketch x -> Y, y -> Z
++    for cols, axis, expected in ((xz, 2, "V_Axis"), (xz, 0, "H_Axis"), (yz, 1, "H_Axis")):
++        sk, feat = _Sk(cols), _Feat()
++        rv.set_axis(feat, sk, _shaft(axis), _V)
++        assert feat.ReferenceAxis == (sk, [expected]) and feat.Angle == 360.0
++    feat = _Feat()
++    rv.set_axis(feat, _Sk(xz), GoalFeature("base_ring", {"ri": 5, "ro": 10, "h": 5}), _V)  # upstream kind: untouched
++    assert feat.ReferenceAxis is None
++
++
++def test_axis_and_angle_are_encoded():
++    f = _shaft(0)
++    f.params["angle"] = 180.0
++    tok = encode_state(State(doc_open=True), Goal([f], level=1, scale=40), invariant=True, sentinel=True)
++    row = tok.num[np.flatnonzero(tok.seg == SEG_GOAL)[0]]
++    assert row[43:47].tolist() == [1.0, 0.0, 0.0, 0.5]
++
++
++def test_revolve_sampler_profiles_stay_off_the_negative_radius_side():
++    rng = random.Random(6)
++    for _ in range(300):
++        g = sampler.sample_revolve_goal(3, rng)
++        for f in g.features:
++            if f.kind not in rv.REVOLVE_KINDS:
++                continue
++            k = rv.axis_index(f)
++            o = f.params["outline"]
++            assert pr.is_closed(o)
++            radial = [u if rv.to_uv(k, 0, 1) == (1, 0) else v for u, v in pr.polyline(o)]
++            assert min(radial) >= -1e-9  # never crosses the axis: a valid revolve
++        assert g.features[0].kind == "profile_revolve"
