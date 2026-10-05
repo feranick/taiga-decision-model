@@ -34,6 +34,8 @@ source ~/taiga/freecad.env
 
 Open the result with `freecad parts/flange.FCStd`.
 
+Relative `--model` and `--goals` paths are looked up in the current directory first, then in the upstream repo (`~/taiga/taiga-s1`), so `runs/seed2/hf` and `showcase/goals.json` also work when you run the script from another directory. `--out` is always relative to the current directory.
+
 ### Options
 
 | Option | Default | Meaning |
@@ -153,4 +155,4 @@ It saves a screenshot and the `.FCStd` to `runs/gui_demo/`. `--delay` sets the p
 
 | Script | Version |
 |---|---|
-| `taiga_build_part.py` | 2026.10.03.1 |
+| `taiga_build_part.py` | 2026.10.05.1 |

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.03.1
+Version: 2026.10.05.1
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
 solid (volumetric IoU) and saved as .FCStd.
 
-Run from the upstream repo, with its venv and the FreeCAD paths from setup:
+Run with the upstream venv and the FreeCAD paths from setup. Relative --model and
+--goals paths are looked up in the current directory first, then in the upstream
+repo (~/taiga/taiga-s1), so they work from any directory:
     cd ~/taiga/taiga-s1 && source ~/taiga/freecad.env
     .venv/bin/python /path/to/taiga_build_part.py --model runs/seed2/hf \
         --goals showcase/goals.json --name flange --out parts
@@ -18,13 +20,37 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 import time
 from pathlib import Path
 
 from freecad_s1.model.net import from_pretrained, load_checkpoint
 from freecad_s1.rollout import Policy
 from freecad_s1.runtime.client import FreeCADEnv
+from freecad_s1.runtime.fcenv import REPO_ROOT
 from freecad_s1.schema import Goal, State
+
+
+def local_path(arg: str) -> Path | None:
+    """`arg` as an existing path: as given (relative to the current directory), else
+    relative to the upstream repo root. None if neither exists."""
+    p = Path(arg).expanduser()
+    for cand in (p, REPO_ROOT / p):
+        if cand.exists():
+            return cand.resolve()
+    return None
+
+
+def load_model(arg: str):
+    p = local_path(arg)
+    if p is not None:
+        return load_checkpoint(str(p)) if p.suffix == ".pt" else from_pretrained(str(p))
+    looks_local = arg.endswith(".pt") or arg.startswith((".", "/", "~")) or arg.count("/") != 1 \
+        or arg.split("/")[0] in ("runs", "release", "checkpoints")
+    if looks_local:
+        sys.exit(f"error: model not found: {arg}\n  looked in {Path.cwd()} and {REPO_ROOT}")
+    return from_pretrained(arg)  # Hugging Face repo id, e.g. shhivv/taiga-s1
 
 
 def base_scale(goal: dict) -> float:
@@ -47,9 +73,16 @@ def main() -> None:
     ap.add_argument("--quiet", action="store_true", help="only print the result line per part")
     args = ap.parse_args()
 
-    model = load_checkpoint(args.model) if args.model.endswith(".pt") else from_pretrained(args.model)
+    if not (os.environ.get("FREECAD_PYTHON") and os.environ.get("FREECAD_LIB")):
+        sys.exit("error: FreeCAD paths not set; run `source ~/taiga/freecad.env` first")
+    goals_path = local_path(args.goals)
+    if goals_path is None:
+        sys.exit(f"error: goals file not found: {args.goals}\n  looked in {Path.cwd()} and {REPO_ROOT}")
+    model = load_model(args.model)
     policy = Policy(model, "cpu")
-    goals = json.loads(Path(args.goals).read_text())
+    goals = json.loads(goals_path.read_text())
+    if args.name and args.name not in goals:
+        sys.exit(f"error: no goal named '{args.name}' in {goals_path}; available: {', '.join(goals)}")
     names = [args.name] if args.name else list(goals)
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
