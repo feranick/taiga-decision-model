@@ -1,6 +1,6 @@
 # taiga-decision-model
 
-Tools to train, evaluate and use [Taiga-S1](https://github.com/shhivv/taiga-s1), a small decision model for FreeCAD, across different operating systems, FreeCAD versions and GPUs.
+Tools to train, evaluate and use [Taiga-S1](https://github.com/shhivv/biome-s1), a small decision model for FreeCAD from the Biome-S1 model family, across different operating systems, FreeCAD versions and GPUs.
 
 ## What Taiga-S1 is
 
@@ -79,4 +79,4 @@ Scripts use `YYYY.MM.DD.x` versioning. Each script's version is in its header, i
 
 ## Credits
 
-Taiga-S1, its training pipeline and the published weights are by Shiv Shanmugam ([shhivv/taiga-s1](https://github.com/shhivv/taiga-s1), MIT license). This repository contains only setup, training and usage scripts around it.
+Taiga-S1, its training pipeline and the published weights are by Shiv Shanmugam ([shhivv/biome-s1](https://github.com/shhivv/biome-s1), formerly `shhivv/taiga-s1`, MIT license; weights at [huggingface.co/shhivv/taiga-s1](https://huggingface.co/shhivv/taiga-s1)). The repository now also hosts Mesa-S1, a sibling model that operates FreeCAD's interface; the scripts here cover Taiga-S1 only. This repository contains only setup, training and usage scripts around it.

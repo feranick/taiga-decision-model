@@ -1,6 +1,8 @@
 # Taiga-S1 reproduction scripts
 
-Scripts to set up and retrain [Taiga-S1](https://github.com/shhivv/taiga-s1) from scratch. Taiga-S1 is a 1.2M-parameter model that predicts the next FreeCAD PartDesign command. Each script sets up the environment, generates synthetic data in headless FreeCAD, trains the model, and evaluates it against the published `shhivv/taiga-s1`. They all use upstream's own pipeline, pinned to commit `a6e81d3`, with the flags from upstream's `train_final.sh`.
+Scripts to set up and retrain [Taiga-S1](https://github.com/shhivv/biome-s1) from scratch. Taiga-S1 is a 1.2M-parameter model that predicts the next FreeCAD PartDesign command. Each script sets up the environment, generates synthetic data in headless FreeCAD, trains the model, and evaluates it against the published `shhivv/taiga-s1`. They all use upstream's own pipeline, pinned to commit `a6e81d3`, with the flags from upstream's `train_final.sh`.
+
+Upstream was renamed from `shhivv/taiga-s1` to [`shhivv/biome-s1`](https://github.com/shhivv/biome-s1) when it became a model family (Taiga-S1 plus Mesa-S1, which operates FreeCAD's interface). The scripts clone the new URL and repoint existing clones on `setup`. The pin stays at `a6e81d3`, the last commit before the Mesa-S1 work: later commits change shared training and featurization code, so moving the pin would make new runs incomparable with existing ones. The published Taiga-S1 weights are still `shhivv/taiga-s1` on Hugging Face.
 
 | Script | Machine | CPU / RAM | OS | FreeCAD source | GPU |
 |---|---|---|---|---|---|
@@ -350,8 +352,8 @@ Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header 
 
 | Script | Version |
 |---|---|
-| `taiga_repro_DGX.sh` | 2026.10.04.3 |
-| `taiga_repro_5060ti.sh` | 2026.10.04.3 |
-| `taiga_repro_Quadro6000.sh` | 2026.10.04.3 |
+| `taiga_repro_DGX.sh` | 2026.10.05.1 |
+| `taiga_repro_5060ti.sh` | 2026.10.05.1 |
+| `taiga_repro_Quadro6000.sh` | 2026.10.05.1 |
 | `taiga_aggregate.py` | 2026.10.04.3 |
 | `taiga_run.py` | 2026.10.04.1 |

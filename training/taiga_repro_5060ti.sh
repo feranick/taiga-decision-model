@@ -2,7 +2,7 @@
 # =============================================================================
 # taiga_repro_5060ti.sh — reproduce Taiga-S1 from scratch on Ubuntu 26.04
 # (resolute), host "mochi", with FreeCAD 1.1.x from ppa:bleedingedge/resolute-bleed
-# Version: 2026.10.04.3
+# Version: 2026.10.05.1
 #
 # Same pipeline as taiga_repro_DGX.sh (DGX Spark); only setup differs:
 #   - FreeCAD from your PPA via apt (system Python), no conda
@@ -53,7 +53,7 @@ SEEDS=${SEEDS:-"2 12 22 32 42"}
 SWEEP_STAGES=${SWEEP_STAGES:-"data train export eval"}
 DATA_WORKERS=${DATA_WORKERS:-8}
 WORKERS=${WORKERS:-$(( $(nproc) > 4 ? $(nproc) - 2 : 2 ))}
-REPO_URL=${REPO_URL:-https://github.com/shhivv/taiga-s1.git}
+REPO_URL=${REPO_URL:-https://github.com/shhivv/biome-s1.git}   # formerly shhivv/taiga-s1
 REPO_REF=${REPO_REF:-a6e81d3}
 PPA=${PPA:-ppa:bleedingedge/resolute-bleed}
 FREECAD_PKG=${FREECAD_PKG:-freecad}
@@ -201,6 +201,7 @@ stage_setup() {
   command -v uv >/dev/null || { log "Installing uv"; curl -LsSf https://astral.sh/uv/install.sh | sh; mark uv; }
 
   if [[ ! -d $REPO/.git ]]; then log "Cloning $REPO_URL"; git clone "$REPO_URL" "$REPO"; fi
+  git -C "$REPO" remote set-url origin "$REPO_URL"   # existing clones: follow the repo rename
   git -C "$REPO" fetch -q origin
   git -C "$REPO" checkout -q "$REPO_REF"
   log "Repo at $(git -C "$REPO" rev-parse --short HEAD)"
@@ -468,7 +469,7 @@ def sh(c):
     try: return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
     except Exception: return None
 json.dump({
-  "script_version": "2026.10.04.3", "script": "taiga_repro_5060ti.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
+  "script_version": "2026.10.05.1", "script": "taiga_repro_5060ti.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
   "dagger_rounds": $DAGGER_ROUNDS, "dagger_episodes": $DAGGER_EPISODES, "dagger_epochs": $DAGGER_EPOCHS, "deterministic": "$DETERMINISTIC",
   "data_workers": $DATA_WORKERS, "workers": $WORKERS,
   "repo_commit": sh("git -C '$REPO' rev-parse HEAD"), "host": platform.node(), "arch": platform.machine(),

@@ -2,12 +2,12 @@
 # =============================================================================
 # taiga_repro_DGX.sh — reproduce Taiga-S1 from scratch on an NVIDIA DGX Spark
 # (DGX OS / Ubuntu 24.04 noble), with FreeCAD 1.0.x from ppa:bleedingedge/noble-spark-bleed
-# Version: 2026.10.04.3
+# Version: 2026.10.05.1
 #
 # Pipeline (mirrors upstream scripts/train_final.sh + final_eval.sh):
 #   setup   : uv + Python 3.11 venv, PyTorch (CUDA 13, aarch64), FreeCAD from
 #             the noble PPA via apt (forced; no conda, no development builds),
-#             clone + install shhivv/taiga-s1, tests
+#             clone + install shhivv/biome-s1 (formerly taiga-s1), tests
 #   data    : synthetic datagen in headless FreeCAD (train 4k/8k/12k, test 300/600/900)
 #   train   : SFT (4 epochs) + 2 DAgger rounds, all generalization tricks on
 #   export  : checkpoint -> HF layout (model.safetensors + config.json)
@@ -70,7 +70,7 @@ SEEDS=${SEEDS:-"2 12 22 32 42"}
 SWEEP_STAGES=${SWEEP_STAGES:-"data train export eval"}
 DATA_WORKERS=${DATA_WORKERS:-8}
 WORKERS=${WORKERS:-$(( $(nproc) > 4 ? $(nproc) - 2 : 2 ))}
-REPO_URL=${REPO_URL:-https://github.com/shhivv/taiga-s1.git}
+REPO_URL=${REPO_URL:-https://github.com/shhivv/biome-s1.git}   # formerly shhivv/taiga-s1
 REPO_REF=${REPO_REF:-a6e81d3}
 TORCH_INDEX=${TORCH_INDEX:-https://download.pytorch.org/whl/cu130}
 TEST_SEED=3
@@ -231,6 +231,7 @@ stage_setup() {
   if [[ ! -d $REPO/.git ]]; then
     log "Cloning $REPO_URL"; git clone "$REPO_URL" "$REPO"
   fi
+  git -C "$REPO" remote set-url origin "$REPO_URL"   # existing clones: follow the repo rename
   git -C "$REPO" fetch -q origin
   git -C "$REPO" checkout -q "$REPO_REF"
   log "Repo at $(git -C "$REPO" rev-parse --short HEAD)"
@@ -485,7 +486,7 @@ def sh(c):
     try: return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
     except Exception: return None
 json.dump({
-  "script_version": "2026.10.04.3", "script": "taiga_repro_DGX.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
+  "script_version": "2026.10.05.1", "script": "taiga_repro_DGX.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
   "dagger_rounds": $DAGGER_ROUNDS, "dagger_episodes": $DAGGER_EPISODES, "dagger_epochs": $DAGGER_EPOCHS, "deterministic": "$DETERMINISTIC",
   "data_workers": $DATA_WORKERS, "workers": $WORKERS,
   "repo_commit": sh("git -C '$REPO' rev-parse HEAD"), "host": platform.node(), "arch": platform.machine(),
