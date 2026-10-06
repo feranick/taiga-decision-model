@@ -43,7 +43,8 @@ So: **DeepCAD first**, with the `LICENSE`-tab check. Before using either dataset
 | File | What it is |
 |---|---|
 | `convert_deepcad.py` | DeepCAD JSON → goals (rules 1–5), the original models as STEP (`--refs`, needs OCP), an eval spec and a report of what was left out and why |
-| `run_deepcad.sh` | Download, convert, teacher builds, verification against the originals, model builds, scores |
+| `run_deepcad.sh` | Download, convert, teacher builds, verification against the originals, diagnosis of failures, model builds, scores |
+| `diagnose_goals.py` | For goals the teacher can't build: the first feature FreeCAD rejects, and FreeCAD's reason |
 
 ## Run (on the DGX, after `../train_expanded.sh dgx setup`)
 
@@ -61,6 +62,14 @@ cd taiga-expanded/datasets
 
 **Tested** on synthetic models in DeepCAD's format (a plate with a hole, a boss, a cut slot on the XZ plane extruded both ways, a two-sided join on the YZ plane; a model whose first sketch is on the XZ plane with a negative extrude): the goals rebuild the originals to IoU 0.9999 in an OpenCASCADE re-implementation of the goal semantics; angled sketch planes and intersect are left out as intended. The real data and FreeCAD's builds are next (`convert`, `teacher`, `verify`).
 
+## First results (spark DGX, FreeCAD 1.1.3, 9 patches, 2026-10-06)
+
+First 300 convertible models of DeepCAD's test split (originals that aren't one valid solid left out by the converter):
+
+- **Teacher:** builds 280 of 300 goals; the other 20 fail on a feature FreeCAD rejects (`diagnose` names it).
+- **Verified:** 278 of 300 goals rebuild their original to IoU ≥ 0.99 (the 2 others: inner loops over earlier material, rule 5).
+- **Length:** median 1 feature, at most 13. The start of the test split is mostly single extrudes (plates); longer designs need the whole split (`LIMIT=0`), bucketed by length.
+
 ## Next
 
 1. Run it on the test split; look at the report (what is left out and why) and at the verified share.
@@ -72,4 +81,5 @@ cd taiga-expanded/datasets
 | File | Version |
 |---|---|
 | `convert_deepcad.py` | 2026.10.06.2 |
-| `run_deepcad.sh` | 2026.10.06.3 |
+| `run_deepcad.sh` | 2026.10.06.4 |
+| `diagnose_goals.py` | 2026.10.06.1 |

@@ -1,12 +1,13 @@
 #!/bin/bash
 # run_deepcad.sh — DeepCAD build histories as Taiga goals: download, convert, verify, score models.
-# Version: 2026.10.06.3
+# Version: 2026.10.06.4
 #
 # Usage:  ./run_deepcad.sh download          DeepCAD's data (cad_json + split) into $DATA
 #         ./run_deepcad.sh convert           JSON -> goals + reference STEP files        -> $OUT
 #         ./run_deepcad.sh teacher           the scripted teacher builds every goal      -> $OUT/teacher
 #         ./run_deepcad.sh verify            score the teacher builds against the originals and keep
 #                                            the goals that match (IoU >= $MIN_IOU)     -> goals_<subset>_verified.json
+#         ./run_deepcad.sh diagnose          why the goals the teacher can't build fail (first rejected feature)
 #         ./run_deepcad.sh models [RUNS]     every model in RUNS/seed*/hf builds the verified goals -> $OUT/seed<N>
 #         ./run_deepcad.sh eval              score teacher and model builds (verified goals only)
 # Env:    WORK (~/taiga-expanded), DATA (~/deepcad), SUBSET (test), LIMIT (300 models; 0 = all),
@@ -108,6 +109,17 @@ print(f"verified: {len(keep)} of {len(res)} goals match their original (IoU >= {
 PYEOF
 }
 
+stage_diagnose() {
+  need_work
+  local names
+  names=$(grep -a INFEASIBLE "$OUT/teacher.log" | awk '{print $1}' | sed 's/:$//' | sort -u)
+  [[ -n $names ]] || { log "no infeasible goals in $OUT/teacher.log"; return 0; }
+  log "diagnosing $(wc -w <<<"$names") goals"
+  # shellcheck disable=SC2086
+  PYTHONPATH="$FREECAD_LIB:$WORK/taiga-s1" "$FREECAD_PYTHON" "$HERE/diagnose_goals.py" "$OUT/goals_$SUBSET.json" $names 2>&1 \
+    | grep -v -e '^\s*$' | tee "$OUT/diagnose.log"
+}
+
 stage_models() {
   need_work
   local runs=${1:-$WORK/taiga-s1/runs/data2} n=0 goals=$OUT/goals_${SUBSET}_verified.json
@@ -169,7 +181,8 @@ case $stage in
   convert) stage_convert ;;
   teacher) stage_teacher ;;
   verify) stage_verify ;;
+  diagnose) stage_diagnose ;;
   models) stage_models "$@" ;;
   eval) stage_eval ;;
-  *) sed -n '3,20p' "$0"; exit 1 ;;
+  *) sed -n '3,21p' "$0"; exit 1 ;;
 esac
