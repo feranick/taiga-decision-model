@@ -207,7 +207,7 @@ Compare the original suites between the two with `../training/taiga_aggregate.py
 
 1. **No regression:** on the original suites, the expanded model's distribution over seeds is not worse than the baseline's at the same commit.
 2. **New features:** high clean and perturbed success on each new suite.
-3. **Real parts:** S 80 parts rebuilt with Taiga goals, scored by IoU against `../build/pump_s80_reference_CAD`, first with the scripted teacher (can the vocabulary express them?), then with the trained models (`eval/`, see [`eval/README.md`](eval/README.md)).
+3. **Real parts:** S 80 parts rebuilt with Taiga goals, scored by IoU against `../build/pump_s80_reference_CAD`, first with the scripted teacher (can the vocabulary express them?), then with the trained models (`eval/`, see [`eval/README.md`](eval/README.md)). Teacher: every part builds, IoU 0.9986–1.0000 per part, 0.9989 for the whole pump (2026-10-05); the models are next.
 
 ## Versions
 

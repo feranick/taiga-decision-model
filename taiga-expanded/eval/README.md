@@ -64,7 +64,17 @@ The casing's 52 features are far beyond anything in training (at most 5 features
 
 Goal frames: parts turned about the shaft use pump coordinates (shaft along X through the origin). The casing, inspection cover and check valve are built with their main extrusion along Z, as every Taiga base feature is, and rotated into place (120° about (1, 1, 1)). The priming cover is built upright and moved.
 
-**Teacher scores** (DGX, FreeCAD 1.1.3, 2026-10-05): IoU 1.0000 for the wear plate, both covers, check valve, bearing bracket, shaft, bearings and seal; 0.9986 for the impeller (spline blades); 0.9883 for the casing core (no bolt and tapped holes). The full casing needs patch 0008 (its 267 teacher steps exceeded the 200-step cap of upstream's target build); a rough OpenCASCADE re-implementation of the goals predicts about 0.998 for it. Building the casing is slow (about 0.6 s per FreeCAD step on the full part: 95 s for the core).
+**Teacher scores** (spark DGX, FreeCAD 1.1.3, 8 patches, 2026-10-05): every goal builds, and the teacher matches its own target exactly (IoU 1.0000 in the build check). Against the reference:
+
+| Part | IoU | Note |
+|---|---|---|
+| Casing | 0.9986 | 52 features, 267 steps; 11 min (2.5 s per FreeCAD step on the full part) |
+| Casing core | 0.9883 | without bolt and tapped holes; 155 steps, 95 s |
+| Impeller | 0.9986 | spline blades (FreeCAD's interpolated B-spline vs the reference's approximated one) |
+| Wear plate, covers, check valve, bearing bracket, shaft, bearings, seal | 1.0000 | |
+| Whole pump (volume-weighted) | 0.9989 | |
+
+So the vocabulary expresses the S 80 to within 0.2 % of its volume; anything a model loses beyond that is the model's. The casing's FreeCAD steps get slow as the part grows (each step re-reads the whole shape), which matters for model builds: 5 seeds take about an hour for the casing alone.
 
 ## Limits of the vocabulary found on the way
 
