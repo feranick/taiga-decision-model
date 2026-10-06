@@ -71,6 +71,15 @@ First 300 convertible models of DeepCAD's test split (originals that aren't one 
 - **Verified:** 298 of 300 at first. Both misses were measuring errors, not conversion errors: a 1700 × 1490 × 1 mm plate fell between the voxel centres (now at least 48 voxels along every side, refined until the voxel volumes match), and one reference whose mesh had an untriangulated face (now: random points classified against the solids when a mesh isn't watertight). Rebuilt here, both score IoU 1.0.
 - **Length:** median 1 feature, at most 13. The start of the test split is mostly single extrudes (plates); longer designs need the whole split (`LIMIT=0`), bucketed by length.
 
+**Full test split, first pass** (8,052 models): 6,210 converted (540 duplicates). The largest groups left out were "base is not one solid" (524) and "a join stays apart" (506). A sample of 19 of them showed four converter issues, fixed in `convert_deepcad.py` 2026.10.06.6–10:
+
+- DeepCAD marks every loop of a profile as outer: the outer loop is now the one enclosing the others, and a profile with separate regions becomes one feature group per region.
+- A first extrude without a profile (skipped by DeepCAD's own loader) no longer leaves the model out.
+- Inner loops are made exact against the earlier material: a join's hole may only remove (hole minus earlier material), a cut's island may only put back (island and earlier material). The converter computes that region and writes it as pockets / bosses of its own outlines when it is a straight prism (e.g. a frame around a plate, a hex nut around an existing tube), or leaves the feature out when the region is empty.
+- The report lists five example models per reason.
+
+On the sample: 10 of the 19 now convert, 9 of them to IoU ≥ 0.99. The rest are degenerate designs (profiles with zero-width cusps or slivers, rejected as invalid shapes) or joins that touch the part only along an edge (two solids in the original too).
+
 ## Next
 
 1. Run it on the test split; look at the report (what is left out and why) and at the verified share.
@@ -81,6 +90,6 @@ First 300 convertible models of DeepCAD's test split (originals that aren't one 
 
 | File | Version |
 |---|---|
-| `convert_deepcad.py` | 2026.10.06.5 |
+| `convert_deepcad.py` | 2026.10.06.10 |
 | `run_deepcad.sh` | 2026.10.06.5 |
 | `diagnose_goals.py` | 2026.10.06.2 |

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """convert_deepcad.py — DeepCAD build histories (sketch + extrude) as Taiga-S1 goals.
-Version: 2026.10.06.5
+Version: 2026.10.06.10
 
 Reads DeepCAD's JSON files (data/cad_json/<group>/<id>.json, the Fusion 360 Gallery
 reconstruction format) and writes, into --out:
@@ -120,6 +120,43 @@ def chain(curves: list[tuple]) -> list[tuple]:
     return out
 
 
+def loop_box(curves) -> np.ndarray:
+    """Bounding box (min x, min y, max x, max y) of a loop in the sketch plane."""
+    pts = []
+    for c in curves:
+        if c[0] == "C":
+            pts += [c[1] - c[2], c[1] + c[2]]
+        else:
+            pts += list(c[1:])
+    pts = np.array(pts)
+    return np.concatenate([pts.min(0), pts.max(0)])
+
+
+def regions(loops: list) -> list[list]:
+    """Group a profile's loops into regions [outer, holes...]: a loop inside an odd number of
+    others (by bounding box) is a hole of the smallest one around it, else it starts a region."""
+    boxes = [loop_box(lp) for lp in loops]
+    area = [float((b[2] - b[0]) * (b[3] - b[1])) for b in boxes]
+    order = sorted(range(len(loops)), key=lambda i: -area[i])
+    eps = 1e-9 + 1e-6 * max(float(np.abs(np.array(boxes)).max()), 1.0)
+
+    def inside(i, j):  # box i within box j
+        bi, bj = boxes[i], boxes[j]
+        return area[i] < area[j] and bi[0] >= bj[0] - eps and bi[1] >= bj[1] - eps and bi[2] <= bj[2] + eps and bi[3] <= bj[3] + eps
+
+    out, owner = [], {}
+    for i in order:
+        around = [j for j in order if j != i and inside(i, j)]
+        if len(around) % 2 == 1:  # a hole: belongs to the smallest outer loop around it
+            parent = min((j for j in around if j in owner), key=lambda j: area[j], default=None)
+            if parent is not None:
+                out[owner[parent]].append(loops[i])
+                continue
+        owner[i] = len(out)
+        out.append([loops[i]])
+    return out
+
+
 def read_model(path: Path) -> list[dict]:
     """Extrudes in build order, one per profile: {op, extent: (a, b) along the normal,
     frame: (origin, x, y, n), loops: [[curves], ...] outer first}."""
@@ -152,13 +189,14 @@ def read_model(path: Path) -> list[dict]:
             sk = ents[pr["sketch"]]
             tr = sk["transform"]
             frame = (_p3(tr["origin"]), _p3(tr["x_axis"]), _p3(tr["y_axis"]), _p3(tr["z_axis"]))
-            loops = sk["profiles"][pr["profile"]]["loops"]
-            loops = sorted(loops, key=lambda lp: not lp.get("is_outer", False))  # outer first
-            if not loops or not loops[0].get("is_outer", True):
-                raise Skip("profile without an outer loop")
-            this_op = "NewBody" if not out else ("Join" if op == "NewBody" else op)
-            out.append({"op": this_op, "extent": (a, b), "frame": frame,
-                        "loops": [chain(loop_curves(lp)) for lp in loops]})
+            loops = [chain(loop_curves(lp)) for lp in sk["profiles"][pr["profile"]]["loops"]]
+            if not loops:
+                raise Skip("profile without loops")
+            # DeepCAD marks every loop "is_outer", and a profile may hold separate regions: split
+            # the loops into regions (an outer loop and the holes directly inside it)
+            for region in regions(loops):
+                this_op = "NewBody" if not out else ("Join" if op == "NewBody" else op)
+                out.append({"op": this_op, "extent": (a, b), "frame": frame, "loops": region})
     if not out:
         raise Skip("no extrude with a profile")
     return out
@@ -342,38 +380,163 @@ def solid_problem(shape) -> str | None:
     return None if g.Mass() > 1e-6 else "no volume"
 
 
+def _volume(shape) -> float:
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    g = GProp_GProps()
+    BRepGProp.VolumeProperties_s(shape, g)
+    return g.Mass()
+
+
+def slab(f: dict) -> tuple[int, float, float]:
+    """(axis, lo, hi) of a datum-plane feature's extrusion."""
+    p = f["params"]
+    k = [p.get("nx", 0), p.get("ny", 0), p.get("nz", 0)].index(1.0)
+    size = p["h"] if f["kind"] == "profile_boss" else p["depth"]
+    return k, p["off"] - size / 2, p["off"] + size / 2
+
+
+def prism_outlines(shape, k: int, lo: float, hi: float):
+    """If `shape` is a union of straight prisms along axis k spanning [lo, hi] (no holes in their
+    sections), their outlines (Taiga format, plane normal to k); else None. Several prisms of
+    different heights don't count: [lo, hi] is the shape's own extent along k."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+    from OCP.BRepGProp import BRepGProp
+    from OCP.BRepTools import BRepTools_WireExplorer
+    from OCP.GeomAbs import GeomAbs_Circle, GeomAbs_Line, GeomAbs_Plane
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_WIRE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    ua, va = [i for i in range(3) if i != k]
+    tol = 1e-6 * max(1.0, abs(hi - lo))
+    outlines, area = [], 0.0
+    e = TopExp_Explorer(shape, TopAbs_FACE)
+    while e.More():
+        face = TopoDS.Face_s(e.Current())
+        e.Next()
+        s = BRepAdaptor_Surface(face)
+        if s.GetType() != GeomAbs_Plane:
+            continue
+        d = s.Plane().Axis().Direction()
+        loc = s.Plane().Location()
+        if abs(abs((d.X(), d.Y(), d.Z())[k]) - 1) > 1e-9 or abs((loc.X(), loc.Y(), loc.Z())[k] - hi) > tol:
+            continue  # only the caps at the top of the slab
+        wires = TopExp_Explorer(face, TopAbs_WIRE)
+        n_wires = 0
+        while wires.More():
+            n_wires += 1
+            wire = TopoDS.Wire_s(wires.Current())
+            wires.Next()
+        if n_wires != 1:
+            return None  # a section with a hole: not handled
+        segs, start = [], None
+        we = BRepTools_WireExplorer(wire)
+        while we.More():
+            c = BRepAdaptor_Curve(we.Current())
+            first, last = c.FirstParameter(), c.LastParameter()
+            if we.Current().Orientation().name == "TopAbs_REVERSED":
+                first, last = last, first
+            uv = lambda t: [r3(c.Value(t).Coord(ua + 1)), r3(c.Value(t).Coord(va + 1))]  # noqa: E731
+            if start is None:
+                start = uv(first)
+            if c.GetType() == GeomAbs_Line:
+                segs.append(["L", *uv(last)])
+            elif c.GetType() == GeomAbs_Circle:
+                if abs(abs(last - first) - 2 * math.pi) < 1e-9:  # full circle: two halves
+                    mid = (first + last) / 2
+                    segs += [["A", *uv((first + mid) / 2), *uv(mid)], ["A", *uv((mid + last) / 2), *uv(last)]]
+                else:
+                    segs.append(["A", *uv((first + last) / 2), *uv(last)])
+            else:
+                return None
+            we.Next()
+        if not segs:
+            return None
+        segs[-1][-2:] = start
+        outlines.append({"start": start, "segs": segs})
+        g = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(face, g)
+        area += g.Mass()
+    if not outlines or abs(_volume(shape) - area * (hi - lo)) > 1e-3 * max(_volume(shape), 1e-12):
+        return None  # not a straight prism over the whole slab
+    return outlines
+
+
+def resolve_inner(before, f: dict) -> list[dict]:
+    """The exact form of an inner loop's feature, given the part before its group.
+
+    The original keeps the earlier material: a join with a hole adds outer minus hole, a cut with
+    an island removes outer minus island. Written as Taiga features (boss of the outer loop, then
+    a pocket of the hole; pocket of the outer loop, then a boss of the island), the hole's pocket
+    may only remove (hole minus earlier material), and the island's boss may only put back
+    (island and earlier material). When that region is empty, the feature goes; when it is a
+    straight prism over the slab, the feature becomes pockets / bosses of its outlines. Otherwise
+    the feature stays as written and the IoU check against the original decides."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
+
+    hole = f["kind"] == "profile_pocket"
+    tool = feature_solid(f)
+    v_tool = _volume(tool)
+    region = (BRepAlgoAPI_Cut(tool, before) if hole else BRepAlgoAPI_Common(before, tool)).Shape()
+    v = _volume(region)
+    if v_tool <= 0 or v < 1e-4 * v_tool:
+        return []
+    if v > (1 - 1e-4) * v_tool:
+        return [f]
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.Bnd import Bnd_Box
+
+    k = slab(f)[0]
+    b = Bnd_Box()
+    BRepBndLib.Add_s(region, b)
+    box = b.Get()
+    lo, hi = box[k], box[k + 3]
+    outlines = prism_outlines(region, k, lo, hi)
+    if outlines is None:
+        return [f]
+    return [feature(f["kind"], o, k, (lo + hi) / 2, hi - lo) for o in outlines]
+
+
 def apply_group(state, group):
-    """(`state` after the group's features, None) or (None, what went wrong at which feature)."""
+    """(`state` after the group's features, None, the group as built) or (None, what went wrong
+    at which feature, None). Inner loops are first made exact against the part before the group
+    (resolve_inner)."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 
-    for i, f in enumerate(group[1]):
-        tool = feature_solid(f)
-        if state is None:
-            state = tool
-        elif f["kind"] == "profile_pocket":
-            state = BRepAlgoAPI_Cut(state, tool).Shape()
-        else:
-            state = BRepAlgoAPI_Fuse(state, tool).Shape()
-        problem = solid_problem(state)
-        if problem:
-            return None, f"{'outer loop' if i == 0 else 'inner loop'}: {problem}"
-    return state, None
+    before, kept = state, []
+    for i, f0 in enumerate(group[1]):
+        for f in (resolve_inner(before, f0) if (i > 0 and before is not None) else [f0]):
+            tool = feature_solid(f)
+            kept.append(f)
+            if state is None:
+                state = tool
+            elif f["kind"] == "profile_pocket":
+                state = BRepAlgoAPI_Cut(state, tool).Shape()
+            else:
+                state = BRepAlgoAPI_Fuse(state, tool).Shape()
+            problem = solid_problem(state)
+            if problem:
+                return None, f"{'outer loop' if i == 0 else 'inner loop'}: {problem}", None
+    return state, None, (group[0], kept)
 
 
 def order_for_partdesign(groups):
     """Groups in an order PartDesign can build: consecutive joins reordered so every step is one
     solid (a union is the same in any order); cuts stay where they are."""
-    state, why = apply_group(None, groups[0])
+    state, why, g0 = apply_group(None, groups[0])
     if state is None:
         raise Skip(f"base is not one solid ({why})")
-    out, rest = [groups[0]], list(groups[1:])
+    out, rest = [g0], list(groups[1:])
     while rest:
         if rest[0][0] == "cut":
             g = rest.pop(0)
-            state, why = apply_group(state, g)
+            state, why, built = apply_group(state, g)
             if state is None:
                 raise Skip(f"a cut empties or splits the part ({why})")
-            out.append(g)
+            out.append(built)
             continue
         run = []
         while rest and rest[0][0] == "join":
@@ -381,11 +544,12 @@ def order_for_partdesign(groups):
         while run:
             whys = []
             for j, g in enumerate(run):
-                nxt, why = apply_group(state, g)
+                nxt, why, built = apply_group(state, g)
                 whys.append(why)
                 if nxt is not None:
                     state = nxt
-                    out.append(run.pop(j))
+                    out.append(built)
+                    run.pop(j)
                     break
             else:
                 raise Skip(f"a join stays apart from the part, no order keeps one solid ({whys[0]})")
