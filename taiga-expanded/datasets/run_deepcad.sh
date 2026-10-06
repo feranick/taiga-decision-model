@@ -1,6 +1,6 @@
 #!/bin/bash
 # run_deepcad.sh — DeepCAD build histories as Taiga goals: download, convert, verify, score models.
-# Version: 2026.10.06.2
+# Version: 2026.10.06.3
 #
 # Usage:  ./run_deepcad.sh download          DeepCAD's data (cad_json + split) into $DATA
 #         ./run_deepcad.sh convert           JSON -> goals + reference STEP files        -> $OUT
@@ -56,7 +56,8 @@ stage_download() {
   fi
   log "extracting $DATA/data.tar"
   tar -xf "$DATA/data.tar" -C "$DATA" || die "extract failed"
-  for a in $(find "$DATA" -maxdepth 4 \( -name '*.tar' -o -name '*.tar.gz' -o -name '*.tgz' -o -name '*.zip' \) ! -path "$DATA/data.tar"); do
+  # the JSON files are in a nested archive (data/cad_json.tar.gz); the quantized vectors (cad_vec) aren't needed
+  for a in $(find "$DATA" -maxdepth 4 -name 'cad_json*' \( -name '*.tar' -o -name '*.tar.gz' -o -name '*.tgz' -o -name '*.zip' \)); do
     log "extracting nested archive $a"
     case $a in *.zip) unzip -q -o "$a" -d "$(dirname "$a")" ;; *) tar -xf "$a" -C "$(dirname "$a")" ;; esac
   done
