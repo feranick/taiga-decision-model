@@ -233,6 +233,30 @@ BASELINE=1 DATA_SEED=2 ./train_expanded.sh 5060ti sweep         # baseline for t
 
 Compare the original suites between the two with `../training/taiga_aggregate.py` (mean ± sd over seeds), e.g. `taiga_aggregate.py ~/taiga-head/taiga-s1/runs/data2 ~/taiga-expanded/taiga-s1/runs/data2`.
 
+### Test on real parts
+
+Two test sets of real parts, each with its own script. Both follow the same stages: first the scripted teacher builds the goals (no model: can the vocabulary express the part?), then the trained models build them (how close do they get?). Everything goes to `~/taiga-expanded/<set>`.
+
+```
+design ──convert──► goal ──teacher or model──► FreeCAD commands ──► part ──verify / eval──► IoU with the original design
+(what exists)        (what to build)            (how to build it)                            (did it come out right?)
+```
+
+The goal plays the role of a planner's output (in real use, an LLM writes it); the teacher, the scripted expert that also writes the training data, is the perfect executor; the trained model is the executor being tested.
+
+| Stage | Flow | S 80 pump (`eval/run_s80.sh`) | DeepCAD designs (`datasets/run_deepcad.sh`) | What it does | Needs a trained model |
+|---|---|---|---|---|---|
+| `download` | — | — | ✓ | Fetches DeepCAD's archive (about 200 MB) to `~/deepcad` | no |
+| `convert` | design → goal (+ reference part) | — (the goals are in `eval/s80_goals.json`) | ✓ | Turns each design into a Taiga goal, and writes the original as a reference STEP file; `report_<subset>.json` lists what was left out and why | no |
+| `check` | goal → can it be built? | ✓ | — | Can every goal be built? Prints OK or INFEASIBLE per goal, saves nothing | no |
+| `teacher` | goal → commands → part | ✓ | ✓ | The scripted teacher builds every goal and saves the parts (`teacher/`) | no |
+| `verify` | teacher's part vs reference | — (`eval` scores the teacher) | ✓ | Scores the teacher's builds against the originals and keeps the goals that match (IoU ≥ 0.99): `goals_<subset>_verified.json` | no |
+| `diagnose` | goal → where the build fails | — | ✓ | For goals the teacher can't build: the first feature FreeCAD rejects, and why | no |
+| `models [RUNS]` | goal → commands → part, by the model | ✓ | ✓ | Every seed in `RUNS/seed*/hf` (default: `runs/data2`) builds the (verified) goals: `seed<N>/` | yes |
+| `eval` | parts vs reference (and vs teacher) | ✓ | ✓ | IoU with the reference for the teacher and every seed; IoU with the teacher's build per goal; mean ± sd over seeds. S 80: per part, plus overlay `.FCStd` files. DeepCAD: share built to IoU ≥ 0.99 by goal length | for the model scores |
+
+Typical order: S 80 `check → teacher → eval` (vocabulary), then `models → eval` after each training run; DeepCAD `download → convert → teacher → verify`, then `models → eval`. Details: [`eval/README.md`](eval/README.md), [`datasets/README.md`](datasets/README.md).
+
 ## Success criteria
 
 1. **No regression:** on the original suites, the expanded model's distribution over seeds is not worse than the baseline's at the same commit.
