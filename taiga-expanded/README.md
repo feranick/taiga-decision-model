@@ -13,6 +13,7 @@ Extends Taiga-S1's vocabulary so it can build real parts like the Victor S 80 pu
 | 5 | **Patterns and mirrors about any axis**, of any feature: polar about X, Y or Z (full or part circle), linear along ±X, ±Y, ±Z, mirror across any origin plane; goal rows widened from 48 to 64 numbers; new suite `pattern` | Patch 0005. All 67 tests pass, including FreeCAD (DGX, FreeCAD 1.1.3, 2026-10-05) |
 | 5b | **Fillets and chamfers on chosen edges** (`fillet_edges`, `chamfer_edges`): the edge loop of a face with any normal, or all edges along X, Y or Z; **features on a chosen face** (point `at`), e.g. a hole or hub on top of a boss, a chamfer on a shoulder; new suite `edges` | Patch 0006. All 67 tests pass, including FreeCAD (DGX, FreeCAD 1.1.3, 2026-10-05) |
 | 6 | **Training options**: size test suites `large` and `large_ext` (goals ×4, up to ~360 mm) and optional size augmentation (`TAIGA_SIZE_AUG`); perturbed DAgger (`DAGGER_PERTURB`) in the training scripts; data and experiment names follow these settings | Patch 0007 + training scripts. All 71 tests pass, including FreeCAD builds of the ×4 goals (DGX, FreeCAD 1.1.3, 2026-10-05) |
+| 7 | **Training coverage found with the S 80**: features on XY datum planes (closed cavities, slots through two sides, plates through the part, foot plates, keyways and webs on turned parts) and features wider than the face they stand on (caps over plugs, cover plates over spigots, flaps, flanges on necks); new suites `datum_z` and `overhang` | Patch 0009. Pure-Python tests pass; FreeCAD tests run during `setup` |
 
 Out of scope for now (Phase 2): sweep, loft, helix, multi-body parts, assemblies.
 
@@ -165,6 +166,17 @@ Together with primitives 1–4, these cover the S 80's bolt circles (port flange
 
 **Names.** Settings that change the training data (`TAIGA_EXT_FRACTION`, `TAIGA_SIZE_AUG`, `TAIGA_SIZE_MAX`) are added to the data folder name, so runs with different settings never share data; they and `DAGGER_PERTURB` are also added to the experiment name and recorded in `manifest.json` (`taiga_env`, `dagger_perturb`).
 
+### Primitive 7: coverage gaps found with the S 80
+
+The first S 80 model builds (step 1 models, 2026-10-06) failed in two systematic ways, the same on every seed: every pocket or pad on an **XY datum plane** (the casing's chambers, the shaft's keyways, the bracket's foot), and every feature **wider than the face it stands on** (the priming cover's cap, the check valve's flap, the inspection cover's plate). Neither ever occurred in training: the datum generators only used the YZ and XZ planes, and every generator kept bosses inside their face. Both are common in real parts, so patch 0009 adds them as general families, not as S 80 parts:
+
+- **`datum_z`:** features on XY datum planes at any height, extruded both ways: closed cavities inside the part (single, or a row of outline cavities), slots through two sides of a block, plates and collars through the part, foot plates under it; on parts turned about X, keyways and webs with a foot plate.
+- **`overhang`:** caps over plugs (with a polar row of holes through the rim), cover plates over spigots (a row of holes through the rim), flaps and lug plates over discs, flanges on necks on the top or a side face (the flange's face picked with `at`, a bore through flange and neck, a mirrored bolt hole).
+
+Both mix into training like the other families and have their own level-3 suites. The original suites and the suites of patches 0001–0008 produce the same goals as before, except `large_ext`, which now also draws from the two new families.
+
+Because these families were added after looking at S 80 failures, the next S 80 score is no longer a fully independent test: after retraining, also check a part the changes were not made for (the engine kit, or a dataset slice).
+
 ### Training plan
 
 Each step as a sweep on the same machine (DGX shown), with fixed data (`DATA_SEED=2`), so differences come from the model:
@@ -213,7 +225,7 @@ For `check_patches.sh`, run `source ~/taiga/freecad.env` first to include the Fr
 
 ```bash
 ./train_expanded.sh 5060ti setup                                # ~/taiga-expanded: clone, apply patches, venv, FreeCAD, tests
-DATA_SEED=2 ./train_expanded.sh 5060ti sweep                    # expanded model, 5 seeds, suites incl. "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext"
+DATA_SEED=2 ./train_expanded.sh 5060ti sweep                    # expanded model, 5 seeds, suites incl. "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext", "datum_z", "overhang"
 BASELINE=1 ./train_expanded.sh 5060ti setup                     # ~/taiga-head: same upstream commit, no patches
 BASELINE=1 DATA_SEED=2 ./train_expanded.sh 5060ti sweep         # baseline for the no-regression check
 ```
@@ -230,6 +242,6 @@ Compare the original suites between the two with `../training/taiga_aggregate.py
 
 | File | Version |
 |---|---|
-| `train_expanded.sh` | 2026.10.05.7 |
+| `train_expanded.sh` | 2026.10.06.1 |
 | `dev/*.sh` | 2026.10.05.1 (`export_patches.sh` 2026.10.05.2) |
-| `patches/` | 0001 (features on any planar face), 0002 (features on origin planes with an offset), 0003 (curved outlines), 0004 (revolve and groove with a profile), 0005 (patterns and mirrors about any axis, wider goal rows), 0006 (fillets and chamfers on chosen edges, features on a chosen face), 0007 (goals at other sizes), 0008 (enough steps for the target build of long goals), against upstream `4a31bcf` |
+| `patches/` | 0001 (features on any planar face), 0002 (features on origin planes with an offset), 0003 (curved outlines), 0004 (revolve and groove with a profile), 0005 (patterns and mirrors about any axis, wider goal rows), 0006 (fillets and chamfers on chosen edges, features on a chosen face), 0007 (goals at other sizes), 0008 (enough steps for the target build of long goals), 0009 (XY datum planes and overhanging features in training), against upstream `4a31bcf` |

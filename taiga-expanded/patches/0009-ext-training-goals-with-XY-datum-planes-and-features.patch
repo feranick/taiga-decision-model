@@ -1,0 +1,444 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Tue, 6 Oct 2026 13:15:00 -0400
+Subject: [PATCH] ext: training goals with XY datum planes and features wider
+ than their face
+
+---
+ freecad_s1/evaluate.py           |   4 +-
+ freecad_s1/ext/sampler.py        | 296 ++++++++++++++++++++++++++++++-
+ freecad_s1/goals.py              |   2 +-
+ tests/test_ext_datum_overhang.py |  73 ++++++++
+ 4 files changed, 371 insertions(+), 4 deletions(-)
+ create mode 100644 tests/test_ext_datum_overhang.py
+
+diff --git a/freecad_s1/evaluate.py b/freecad_s1/evaluate.py
+index 92fa225..7c794c1 100644
+--- a/freecad_s1/evaluate.py
++++ b/freecad_s1/evaluate.py
+@@ -69,7 +69,7 @@ def offline_metrics(model: S1Model, ds: Dataset, device: torch.device, batch_siz
+ 
+ 
+ # Seed offsets keep suites that share a level (iid-L3, comp, comp2, comp3) on disjoint seeds.
+-SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000, "edges": 90_000, "large": 0, "large_ext": 95_000}  # large: the iid seeds
++SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000, "edges": 90_000, "large": 0, "large_ext": 95_000, "datum_z": 96_000, "overhang": 97_000}  # large: the iid seeds
+ 
+ SUITES = {
+     "iid": [(1, "iid"), (2, "iid"), (3, "iid")],  # training distribution, fresh goals
+@@ -86,6 +86,8 @@ SUITES = {
+     "edges": [(3, "edges")],  # taiga-expanded: fillets / chamfers on chosen edges, features on chosen faces
+     "large": [(1, "large"), (2, "large"), (3, "large")],  # taiga-expanded: the iid goals, every length x4 (ext.sizes)
+     "large_ext": [(3, "large_ext")],  # taiga-expanded: expanded goals x4
++    "datum_z": [(3, "datum_z")],  # taiga-expanded: features on XY datum planes (cavities, slots, plates, feet, keyways)
++    "overhang": [(3, "overhang")],  # taiga-expanded: features wider than their face (caps, covers, flaps, flanges on necks)
+     "len3": [(6, "len")],  # held-out length: 11 intents (2.2x the training maximum)
+     "len4": [(7, "len")],  # stress: 13 intents
+     "len5": [(8, "len")],  # stress: 15 intents
+diff --git a/freecad_s1/ext/sampler.py b/freecad_s1/ext/sampler.py
+index 9633985..1e26ab6 100644
+--- a/freecad_s1/ext/sampler.py
++++ b/freecad_s1/ext/sampler.py
+@@ -16,7 +16,7 @@ from ..schema import Goal, GoalFeature
+ TRAIN_FRACTION = float(os.environ.get("TAIGA_EXT_FRACTION", "0.35"))
+ 
+ # new evaluation splits (each also feeds training through sample_train)
+-SPLITS = ("side", "plane", "outline", "revolve", "pattern", "edges")
++SPLITS = ("side", "plane", "outline", "revolve", "pattern", "edges", "datum_z", "overhang")
+ 
+ 
+ def _u(rng: random.Random, lo: float, hi: float) -> float:
+@@ -680,9 +680,301 @@ def sample_edges_goal(level: int, rng: random.Random) -> Goal:
+     raise ValueError("could not sample an edges goal")
+ 
+ 
++# ----------------------------------------------------------------------------- XY datum planes
++
++def _xy_datum(kind: str, x: float, y: float, off: float, **p) -> GoalFeature:
++    """A feature on the XY plane shifted to z = off, extruded both ways along Z."""
++    return GoalFeature(kind, {"nx": 0.0, "ny": 0.0, "nz": 1.0, "x": x, "y": y, "z": off, "off": off, **p})
++
++
++def _xy_outline(kind: str, outline: dict, off: float, **p) -> GoalFeature:
++    from . import profiles as pr
++
++    cu, cv, _, _ = pr.bbox(outline)
++    return _outline_feature(kind, outline, nx=0.0, ny=0.0, nz=1.0, x=round(cu, 1), y=round(cv, 1), z=off, off=off, **p)
++
++
++def _circle(u: float, v: float, r: float) -> dict:
++    u, v, r = round(u, 3), round(v, 3), round(r, 3)
++    return {"start": [u + r, v], "segs": [["A", u, v + r, u - r, v], ["A", u, v - r, u + r, v]]}
++
++
++def _inner_half(base: GoalFeature) -> tuple[float, float]:
++    """Half extents (x, y) of a centred rectangle inside the base's footprint."""
++    p = base.params
++    if base.kind == "base_box":
++        return p["w"] / 2, p["d"] / 2
++    if base.kind == "base_cyl":
++        return p["r"] * 0.7, p["r"] * 0.7
++    a = 0.45 * min(p["w"], p["d"]) / 2 * 0.7  # profile_base: inside the disc every _shape outline contains
++    return a, a
++
++
++def _datum_z_base(rng: random.Random) -> GoalFeature:
++    from ..goals import _base
++
++    k = rng.random()
++    if k < 0.45:
++        return _side_base(rng)
++    if k < 0.75:
++        b = _base(rng, ["base_cyl"])
++        b.params["h"] = _u(rng, 14, 40)
++        return b
++    rx, ry = _u(rng, 15, 40), _u(rng, 15, 40)
++    return _outline_feature("profile_base", _shape(rng, 0.0, 0.0, rx, ry), h=_u(rng, 14, 35))
++
++
++def _cavity(rng: random.Random, base: GoalFeature):
++    """Closed cavity inside the part (pocket on an XY datum plane, both ways), single or in a row."""
++    from . import patterns as pt
++
++    hx, hy = _inner_half(base)
++    h = base.params["h"]
++    if h < 10:
++        return None
++    depth = _u(rng, 2, h - 6)
++    off = _u(rng, 2 + depth / 2, h - 2 - depth / 2)
++    if rng.random() < 0.35:  # a row of small outline cavities
++        k = rng.choice([0, 1])
++        half_a, half_b = (hx, hy) if k == 0 else (hy, hx)
++        r = _u(rng, 2, max(2.1, min(half_a, half_b) * 0.25))
++        sp = _span(rng, -(half_a - r - 2), half_a - r - 2, 2 * r)
++        if sp is None or half_b - r - 2 < 0:
++            return None
++        first, length, n, sign = sp
++        other = _u(rng, -(half_b - r - 2) * 0.6, (half_b - r - 2) * 0.6)
++        cx, cy = (first, other) if k == 0 else (other, first)
++        return [_xy_outline("profile_pocket", _shape(rng, cx, cy, r, r), off, depth=depth),
++                GoalFeature("linear_pattern", pt.pattern_params("linear_pattern", k, sign, n=float(n), length=length))]
++    if hx < 6 or hy < 6:
++        return None
++    rx, ry = _u(rng, 3, hx - 3), _u(rng, 3, hy - 3)
++    if rng.random() < 0.5:
++        return [_xy_datum("pocket_rect", 0.0, 0.0, off, w=round(2 * rx, 1), d=round(2 * ry, 1), depth=depth)]
++    return [_xy_outline("profile_pocket", _shape(rng, 0.0, 0.0, rx, ry), off, depth=depth)]
++
++
++def _cross_slot(rng: random.Random, base: GoalFeature):
++    """Horizontal slot through two opposite sides of a box (pocket on an XY datum plane)."""
++    if base.kind != "base_box":
++        return None
++    p = base.params
++    depth = _u(rng, 2, max(2.1, p["h"] * 0.4))
++    off = _u(rng, 2 + depth / 2, p["h"] - 2 - depth / 2)
++    if rng.random() < 0.5:  # through along X
++        w, d = round(p["w"] + 10, 1), _u(rng, 3, max(3.1, p["d"] * 0.5))
++    else:
++        w, d = _u(rng, 3, max(3.1, p["w"] * 0.5)), round(p["d"] + 10, 1)
++    return [_xy_datum("pocket_rect", 0.0, 0.0, off, w=w, d=d, depth=depth)]
++
++
++def _mid_flange(rng: random.Random, base: GoalFeature):
++    """Plate or collar through the part at some height, wider than the part (pad on an XY datum)."""
++    h = base.params["h"]
++    t = _u(rng, 2, max(2.1, h * 0.4))
++    off = _u(rng, t / 2, h - t / 2)
++    p = base.params
++    if base.kind == "base_cyl":
++        return [_xy_datum("boss_cyl", 0.0, 0.0, off, r=round(p["r"] + _u(rng, 3, 20), 1), h=t)]
++    if base.kind == "base_box":
++        return [_xy_datum("boss_box", 0.0, 0.0, off, w=round(p["w"] + _u(rng, 6, 40), 1),
++                          d=round(p["d"] + _u(rng, 6, 40), 1), h=t)]
++    rx, ry = p["w"] / 2 + _u(rng, 3, 20), p["d"] / 2 + _u(rng, 3, 20)
++    return [_xy_outline("profile_boss", _shape(rng, 0.0, 0.0, rx, ry), off, h=t)]
++
++
++def _foot(rng: random.Random, base: GoalFeature):
++    """Foot plate under the part, overlapping its bottom (pad on an XY datum around z = 0)."""
++    t = _u(rng, 3, 15)
++    ov = _u(rng, 1, t / 2)
++    off = round(ov - t / 2, 1)
++    p = base.params
++    if base.kind == "base_cyl":
++        w, d = 2 * p["r"] + _u(rng, 0, 30), 2 * p["r"] + _u(rng, 0, 30)
++    else:
++        w, d = p["w"] + _u(rng, -8, 30), p["d"] + _u(rng, -8, 30)
++    return [_xy_datum("boss_box", 0.0, 0.0, off, w=round(max(w, 8.0), 1), d=round(max(d, 8.0), 1), h=t)]
++
++
++def _turned_datum(rng: random.Random):
++    """A part turned about X with a keyway (pocket on an XY datum through the top of a step), or a
++    web and foot plate under it (pads on XY datums), as on a shaft or a bearing housing."""
++    from . import revolve as rv
++
++    n = rng.randint(1, 3)
++    lengths = [_u(rng, 12, 40) for _ in range(n)]
++    radii = [_u(rng, 6, 30) for _ in range(n)]
++    pts, a = [(0.0, 0.0), (0.0, radii[0])], 0.0
++    for i, (ln, r) in enumerate(zip(lengths, radii)):
++        a += ln
++        pts.append((a, r))
++        if i + 1 < n:
++            pts.append((a, radii[i + 1]))
++    pts.append((a, 0.0))
++    base = GoalFeature("profile_revolve", rv.revolve_params(0, outline=rv.lathe_outline(0, pts), angle=360.0))
++    i = rng.randrange(n)
++    a0, r = sum(lengths[:i]), radii[i]
++    x = round(a0 + lengths[i] / 2, 1)
++    if rng.random() < 0.55:  # keyway along step i: datum plane 1 mm above it, cut down by the key depth
++        kw = _u(rng, 2, max(2.1, r * 0.6))
++        kd = _u(rng, 1, max(1.1, r * 0.3))
++        kl = _u(rng, 4, max(4.1, lengths[i] - 4))
++        top = round(r + 1, 1)
++        feats = [_xy_datum("pocket_rect", x, 0.0, top, w=kl, d=kw, depth=round(2 * (1 + kd), 1))]
++    else:  # web from below into step i, foot plate at its bottom
++        gap = _u(rng, 5, 30)
++        z0, z1 = -(r + gap), -r * 0.5
++        ww = _u(rng, 4, max(4.1, lengths[i] - 2))
++        wd = _u(rng, 4, max(4.1, r * 1.2))
++        t = _u(rng, 3, 10)
++        feats = [_xy_datum("boss_box", x, 0.0, round((z0 + z1) / 2, 1), w=ww, d=wd, h=round(z1 - z0, 1)),
++                 _xy_datum("boss_box", x, 0.0, round(z0 + t / 2 - 1, 1), w=round(ww + _u(rng, 4, 30), 1),
++                           d=round(wd + _u(rng, 10, 40), 1), h=t)]
++    return base, feats, max(2 * max(radii), a)
++
++
++def sample_datum_z_goal(level: int, rng: random.Random) -> Goal:
++    """Features on XY datum planes (normal Z, at any height), extruded both ways: closed cavities
++    inside the part (single or in a row), slots through two sides, plates and collars through the
++    part, foot plates under it; keyways and webs with feet on parts turned about X."""
++    from ..goals import _dressup, _scale
++
++    for _ in range(200):
++        if rng.random() < 0.25:
++            base, feats, scale = _turned_datum(rng)
++            if level <= 2:
++                feats = feats[:1]
++            return Goal([base, *feats], level=min(level, 3), scale=scale)
++        base = _datum_z_base(rng)
++        makers = [_cavity, _cavity, _cross_slot, _mid_flange, _foot]
++        budget = 2 if level <= 2 else 4
++        feats = [base]
++        for _ in range(1 if level <= 2 else rng.randint(1, 2)):
++            group = rng.choice(makers)(rng, base)
++            if group and len(feats) - 1 + len(group) <= budget:
++                feats += group
++        if len(feats) == 1:
++            continue
++        if level >= 3 and len(feats) - 1 < budget and base.kind in ("base_box", "base_cyl") and rng.random() < 0.3:
++            feats.append(_dressup(rng, "chamfer_top", base))
++        p = base.params
++        scale = max(p["w"], p["d"], p["h"]) if base.kind == "profile_base" else _scale(base)
++        return Goal(feats, level=min(level, 3), scale=scale)
++    raise ValueError("could not sample a datum_z goal")
++
++
++# ----------------------------------------------------------------------------- overhanging features
++
++def _overhang_cap(rng: random.Random):
++    """Plug with a wider cap on top, holes through the cap's rim (polar), optional knob on top."""
++    rb, h = _u(rng, 6, 25), _u(rng, 4, 20)
++    rc = round(rb * _u(rng, 1.3, 3.0), 1)
++    feats = [GoalFeature("base_cyl", {"r": rb, "h": h}), GoalFeature("boss_cyl", {"r": rc, "x": 0.0, "y": 0.0, "h": _u(rng, 3, 15)})]
++    hr = _u(rng, 1.5, max(1.6, (rc - rb) * 0.2))
++    if rc - rb > 2 * hr + 3 and rng.random() < 0.7:
++        rho = _u(rng, rb + hr + 1.5, rc - hr - 1.5)
++        a = rng.uniform(0, 2 * math.pi)
++        feats += [GoalFeature(rng.choice(["hole", "hole_std"]), {"r": hr, "x": round(rho * math.cos(a), 1),
++                                                                  "y": round(rho * math.sin(a), 1)}),
++                  GoalFeature("polar_pattern", {"n": float(rng.randint(3, 8))})]
++    if rng.random() < 0.4:
++        feats.append(GoalFeature("boss_cyl", {"r": round(rb * _u(rng, 0.3, 0.8), 1), "x": 0.0, "y": 0.0, "h": _u(rng, 3, 15)}))
++    return feats
++
++
++def _overhang_cover(rng: random.Random):
++    """Spigot with a wider plate on top (rounded outline), a row of holes through the rim, mirrored."""
++    from . import patterns as pt
++    from . import profiles as pr
++
++    w, d = _u(rng, 20, 70), _u(rng, 20, 70)
++    mx, my = _u(rng, 6, 25), _u(rng, 6, 25)
++    rx, ry = w / 2 + mx, d / 2 + my
++    feats = [GoalFeature("base_box", {"w": w, "d": d, "h": _u(rng, 3, 15)}),
++             _outline_feature("profile_boss", pr.rounded_rect(0.0, 0.0, 2 * rx, 2 * ry, _u(rng, 0.1, 0.45) * min(rx, ry)),
++                              h=_u(rng, 3, 15))]
++    hr = _u(rng, 1.5, max(1.6, my * 0.25))
++    if my > 2 * hr + 3 and rng.random() < 0.75:
++        y = round(d / 2 + my / 2, 1)  # in the rim, beyond the spigot
++        sp = _span(rng, -(rx - hr - 3), rx - hr - 3, 2 * hr)
++        if sp is not None:
++            first, length, n, sign = sp
++            feats += [GoalFeature("hole", {"r": hr, "x": first, "y": y}),
++                      GoalFeature("linear_pattern", pt.pattern_params("linear_pattern", 0, sign, n=float(n), length=length))]
++    return feats
++
++
++def _overhang_flap(rng: random.Random):
++    """Disc with a larger outline pad on top (flap, lever, lug plate)."""
++    rb = _u(rng, 8, 30)
++    rx, ry = rb * _u(rng, 1.2, 2.5), rb * _u(rng, 1.2, 2.5)
++    cy = _u(rng, -(ry - rb) * 0.5, (ry - rb) * 0.5)
++    return [GoalFeature("base_cyl", {"r": rb, "h": _u(rng, 3, 15)}),
++            _outline_feature("profile_boss", _shape(rng, 0.0, cy, rx, ry), h=_u(rng, 3, 12))]
++
++
++def _overhang_port(rng: random.Random):
++    """Neck on the top or a side face of a block, a wider flange on the neck (its face picked with
++    'at'), a bore through flange and neck, a bolt hole through the flange rim (mirrored)."""
++    from . import patterns as pt
++
++    base = _side_base(rng)
++    w, d, h = base.params["w"], base.params["d"], base.params["h"]
++    face = rng.choice(["+Z", "+Z", "+X", "-X", "+Y", "-Y"])
++    k, sign = "xyz".index(face[1].lower()), (1.0 if face[0] == "+" else -1.0)
++    ua, va = [i for i in range(3) if i != k]
++    half = (w / 2, d / 2, h)  # face coordinate along each axis (top face at z = h)
++    room = [w / 2, d / 2, h / 2]  # half room on the face along each in-plane axis
++    rn = _u(rng, 3, max(3.1, min(room[ua], room[va]) * 0.5))
++    hn, hf = _u(rng, 3, 20), _u(rng, 3, 12)
++    rf = round(rn * _u(rng, 1.4, 2.5), 1)
++    c = [0.0, 0.0, h / 2]
++    c[k] = sign * half[k] if k < 2 else h
++    if rng.random() < 0.4 and ua < 2:  # off-centre along the first in-plane axis (no mirror then)
++        c[ua] = _u(rng, -(room[ua] - rn) * 0.5, (room[ua] - rn) * 0.5)
++    if va == 2:
++        c[2] = _u(rng, rn + 1, max(rn + 1.1, h - rn - 1))
++    c = [round(v, 1) for v in c]
++    top, end = list(c), list(c)
++    top[k] = round(c[k] + sign * hn, 1)
++    end[k] = round(top[k] + sign * hf, 1)
++    normal = {} if k == 2 else {"nx": 0.0, "ny": 0.0, "nz": 0.0, "n" + "xyz"[k]: sign}
++    centre = lambda p: {"x": p[0], "y": p[1]} if k == 2 else {"x": p[0], "y": p[1], "z": p[2]}  # noqa: E731
++    feats = [base,
++             GoalFeature("boss_cyl", {**normal, **centre(c), "r": rn, "h": hn}),
++             GoalFeature("boss_cyl", {**normal, **centre(top), "r": rf, "h": hf, "at": top})]
++    if rng.random() < 0.8:  # bore through flange and neck
++        rb = round(rn * _u(rng, 0.4, 0.75), 1)
++        feats.append(_outline_feature("profile_pocket", _circle(c[ua], c[va], rb), **normal, **centre(end),
++                                      depth=round(hf + hn + _u(rng, 1, 5), 1), at=end))
++    if rf - rn > 4 and rng.random() < 0.6:  # bolt hole in the flange rim, mirrored across the neck's axis plane
++        hr = _u(rng, 1, max(1.1, (rf - rn) * 0.25))
++        p = list(end)
++        p[ua] = round(c[ua] + (rn + rf) / 2, 1)
++        feats.append(_outline_feature("profile_pocket", _circle(p[ua], p[va], hr), **normal, **centre(p),
++                                      depth=round(hf + 1, 1), at=p))
++        if c[ua] == 0.0:
++            feats.append(GoalFeature("mirror", pt.pattern_params("mirror", ua)))
++    return feats
++
++
++def sample_overhang_goal(level: int, rng: random.Random) -> Goal:
++    """Features wider than the face they stand on: caps over plugs, cover plates over spigots,
++    flaps over discs, flanges on necks (on the top or a side face), with holes through the
++    overhanging part."""
++    from ..goals import _scale
++
++    makers = [_overhang_cap, _overhang_cover, _overhang_flap, _overhang_port]
++    feats = rng.choice(makers)(rng)
++    if level <= 2:
++        feats = feats[:3]
++    return Goal(feats, level=min(level, 3), scale=_scale(feats[0]))
++
++
+ SAMPLERS = {"side": sample_side_goal, "plane": sample_plane_goal, "outline": _outline_split,
+             "revolve": sample_revolve_goal, "pattern": sample_pattern_goal,
+-            "edges": sample_edges_goal}
++            "edges": sample_edges_goal,
++            "datum_z": sample_datum_z_goal, "overhang": sample_overhang_goal}
+ 
+ 
+ def sample_split(split: str, level: int, rng: random.Random) -> Goal:
+diff --git a/freecad_s1/goals.py b/freecad_s1/goals.py
+index 1522986..155e33a 100644
+--- a/freecad_s1/goals.py
++++ b/freecad_s1/goals.py
+@@ -260,7 +260,7 @@ def heldout_composition(goal: Goal) -> str | None:
+     return None
+ 
+ 
+-SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext")  # side .. large_ext: taiga-expanded
++SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext", "datum_z", "overhang")  # side .. overhang: taiga-expanded
+ 
+ 
+ def goal_in_split(goal: Goal, split: str) -> bool:
+diff --git a/tests/test_ext_datum_overhang.py b/tests/test_ext_datum_overhang.py
+new file mode 100644
+index 0000000..f255354
+--- /dev/null
++++ b/tests/test_ext_datum_overhang.py
+@@ -0,0 +1,73 @@
++"""taiga-expanded: features on XY datum planes, and features wider than their face (patch 0009)."""
++import random
++
++from freecad_s1.evaluate import SUITES
++from freecad_s1.expert import Meta, ObjMeta, expert_actions
++from freecad_s1.ext import faces, profiles as pr, sampler
++from freecad_s1.goals import RECIPES
++from freecad_s1.schema import Goal
++
++
++def test_new_splits_and_suites():
++    assert sampler.SPLITS[-2:] == ("datum_z", "overhang")
++    assert SUITES["datum_z"] == [(3, "datum_z")] and SUITES["overhang"] == [(3, "overhang")]
++
++
++def test_xy_datum_features_go_on_the_xy_plane():
++    rng = random.Random(1)
++    seen = 0
++    for _ in range(300):
++        g = sampler.sample_datum_z_goal(3, rng)
++        for f in g.features[1:]:
++            if "off" in f.params and f.params.get("nz") == 1.0:
++                seen += 1
++                assert faces.support_for(f, RECIPES[f.kind]) == "Plane:XY"
++                assert f.params["z"] == f.params["off"]
++    assert seen > 250
++    meta = Meta(doc_open=True, workbench="PartDesignWorkbench", body="Body")
++    meta.objects["Body"] = ObjMeta("Body", "body")
++    meta.objects["Pad"] = ObjMeta("Pad", "feature", goal_ref=0)
++    f = next(f for f in sampler.sample_datum_z_goal(3, random.Random(3)).features[1:] if "off" in f.params)
++    assert expert_actions(Goal([sampler._side_base(random.Random(0)), f], level=2, scale=40), meta) == ["Select:Plane:XY"]
++
++
++def test_cavities_stay_inside_the_part():
++    rng = random.Random(2)
++    for _ in range(400):
++        g = sampler.sample_datum_z_goal(3, rng)
++        base = g.features[0]
++        if base.kind == "profile_revolve":
++            continue
++        h = base.params["h"]
++        for f in g.features[1:]:
++            if f.kind in ("pocket_rect", "profile_pocket") and "off" in f.params:
++                wide = f.kind == "pocket_rect" and (base.kind == "base_box" and (f.params["w"] > base.params["w"]
++                                                                                   or f.params["d"] > base.params["d"]))
++                lo, hi = f.params["off"] - f.params["depth"] / 2, f.params["off"] + f.params["depth"] / 2
++                assert 0 < lo and hi < h  # closed top and bottom (a slot through two sides when wider)
++                if not wide and base.kind == "base_box":
++                    assert f.params["w"] < base.params["w"] and f.params["d"] < base.params["d"]
++
++
++def test_overhanging_features_are_wider_than_their_face():
++    rng = random.Random(4)
++    n = 0
++    for _ in range(400):
++        g = sampler.sample_overhang_goal(3, rng)
++        base, second = g.features[0], g.features[1]
++        if base.kind == "base_cyl" and second.kind == "boss_cyl":  # cap over a plug
++            assert second.params["r"] > base.params["r"]
++            n += 1
++        elif base.kind == "base_cyl" and second.kind == "profile_boss":  # flap over a disc
++            _, _, w, d = pr.bbox(second.params["outline"])
++            assert max(w, d) > 2 * base.params["r"]
++            n += 1
++        elif base.kind == "base_box" and second.kind == "profile_boss":  # cover plate over a spigot
++            _, _, w, d = pr.bbox(second.params["outline"])
++            assert w > base.params["w"] and d > base.params["d"]
++            n += 1
++        elif base.kind == "base_box":  # neck, then a wider flange on the neck's end face
++            neck, flange = g.features[1], g.features[2]
++            assert flange.params["r"] > neck.params["r"] and "at" in flange.params
++            n += 1
++    assert n == 400
