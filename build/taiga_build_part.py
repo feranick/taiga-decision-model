@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.05.7
+Version: 2026.10.05.8
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -18,6 +18,9 @@ repo (~/taiga/taiga-s1), so they work from any directory:
          and engine/example_goals_engine.json (this folder).
 --check: only check that every goal can be built (the teacher builds the target
          solid); no model is loaded and no parts are written.
+--teacher: build the parts with the scripted teacher (the expert that labels the training
+         data) instead of a model, and save them like model builds. Shows what the goal
+         itself produces, independent of any model (e.g. to compare goals with a reference).
 
 Timing: each part reports how long it took to make, split into model decisions,
 FreeCAD steps and saving/export; a summary table with the totals is printed at the end.
@@ -161,6 +164,7 @@ def main() -> None:
     ap.add_argument("--no-gui-data", action="store_true", help="don't add GuiDocument.xml to the .FCStd")
     ap.add_argument("--no-step", action="store_true", help="don't export a .step file")
     ap.add_argument("--check", action="store_true", help="only check that the goals can be built")
+    ap.add_argument("--teacher", action="store_true", help="build with the scripted teacher instead of a model")
     args = ap.parse_args()
 
     if not (os.environ.get("FREECAD_PYTHON") and os.environ.get("FREECAD_LIB")):
@@ -169,7 +173,7 @@ def main() -> None:
     if goals_path is None:
         sys.exit(f"error: goals file not found: {args.goals}\n  looked in {Path.cwd()} and {REPO_ROOT}")
     goals = json.loads(goals_path.read_text())
-    policy = None if args.check else Policy(load_model(args.model), "cpu")
+    policy = None if (args.check or args.teacher) else Policy(load_model(args.model), "cpu")
     if args.name and args.name not in goals:
         sys.exit(f"error: no goal named '{args.name}' in {goals_path}; available: {', '.join(goals)}")
     names = [args.name] if args.name else list(goals)
@@ -208,7 +212,7 @@ def main() -> None:
             t0 = time.perf_counter()
             while steps < r["budget"]:
                 t = time.perf_counter()
-                action = policy.act([state], [goal], [actions])[0]
+                action = expert[0] if args.teacher else policy.act([state], [goal], [actions])[0]
                 t_model += time.perf_counter() - t
                 steps += 1
                 agree += action in expert

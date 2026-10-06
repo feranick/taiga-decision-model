@@ -2,7 +2,7 @@
 """pump_s80.py — parametric model of the Victor Pumps S 80 self-priming centrifugal pump
 (bare-shaft pump end: casing with volute, impeller, wear plate, covers, bearing bracket,
 shaft, seal and bearings). Reference geometry for extending Taiga-S1.
-Version: 2026.10.05.3
+Version: 2026.10.05.4
 
 Runs with any Python >= 3.10 that has OpenCASCADE's Python bindings (OCP):
     pip install 'cadquery-ocp>=7.9,<8'  # or: uv pip install --python <venv>/bin/python 'cadquery-ocp>=7.9,<8'
@@ -341,21 +341,30 @@ def inspection_bolts(zc):
     return [(y, zc + dz) for y in (-75, 0, 75) for dz in (-50, 50)]
 
 
-def make_impeller():
-    r2, rh = D["r2"], 24.0
-    shroud = cyl(r2, (0, 0, 0), (1, 0, 0), D["shroud_t"])
-    hub = cyl(rh, (-6, 0, 0), (1, 0, 0), 6 + D["shroud_t"] + D["b2"])
-    # one blade: logarithmic spiral (constant blade angle beta), thickness blade_t, from the hub to r2
+IMPELLER_HUB_R = 24.0
+
+
+def blade_points(n: int = 24):
+    """The two sides of one blade in the YZ plane (y, z), from the hub to r2: a logarithmic
+    spiral (constant blade angle beta), thickness blade_t. Backward-curved: the impeller turns
+    counter-clockwise seen from the front (same sense as the volute), so the blade sweeps
+    clockwise (-theta) as the radius grows. Also used by the Taiga goals for the S 80."""
+    r2 = D["r2"]
     beta, t = math.radians(D["beta_deg"]), D["blade_t"]
-    r1 = rh + 2
+    r1 = IMPELLER_HUB_R + 2
     theta_end = math.log(r2 / r1) / math.tan(beta)
-    n = 24
     side_a = [(r1 * math.exp(th * math.tan(beta)), th) for th in [theta_end * i / n for i in range(n + 1)]]
-    dth = t / r2  # angular thickness at the tip
-    # backward-curved: the impeller turns counter-clockwise seen from the front (same sense
-    # as the volute), so the blade sweeps clockwise (-theta) as the radius grows
     pts_a = [(r * math.cos(-th), r * math.sin(-th)) for r, th in side_a]
     pts_b = [(r * math.cos(-th + t / r), r * math.sin(-th + t / r)) for r, th in side_a]
+    return pts_a, pts_b
+
+
+def make_impeller():
+    r2, rh = D["r2"], IMPELLER_HUB_R
+    shroud = cyl(r2, (0, 0, 0), (1, 0, 0), D["shroud_t"])
+    hub = cyl(rh, (-6, 0, 0), (1, 0, 0), 6 + D["shroud_t"] + D["b2"])
+    dth = D["blade_t"] / r2  # angular thickness at the tip
+    pts_a, pts_b = blade_points()
     bl = prof("YZ", pts_a[0])
     bl.spline(pts_a[1:]).line(pts_b[-1]).spline(list(reversed(pts_b[:-1])))
     blade = bl.extrude(D["shroud_t"] - 0.5, D["shroud_t"] + D["b2"])

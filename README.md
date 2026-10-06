@@ -64,6 +64,7 @@ taiga-decision-model/
     ├── README.md                 design, status of each primitive, workflow
     ├── patches/                  git patch series against upstream (+ BASE commit)
     ├── dev/                      make the dev branch, export and check the patches
+    ├── eval/                     S 80 goals; builds them (teacher, models) and scores them against the reference CAD
     └── train_expanded.sh         trains the patched (or baseline) model with the training scripts
 ```
 

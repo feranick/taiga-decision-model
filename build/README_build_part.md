@@ -46,6 +46,7 @@ Relative `--model` and `--goals` paths are looked up in the current directory fi
 | `--out` | `parts` | Directory for the `.FCStd` files |
 | `--quiet` | off | Print only the result line for each part |
 | `--check` | off | Only check that each goal can be built (the teacher builds the target); no model needed, no files written |
+| `--teacher` | off | Build with the scripted teacher (the expert that labels the training data) instead of a model, and save the parts as usual: what the goal itself produces, independent of any model |
 | `--no-step`, `--no-gui-data` | off | Skip the STEP export / the added view data |
 
 The exit code is `0` if every part succeeded and `1` otherwise, so the script can be used in other scripts and CI.
@@ -201,5 +202,5 @@ It saves a screenshot and the `.FCStd` to `runs/gui_demo/`. `--delay` sets the p
 
 | Script | Version |
 |---|---|
-| `taiga_build_part.py` | 2026.10.05.7 |
+| `taiga_build_part.py` | 2026.10.05.8 |
 | `taiga_assemble.py` | 2026.10.05.2 |

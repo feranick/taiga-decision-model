@@ -24,8 +24,7 @@ taiga-expanded/
 ├── patches/             the patch series (git format-patch) + BASE (upstream commit it applies to)
 ├── dev/                 make_dev_branch.sh, export_patches.sh, check_patches.sh (+ config.sh)
 ├── train_expanded.sh    runs ../training/taiga_repro_<machine>.sh on the patched (or baseline) code
-├── goals/               test goals for the new features (planned)
-└── eval/                part-by-part comparison with the S 80 reference (planned)
+└── eval/                S 80 goals and their part-by-part comparison with the reference CAD (eval/README.md)
 ```
 
 ## Design
@@ -208,7 +207,7 @@ Compare the original suites between the two with `../training/taiga_aggregate.py
 
 1. **No regression:** on the original suites, the expanded model's distribution over seeds is not worse than the baseline's at the same commit.
 2. **New features:** high clean and perturbed success on each new suite.
-3. **Real parts:** S 80 parts rebuilt with Taiga goals, scored by IoU against `../build/pump_s80_reference_CAD` (planned in `eval/`).
+3. **Real parts:** S 80 parts rebuilt with Taiga goals, scored by IoU against `../build/pump_s80_reference_CAD`, first with the scripted teacher (can the vocabulary express them?), then with the trained models (`eval/`, see [`eval/README.md`](eval/README.md)).
 
 ## Versions
 
