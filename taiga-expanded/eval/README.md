@@ -91,6 +91,6 @@ So the vocabulary expresses the S 80 to within 0.2 % of its volume; anything a m
 | File | Version |
 |---|---|
 | `make_s80_goals.py` | 2026.10.05.2 |
-| `eval_s80.py` | 2026.10.06.1 |
-| `voxel_iou.py` | 2026.10.05.1 |
+| `eval_s80.py` | 2026.10.06.3 |
+| `voxel_iou.py` | 2026.10.06.1 |
 | `run_s80.sh` | 2026.10.06.1 |

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """eval_s80.py — score Taiga-built S 80 parts against the reference CAD, part by part.
-Version: 2026.10.06.1
+Version: 2026.10.06.3
 
 Runs in FreeCAD's Python (needs numpy):
     source ~/taiga-expanded/freecad.env
@@ -19,7 +19,9 @@ Runs in FreeCAD's Python (needs numpy):
 Scores: volumetric IoU on a voxel grid (voxel_iou.py; OCC booleans of two nearly identical
 solids can fail silently), plus the built and reference volumes. "coverage" = share of the
 reference volume that the build fills, "excess" = built volume outside the reference, as a
-share of the reference volume. With several model builds (seeds), each part also gets the
+share of the reference volume. If a mesh has holes (OCC sometimes leaves a face untriangulated)
+or the grid can't get fine enough, the IoU comes from 20,000 random points classified against
+the solids instead ("sampled" in the JSON). With several model builds (seeds), each part also gets the
 mean and standard deviation over them (the teacher is not included).
 """
 from __future__ import annotations
@@ -42,7 +44,7 @@ try:
 except ImportError:
     sys.exit("error: numpy is missing in FreeCAD's Python (Ubuntu: sudo apt install python3-numpy)")
 from taiga_assemble import add_gui_document, load_shape, placement  # noqa: E402
-from voxel_iou import voxel_iou  # noqa: E402
+from voxel_iou import voxel_iou_checked  # noqa: E402
 
 
 def triangles(shape, deflection: float = 0.05):
@@ -75,14 +77,37 @@ def assemble(folder: Path, builds: list[dict]):
     return shapes[0] if len(shapes) == 1 else Part.makeCompound(shapes)
 
 
-def score(shape, ref_tris, ref_volume: float, res: int) -> dict:
+def sampled_iou(a, b, n: int = 20000, seed: int = 0) -> dict:
+    """IoU from random points classified against the solids themselves (no mesh): the fallback
+    when a mesh is not watertight (OCC sometimes leaves a face without triangles), which breaks
+    the voxel fill. Identical solids still give exactly 1."""
+    import random
+
+    bb = a.BoundBox
+    bb.add(b.BoundBox)
+    rng = random.Random(seed)
+    na = nb = ni = 0
+    for _ in range(n):
+        p = App.Vector(rng.uniform(bb.XMin, bb.XMax), rng.uniform(bb.YMin, bb.YMax), rng.uniform(bb.ZMin, bb.ZMax))
+        ia, ib = a.isInside(p, 1e-6, True), b.isInside(p, 1e-6, True)
+        na, nb, ni = na + ia, nb + ib, ni + (ia and ib)
+    box = bb.XLength * bb.YLength * bb.ZLength / n
+    union = na + nb - ni
+    return {"iou": ni / union if union else 0.0, "vol_a": na * box, "vol_b": nb * box, "vol_inter": ni * box,
+            "h": 0.0, "converged": True, "sampled": True}
+
+
+def score(shape, ref_tris, ref_volume: float, res: int, ref_shape=None) -> dict:
     if shape is None:
         return {"iou": 0.0, "missing": True}
-    v = voxel_iou(triangles(shape), ref_tris, res)
+    v = voxel_iou_checked(triangles(shape), ref_tris, shape.Volume, ref_volume, res)
+    if not v["converged"] and ref_shape is not None:  # a mesh with holes, or a grid too coarse: classify points
+        v = sampled_iou(shape, ref_shape)
     ref_v = v["vol_b"] or ref_volume
     return {"iou": round(v["iou"], 5), "volume_cm3": round(shape.Volume / 1000, 2),
             "coverage": round(v["vol_inter"] / ref_v, 5), "excess": round((v["vol_a"] - v["vol_inter"]) / ref_v, 5),
-            "h_mm": round(v["h"], 3)}
+            "h_mm": round(v["h"], 3), **({} if v["converged"] else {"coarse": True}),
+            **({"sampled": True} if v.get("sampled") else {})}
 
 
 def parse_built(items: list[str]) -> list[tuple[str, Path]]:
@@ -147,7 +172,7 @@ def main() -> None:
         key = part if alt is None else f"{part} [{alt}]"
         results["parts"][key] = {"ref_volume_cm3": round(ref.Volume / 1000, 2)}
         for label, folder in built:
-            r = score(assemble(folder, builds), ref_tris, ref.Volume, args.res)
+            r = score(assemble(folder, builds), ref_tris, ref.Volume, args.res, ref)
             results["parts"][key][label] = r
             print(f"{key:36s} {label:12s} " + ("missing" if r.get("missing") else
                   f"IoU {r['iou']:.4f}  coverage {r['coverage']:.4f}  excess {r['excess']:.4f}  "
@@ -166,7 +191,7 @@ def main() -> None:
                 if folder == teacher:
                     continue
                 shape, _ = load_shape(folder, goal)
-                r = score(shape, t_tris, t_shape.Volume, args.res)
+                r = score(shape, t_tris, t_shape.Volume, args.res, t_shape)
                 results["vs_teacher"][goal][label] = r
                 print(f"{goal:36s} {label:12s} vs teacher " + ("missing" if r.get("missing") else f"IoU {r['iou']:.4f}"),
                       flush=True)
