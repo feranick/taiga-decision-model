@@ -230,6 +230,38 @@ Only installs made by these script versions are recorded. Anything installed by 
 
 ---
 
+## Evaluation suites
+
+Every suite is a fixed set of goals (seed 3, the same on every machine) that the model never saw in training. They test two different kinds of generalization.
+
+**Composition: familiar features in new combinations.** Every feature type is in training, but some pairs are deliberately held out.
+
+| Suite | Held out of training |
+|---|---|
+| `iid` | nothing: fresh goals from the training distribution (levels 1–3), the reference point |
+| `comp` | two rules: a pattern of a `boss_box` (patterns of other features, and `boss_box` without patterns, are both trained), and a mirrored `hole_std` |
+| `comp2` | a `boss_box` followed by a mirror |
+| `comp3` | a rectangular pocket followed by a polar pattern |
+
+All are level-3 goals (a base and a few features). `comp` holds two rules, so a model that gets one and fails the other scores about 0.5.
+
+**Length: more features than training ever had.** Training goals have at most 5 features; these suites use only trained feature types:
+
+| Suite | Level | Features per goal |
+|---|---|---|
+| `len` | 4 | 6–7 |
+| `len2` | 5 | 8–9 |
+| `len3` | 6 | about 11 |
+| `len4` | 7 | about 13 |
+| `len5` | 8 | about 15 |
+| `len6` | 9 | about 17 |
+
+In result tables the suites appear as `<suite>-L<level>`, e.g. `len6-L9`: the L is the generator's level, not the number of features. They test whether the model keeps track of what is done and what comes next over far more steps than it practised.
+
+For real parts both matter: composition because real designs combine features in ways no generator anticipates, length because real parts are long (the S 80 casing has 52 features, three times `len6`).
+
+`../taiga-expanded` adds suites for its new features (`side`, `plane`, `outline`, `revolve`, `pattern`, `edges`, `datum_z`, `overhang`, all level 3) and `large` / `large_ext` (the same goals ×4 in size); see its README.
+
 ## Variance studies
 
 Two training runs with the same seed, data and machine can produce noticeably different models, because GPU arithmetic is not deterministic. The tools below measure that spread and help find its cause, rather than picking the best run.

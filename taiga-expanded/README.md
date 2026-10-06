@@ -180,6 +180,9 @@ Because these families were added after looking at S 80 failures, the next S 80 
 
 ### Training plan
 
+The suites (`iid`, `comp*`, `len*` and the ones added here) are explained in [`../training/README_training.md`, Evaluation suites](../training/README_training.md#evaluation-suites).
+
+
 Each step as a sweep on the same machine (DGX shown), with fixed data (`DATA_SEED=2`), so differences come from the model:
 
 | # | Question | Commands |
