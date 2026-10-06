@@ -206,6 +206,18 @@ Each step as a sweep on the same machine (DGX shown), with fixed data (`DATA_SEE
 - Perturbed (20 % random actions): new suites 0.93–0.99 (outline and revolve lowest); original suites as the baseline except len5/len6.
 - Time per sweep: about 7–8 h, mostly evaluation (training 0.9 h for 5 seeds, perturbed evaluation 3.8 h).
 
+**Step 2 results so far** (Spark2, 5 seeds, fixed data, 2026-10-06): the expanded model at 8 epochs, against step 1 (4 epochs) and the original model at 8 epochs (`a6e81d3`, variance study, three machines):
+
+| Suite | Expanded, 4 epochs | Expanded, 8 epochs | Original, 8 epochs |
+|---|---|---|---|
+| comp / comp2 / comp3 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 (sd 0) | 0.48–0.61 / 0.94–1.00 / 0.77–0.94 |
+| len5 (8 intents) | 0.68 ± 0.18 | 0.84 ± 0.23 | 0.95–0.99 |
+| len6 (9 intents) | 0.14 ± 0.03 | 0.67 ± 0.29 | 0.93–0.94 |
+| new suites, large | 1.00 | 1.00 | — |
+
+- **Composition holds with more training.** The original model loses its held-out compositions when trained longer (comp to 0.48, all seeds alike); the expanded one keeps all three at 1.00 on every seed. The diversity of the new families, not stopping early, is what generalizes.
+- **Length improves but needs more than 8 epochs.** len6 rises from 0.14 to 0.67 but stays below the original's 0.93, with a large spread (0.20–0.96); the loss has mostly settled (last-epoch drop 0–10 %). With more to learn, the same budget goes less far on length: next, 2× data (running) and longer goals in training.
+
 Compare with `../training/taiga_aggregate.py` on the run folders (`~/taiga-head/taiga-s1/runs/data2`, `~/taiga-expanded/taiga-s1/runs/data2`, `.../x2_data2`, ...).
 
 ## Workflow

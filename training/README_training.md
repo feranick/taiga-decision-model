@@ -263,6 +263,27 @@ cd ~/taiga/taiga-s1
 
 How to read the outcome: if the spread with fixed data (`data2`) is about as large as the baseline, it comes from optimization, and more epochs or a different schedule are the levers to try. If fixed data removes most of it, the training sample matters, and more data (`DATA_SCALE`) should narrow it. The goal is a mean that rises while the spread shrinks; a higher best run alone is not.
 
+### Results so far (original model, `a6e81d3`, 2026-10-06)
+
+Clean success, mean ± sd over 5 seeds (Quadro fixed-data: 4 seeds); fixed data (`DATA_SEED=2`) unless "fresh data". Partial: the DAgger-rounds sweep (5060 Ti) and the Quadro 2× data sweep are still running.
+
+| Suite | Machine | Fresh data | Fixed data | 8 epochs | 2× data |
+|---|---|---|---|---|---|
+| comp-L3 | 5060 Ti | 0.83 ± 0.24 | 0.76 ± 0.26 | 0.61 ± 0.18 | 0.45 ± 0.03 |
+| | Spark1 (DGX) | 0.71 ± 0.27 | 0.70 ± 0.27 | 0.48 ± 0.01 | 0.45 ± 0.03 |
+| | Quadro | 0.87 ± 0.20 | 0.62 ± 0.21 | 0.48 ± 0.02 | — |
+| comp3-L3 | 5060 Ti / Spark1 / Quadro | 0.97 / 1.00 / 0.96 | 0.99 / 0.87 / 0.99 | 0.94 / 0.81 / 0.77 | 0.46 / 0.52 / — |
+| len6-L9 (9 intents) | 5060 Ti | 0.52 ± 0.31 | 0.53 ± 0.35 | 0.93 ± 0.07 | 0.92 ± 0.05 |
+| | Spark1 (DGX) | 0.68 ± 0.25 | 0.41 ± 0.25 | 0.93 ± 0.14 | 0.81 ± 0.35 |
+| | Quadro | 0.72 ± 0.29 | 0.43 ± 0.30 | 0.94 ± 0.05 | — |
+| last-epoch NLL drop | all | 9–11 % | 12–19 % | 3–6 % | 12 % |
+
+What it shows, the same on all three machines:
+
+- **The spread at the default budget is under-training.** At 4 epochs the loss is still falling (12–19 % in the last epoch), and the long-goal suites swing from seed to seed (len6 from 0.16 to 0.92 on one machine). With 8 epochs the loss has settled (3–6 %), len6 rises to about 0.93 and its spread drops to 0.05–0.14. 2× data does about the same for length.
+- **Held-out compositions get worse with more training, and stop varying.** comp-L3 is bimodal at 4 epochs: each seed scores either about 0.49 (one of the suite's two held-out compositions always fails) or 1.00. More epochs or more data push every seed to about 0.48 (sd 0.01–0.03); comp3 drops too. The occasional compositional generalization at the default budget is a side effect of stopping early, not something training reliably produces. Picking the seed that happened to get 1.00 would hide exactly this.
+- **So budget fixes length but not composition.** That needs the data: the taiga-expanded model, whose new families include patterns and mirrors of many feature types (never the held-out pairs), scores 1.00 ± 0.00 on comp, comp2 and comp3 at 4 epochs. It keeps 1.00 on all three at 8 epochs, on every seed (`../taiga-expanded/README.md`, step 2).
+
 ### Notes
 
 - With `DATA_SEED` unset, every seed generates its own training data, which takes about as long as a full `data` stage per seed. With `DATA_SEED` set, the data is generated once and shared.
