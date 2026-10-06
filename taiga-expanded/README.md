@@ -176,6 +176,23 @@ Each step as a sweep on the same machine (DGX shown), with fixed data (`DATA_SEE
 | 3 | Does perturbed DAgger help, on both? | Step 1 with `DAGGER_PERTURB=0.2` |
 | 4 | Only if `large` is clearly below `iid`: size augmentation | `DATA_SEED=2 TAIGA_SIZE_AUG=0.3 ./train_expanded.sh dgx sweep` |
 
+**Step 1 results** (DGX spark-0808, FreeCAD 1.1.3, 5 seeds each, same data `DATA_SEED=2`, 2026-10-06). Clean success, mean ± sd over seeds:
+
+| Suite | Baseline (unpatched `4a31bcf`) | Expanded |
+|---|---|---|
+| iid L1–L3, len L4–L6 | 1.00 ± 0.00 | 1.00 ± 0.00 |
+| comp / comp2 / comp3 | 0.81 ± 0.22 / 0.99 ± 0.02 / 0.96 ± 0.09 | 1.00 ± 0.00 (all three) |
+| len4 (7 intents) | 0.99 ± 0.02 | 0.98 ± 0.05 |
+| len5 (8 intents) | 0.83 ± 0.19 | 0.68 ± 0.18 |
+| len6 (9 intents) | 0.41 ± 0.34 | 0.14 ± 0.03 |
+| side, plane, outline, revolve, pattern, edges, large, large_ext | — | 1.00 ± 0.00 (all) |
+
+- **Held-out compositions improve** and their spread disappears: the new families (patterns and mirrors of many feature types) transfer to the compositions upstream holds out, which are still never trained on.
+- **Size doesn't matter:** `large` (the `iid` goals ×4) scores exactly like `iid`, clean and perturbed, seed by seed. Size augmentation (step 4) is not needed.
+- **Length extrapolation regresses:** goals longer than anything in training (8–9 intents, training has ≤ 5) fail more often, also when perturbed (len6 0.38 → 0.08). The published model reaches 0.97 on len6 on the same machine, so the training budget matters for length. Real parts are long (the S 80 casing has 52 features), so this is the axis to work on: step 2, then training on longer goals.
+- Perturbed (20 % random actions): new suites 0.93–0.99 (outline and revolve lowest); original suites as the baseline except len5/len6.
+- Time per sweep: about 7–8 h, mostly evaluation (training 0.9 h for 5 seeds, perturbed evaluation 3.8 h).
+
 Compare with `../training/taiga_aggregate.py` on the run folders (`~/taiga-head/taiga-s1/runs/data2`, `~/taiga-expanded/taiga-s1/runs/data2`, `.../x2_data2`, ...).
 
 ## Workflow
