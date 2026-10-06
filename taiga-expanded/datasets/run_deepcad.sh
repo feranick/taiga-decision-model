@@ -1,6 +1,6 @@
 #!/bin/bash
 # run_deepcad.sh — DeepCAD build histories as Taiga goals: download, convert, verify, score models.
-# Version: 2026.10.06.1
+# Version: 2026.10.06.2
 #
 # Usage:  ./run_deepcad.sh download          DeepCAD's data (cad_json + split) into $DATA
 #         ./run_deepcad.sh convert           JSON -> goals + reference STEP files        -> $OUT
@@ -41,21 +41,39 @@ need_work() {
   cd "$WORK/taiga-s1" || die "$WORK/taiga-s1 not found"
 }
 
+find_data() {  # cad_json folder and split file, wherever the archive put them
+  CAD_JSON=$(find "$DATA" -maxdepth 4 -type d -name cad_json 2>/dev/null | head -n 1)
+  SPLIT=$(find "$DATA" -maxdepth 4 -type f -name train_val_test_split.json 2>/dev/null | head -n 1)
+}
+
 stage_download() {
   mkdir -p "$DATA"
-  if [[ -d $DATA/data/cad_json ]]; then log "DeepCAD data already in $DATA/data"; return 0; fi
-  log "downloading $URL -> $DATA (several GB)"
-  curl -L --fail -o "$DATA/data.tar" "$URL" || die "download failed (the README of github.com/rundiwu/DeepCAD has a backup link)"
+  find_data
+  if [[ -n $CAD_JSON && -n $SPLIT ]]; then log "DeepCAD data already in $DATA: $CAD_JSON"; return 0; fi
+  if [[ ! -f $DATA/data.tar ]]; then
+    log "downloading $URL -> $DATA"
+    curl -L --fail -o "$DATA/data.tar" "$URL" || die "download failed (the README of github.com/rundiwu/DeepCAD has a backup link)"
+  fi
+  log "extracting $DATA/data.tar"
   tar -xf "$DATA/data.tar" -C "$DATA" || die "extract failed"
-  [[ -d $DATA/data/cad_json ]] || die "no data/cad_json in the archive"
-  rm -f "$DATA/data.tar"
+  for a in $(find "$DATA" -maxdepth 4 \( -name '*.tar' -o -name '*.tar.gz' -o -name '*.tgz' -o -name '*.zip' \) ! -path "$DATA/data.tar"); do
+    log "extracting nested archive $a"
+    case $a in *.zip) unzip -q -o "$a" -d "$(dirname "$a")" ;; *) tar -xf "$a" -C "$(dirname "$a")" ;; esac
+  done
+  find_data
+  if [[ -z $CAD_JSON || -z $SPLIT ]]; then
+    echo "archive contents (top levels):"; tar -tf "$DATA/data.tar" | awk -F/ 'NF>1{print $1"/"$2} NF==1{print $1}' | sort | uniq -c | head -n 20
+    die "no cad_json folder or train_val_test_split.json found under $DATA"
+  fi
+  log "cad_json: $CAD_JSON ($(find "$CAD_JSON" -name '*.json' | wc -l) files), split: $SPLIT"
 }
 
 stage_convert() {
   "$REF_PY" -c "import OCP, numpy" 2>/dev/null || die "$REF_PY lacks OCP or numpy (run ../eval/run_s80.sh eval once to create ocp-venv, or set REF_PY)"
-  [[ -d $DATA/data/cad_json ]] || die "no DeepCAD data in $DATA (run: $0 download)"
+  find_data
+  [[ -n $CAD_JSON && -n $SPLIT ]] || die "no DeepCAD data in $DATA (run: $0 download)"
   log "convert $SUBSET (limit $LIMIT, at most $MAX_FEATURES features) -> $OUT"
-  "$REF_PY" "$HERE/convert_deepcad.py" --data "$DATA/data/cad_json" --split "$DATA/data/train_val_test_split.json" \
+  "$REF_PY" "$HERE/convert_deepcad.py" --data "$CAD_JSON" --split "$SPLIT" \
     --subset "$SUBSET" --out "$OUT" --refs --max-features "$MAX_FEATURES" --limit "$LIMIT" 2>&1 \
     | grep -v -e '^\*\*\*' -e 'Statistics on Transfer' -e 'Transfer Mode' -e 'Transferring Shape' -e 'WorkSession' -e 'Step File Name' \
     | tee "$OUT/convert.log"

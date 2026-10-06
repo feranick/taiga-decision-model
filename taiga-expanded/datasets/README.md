@@ -49,7 +49,7 @@ So: **DeepCAD first**, with the `LICENSE`-tab check. Before using either dataset
 
 ```bash
 cd taiga-expanded/datasets
-./run_deepcad.sh download      # DeepCAD data -> ~/deepcad (several GB)
+./run_deepcad.sh download      # DeepCAD data -> ~/deepcad (archive about 200 MB)
 ./run_deepcad.sh convert       # test split, first 300 convertible models -> ~/taiga-expanded/deepcad_test
 ./run_deepcad.sh teacher       # the teacher builds every goal
 ./run_deepcad.sh verify        # keep the goals whose teacher build matches the original (IoU >= 0.99)
@@ -72,4 +72,4 @@ cd taiga-expanded/datasets
 | File | Version |
 |---|---|
 | `convert_deepcad.py` | 2026.10.06.1 |
-| `run_deepcad.sh` | 2026.10.06.1 |
+| `run_deepcad.sh` | 2026.10.06.2 |
