@@ -215,4 +215,4 @@ Compare the original suites between the two with `../training/taiga_aggregate.py
 |---|---|
 | `train_expanded.sh` | 2026.10.05.7 |
 | `dev/*.sh` | 2026.10.05.1 (`export_patches.sh` 2026.10.05.2) |
-| `patches/` | 0001 (features on any planar face), 0002 (features on origin planes with an offset), 0003 (curved outlines), 0004 (revolve and groove with a profile), 0005 (patterns and mirrors about any axis, wider goal rows), 0006 (fillets and chamfers on chosen edges, features on a chosen face), 0007 (goals at other sizes), against upstream `4a31bcf` |
+| `patches/` | 0001 (features on any planar face), 0002 (features on origin planes with an offset), 0003 (curved outlines), 0004 (revolve and groove with a profile), 0005 (patterns and mirrors about any axis, wider goal rows), 0006 (fillets and chamfers on chosen edges, features on a chosen face), 0007 (goals at other sizes), 0008 (enough steps for the target build of long goals), against upstream `4a31bcf` |

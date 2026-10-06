@@ -1,0 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Mon, 5 Oct 2026 22:03:21 -0400
+Subject: [PATCH] ext: target builds of long goals get enough steps
+
+---
+ freecad_s1/runtime/episode.py | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/freecad_s1/runtime/episode.py b/freecad_s1/runtime/episode.py
+index ecc04c5..5923fb6 100644
+--- a/freecad_s1/runtime/episode.py
++++ b/freecad_s1/runtime/episode.py
+@@ -22,6 +22,8 @@ def build_target(session: HeadlessSession, goal: Goal, max_steps: int = 200):
+     the target solid (a detached copy). Raises GoalBuildError if the goal is
+     geometrically infeasible (invalid feature, boolean failure, ...)."""
+     session.reset(goal, StartSpec(doc_open=True, workbench="PartDesignWorkbench"))
++    # taiga-expanded: long goals (e.g. a 50-feature casing) need more than 200 clean steps
++    max_steps = max(max_steps, 2 * expert_plan_length(goal, True, "PartDesignWorkbench", False) + 10)
+     for _ in range(max_steps):
+         acts = session.expert()
+         if acts[0] == "Done":

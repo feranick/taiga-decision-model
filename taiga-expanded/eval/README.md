@@ -64,7 +64,7 @@ The casing's 52 features are far beyond anything in training (at most 5 features
 
 Goal frames: parts turned about the shaft use pump coordinates (shaft along X through the origin). The casing, inspection cover and check valve are built with their main extrusion along Z, as every Taiga base feature is, and rotated into place (120° about (1, 1, 1)). The priming cover is built upright and moved.
 
-**Expected teacher scores.** A rough re-implementation of the goal semantics in OpenCASCADE (used to write the goals, not part of this folder) gives IoU ≥ 0.998 for every part and about 0.988 for the casing core. FreeCAD's real build is what counts: `./run_s80.sh teacher` and `eval` measure it.
+**Teacher scores** (DGX, FreeCAD 1.1.3, 2026-10-05): IoU 1.0000 for the wear plate, both covers, check valve, bearing bracket, shaft, bearings and seal; 0.9986 for the impeller (spline blades); 0.9883 for the casing core (no bolt and tapped holes). The full casing needs patch 0008 (its 267 teacher steps exceeded the 200-step cap of upstream's target build); a rough OpenCASCADE re-implementation of the goals predicts about 0.998 for it. Building the casing is slow (about 0.6 s per FreeCAD step on the full part: 95 s for the core).
 
 ## Limits of the vocabulary found on the way
 
@@ -79,6 +79,6 @@ Goal frames: parts turned about the shaft use pump coordinates (shaft along X th
 | File | Version |
 |---|---|
 | `make_s80_goals.py` | 2026.10.05.2 |
-| `eval_s80.py` | 2026.10.05.1 |
+| `eval_s80.py` | 2026.10.05.2 |
 | `voxel_iou.py` | 2026.10.05.1 |
 | `run_s80.sh` | 2026.10.05.2 |

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """eval_s80.py — score Taiga-built S 80 parts against the reference CAD, part by part.
-Version: 2026.10.05.1
+Version: 2026.10.05.2
 
 Runs in FreeCAD's Python (needs numpy):
     source ~/taiga-expanded/freecad.env
@@ -145,7 +145,7 @@ def main() -> None:
                   f"vol {r['volume_cm3']:.1f} / {ref.Volume / 1000:.1f} cm3"), flush=True)
 
     # each goal against the teacher's build (goal frame, no placement)
-    if teacher is not None:
+    if teacher is not None and any(p != teacher for _, p in built):
         goals = sorted({b["goal"] for _, _, bs in rows for b in bs})
         for goal in goals:
             t_shape, _ = load_shape(teacher, goal)
