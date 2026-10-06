@@ -68,7 +68,7 @@ taiga-decision-model/
     └── train_expanded.sh         trains the patched (or baseline) model with the training scripts
 ```
 
-## Supported platforms
+## Tested platforms
 
 | Machine | OS | FreeCAD | GPU | Script |
 |---|---|---|---|---|

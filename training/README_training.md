@@ -288,23 +288,8 @@ ModuleNotFoundError: <stdin>(3)<class 'ModuleNotFoundError'>: No module named 'P
 **Cause.** When FreeCAD is imported as a Python library, its home path is `/usr/lib/freecad-python3/`, so it looks for modules in `/usr/lib/freecad-python3/Mod`. The PPA packages (all of them: noble on the DGX, resolute on the 5060 Ti and Quadro) install them in `/usr/share/freecad/Mod` and don't ship a link between the two. The GUI finds the modules another way, so only headless and Python use is affected. `Part` and `Sketcher` still load because they are compiled modules in `/usr/lib/freecad-python3/lib`. PartDesign is a Python package under `Mod/`, so it doesn't.
 
 **Impact.** The traceback comes from the first headless check (`fc_check`). The script then retries with the Mod directories on `PYTHONPATH` and writes them into the `~/taiga/bin/freecad-python` launcher. If the log continues with `Retrying with Mod dirs on PYTHONPATH` and then `FreeCAD <version> OK`, the run is valid. If the retry also fails, `setup` stops with `FreeCAD still fails headless`. Plain `python3` outside the launcher still can't load PartDesign.
-
-**Permanent fix (in the packaging).** The link belongs in the `.deb`, so it comes with every install and upgrade. In the `debian/` folder shared by the PPA builds:
-
-1. Find the binary package that owns the library folder: `dpkg -S /usr/lib/freecad-python3/lib`.
-2. Add `debian/<that package>.links` (or a line to it, if it exists), without leading slashes; `dh_link` creates the symlink at build time:
-   ```
-   usr/share/freecad/Mod usr/lib/freecad-python3/Mod
-   ```
-3. Bump the version in each release's `debian/changelog` (e.g. `…~ppa2~noble1`, `…~ppa2~resolute1`) and upload. Only the packaging changes; FreeCAD's sources are not touched.
-4. On each machine, remove the link made by hand **before** upgrading (dpkg refuses to overwrite a file it doesn't own), then upgrade and check that the package now owns the link:
-   ```bash
-   sudo rm /usr/lib/freecad-python3/Mod          # the symlink only; the modules stay in /usr/share/freecad/Mod
-   sudo apt update && sudo apt install --only-upgrade freecad
-   dpkg -S /usr/lib/freecad-python3/Mod          # should name the package
-   ```
-
-**Workaround (packages without the link).** Link the module directory to where FreeCAD expects it, once per machine. The `ls` check avoids overwriting an existing directory. A link made by hand is unknown to dpkg, so it has to be made again after a fresh install of the system or of FreeCAD.
+**Permanent fix (in the packaging).** If you are using [resolute-bleed PPA](https://launchpad.net/~bleedingedge/+archive/ubuntu/resolute-bleed), [noble-bleed PPA](https://launchpad.net/~bleedingedge/+archive/ubuntu/noble-bleed) or [noble-spark-bleed PPA for the DGX Spark](https://launchpad.net/~bleedingedge/+archive/ubuntu/noble-spark-bleed), this issue should be fixed already. Make usre you are using the ltest packages. 
+**Workaround (packages without the link).** If you are still experiencing the issue, link the module directory to where FreeCAD expects it, once per machine. The `ls` check avoids overwriting an existing directory. A link made by hand is unknown to dpkg, so it has to be made again after a fresh install of the system or of FreeCAD.
 
 ```bash
 ls /usr/lib/freecad-python3/Mod 2>/dev/null || sudo ln -s /usr/share/freecad/Mod /usr/lib/freecad-python3/Mod
