@@ -71,5 +71,5 @@ cd taiga-expanded/datasets
 
 | File | Version |
 |---|---|
-| `convert_deepcad.py` | 2026.10.06.1 |
+| `convert_deepcad.py` | 2026.10.06.2 |
 | `run_deepcad.sh` | 2026.10.06.3 |

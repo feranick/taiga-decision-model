@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """convert_deepcad.py — DeepCAD build histories (sketch + extrude) as Taiga-S1 goals.
-Version: 2026.10.06.1
+Version: 2026.10.06.2
 
 Reads DeepCAD's JSON files (data/cad_json/<group>/<id>.json, the Fusion 360 Gallery
 reconstruction format) and writes, into --out:
@@ -315,6 +315,28 @@ def reference_shape(extrudes: list[dict], R, t, unit: float):
     return body
 
 
+def check_reference(shape) -> None:
+    """The original must be one valid solid: Taiga builds one PartDesign body."""
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+
+    if not BRepCheck_Analyzer(shape).IsValid():
+        raise Skip("original model invalid")
+    e, n = TopExp_Explorer(shape, TopAbs_SOLID), 0
+    while e.More():
+        n += 1
+        e.Next()
+    if n != 1:
+        raise Skip("original model has several solids" if n > 1 else "original model has no solid")
+    g = GProp_GProps()
+    BRepGProp.VolumeProperties_s(shape, g)
+    if g.Mass() <= 0:
+        raise Skip("original model has no volume")
+
+
 def write_step(shape, path: Path) -> None:
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
@@ -366,7 +388,9 @@ def main() -> None:
                 raise Skip("duplicate")
             seen.add(key)
             if args.refs:
-                write_step(reference_shape(extrudes, R, t, unit), out / "refs" / f"{name}.step")
+                ref = reference_shape(extrudes, R, t, unit)
+                check_reference(ref)
+                write_step(ref, out / "refs" / f"{name}.step")
         except Skip as exc:
             reasons[str(exc)] += 1
             continue

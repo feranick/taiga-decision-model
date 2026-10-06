@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """eval_s80.py — score Taiga-built S 80 parts against the reference CAD, part by part.
-Version: 2026.10.05.2
+Version: 2026.10.06.1
 
 Runs in FreeCAD's Python (needs numpy):
     source ~/taiga-expanded/freecad.env
@@ -133,7 +133,16 @@ def main() -> None:
             if not step.is_file():
                 sys.exit(f"error: reference {step} not found (run pump_s80.py --out {ref_dir})")
             shape = Part.read(str(step))
-            refs[part] = (shape, triangles(shape))
+            try:
+                ok = shape.isValid() and shape.Volume > 0
+            except Exception:  # noqa: BLE001  (FreeCAD raises on some broken shapes)
+                ok = False
+            refs[part] = (shape, triangles(shape)) if ok else None
+            if not ok:
+                print(f"{part:36s} reference invalid: skipped", flush=True)
+                results.setdefault("invalid_refs", []).append(part)
+        if refs[part] is None:
+            continue
         ref, ref_tris = refs[part]
         key = part if alt is None else f"{part} [{alt}]"
         results["parts"][key] = {"ref_volume_cm3": round(ref.Volume / 1000, 2)}
@@ -215,6 +224,8 @@ def main() -> None:
             doc = App.newDocument(re.sub(r"\W", "_", f"s80_overlay_{label}"))
             styles = {}
             for entry in spec["parts"]:
+                if refs.get(entry["part"]) is None:
+                    continue
                 ref = doc.addObject("Part::Feature", f"ref_{entry['part']}")
                 ref.Shape = refs[entry["part"]][0]
                 styles[ref.Name] = ([0.6, 0.6, 0.65], 70)
