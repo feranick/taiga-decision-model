@@ -1,6 +1,6 @@
-# Real designs as Taiga goals (plan)
+# Real designs as Taiga goals
 
-Converting public CAD build histories into Taiga goals, so the model also learns from how people actually build parts, not only from our generators. This folder holds the plan; the converter comes next.
+Converting public CAD build histories into Taiga goals, so the model also learns from how people actually build parts, not only from our generators.
 
 ## Which datasets, and may we use them?
 
@@ -38,9 +38,38 @@ So: **DeepCAD first**, with the `LICENSE`-tab check. Before using either dataset
 - **Then training:** goals from the training split become one more family in the training mix (share set like `TAIGA_EXT_FRACTION`), with DAgger as for every other family. Real designs bring what the generators lack: odd profiles, many features, features placed relative to earlier ones, long goals.
 - **Coverage:** DeepCAD has only sketches and extrudes, so it complements the generators (revolve, patterns, fillets, chosen faces) rather than replacing them.
 
-## Steps
+## Files
 
-1. `convert_deepcad.py`: JSON → goals, rules 1–5, with a report of what was left out and why (angled planes, intersect, several bodies, `LICENSE` tab).
-2. Verification with the teacher and IoU against the original (rule 7), on the DGX.
-3. Test suites from the test split; score the current models (step 1/2 sweeps).
-4. Face form (rule 6), then the training family.
+| File | What it is |
+|---|---|
+| `convert_deepcad.py` | DeepCAD JSON → goals (rules 1–5), the original models as STEP (`--refs`, needs OCP), an eval spec and a report of what was left out and why |
+| `run_deepcad.sh` | Download, convert, teacher builds, verification against the originals, model builds, scores |
+
+## Run (on the DGX, after `../train_expanded.sh dgx setup`)
+
+```bash
+cd taiga-expanded/datasets
+./run_deepcad.sh download      # DeepCAD data -> ~/deepcad (several GB)
+./run_deepcad.sh convert       # test split, first 300 convertible models -> ~/taiga-expanded/deepcad_test
+./run_deepcad.sh teacher       # the teacher builds every goal
+./run_deepcad.sh verify        # keep the goals whose teacher build matches the original (IoU >= 0.99)
+./run_deepcad.sh models        # every seed of runs/data2 builds the verified goals
+./run_deepcad.sh eval          # share built to IoU >= 0.99, by goal length, mean ± sd over seeds
+```
+
+`LIMIT=0` converts the whole split; `SUBSET=train` the training split (for the training family, later); `MAX_FEATURES`, `MIN_IOU`, `OUT`, `DATA` and `REF_PY` override the defaults. `convert` uses the OCP venv that `../eval/run_s80.sh eval` creates (`~/taiga-expanded/ocp-venv`).
+
+**Tested** on synthetic models in DeepCAD's format (a plate with a hole, a boss, a cut slot on the XZ plane extruded both ways, a two-sided join on the YZ plane; a model whose first sketch is on the XZ plane with a negative extrude): the goals rebuild the originals to IoU 0.9999 in an OpenCASCADE re-implementation of the goal semantics; angled sketch planes and intersect are left out as intended. The real data and FreeCAD's builds are next (`convert`, `teacher`, `verify`).
+
+## Next
+
+1. Run it on the test split; look at the report (what is left out and why) and at the verified share.
+2. Score the current models on the verified goals (`models`, `eval`).
+3. Face form (rule 6), then the training family.
+
+## Versions
+
+| File | Version |
+|---|---|
+| `convert_deepcad.py` | 2026.10.06.1 |
+| `run_deepcad.sh` | 2026.10.06.1 |

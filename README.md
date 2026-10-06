@@ -66,7 +66,7 @@ taiga-decision-model/
     ├── patches/                  git patch series against upstream (+ BASE commit)
     ├── dev/                      make the dev branch, export and check the patches
     ├── eval/                     S 80 goals; builds them (teacher, models) and scores them against the reference CAD
-    ├── datasets/                 plan: public CAD build histories (DeepCAD) as training and test goals
+    ├── datasets/                 public CAD build histories (DeepCAD) converted into goals, verified, scored
     └── train_expanded.sh         trains the patched (or baseline) model with the training scripts
 ```
 
