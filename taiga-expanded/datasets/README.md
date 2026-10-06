@@ -66,7 +66,7 @@ cd taiga-expanded/datasets
 
 First 300 convertible models of DeepCAD's test split (originals that aren't one valid solid left out by the converter):
 
-- **Teacher:** builds 280 of 300 goals; the other 20 fail on a feature FreeCAD rejects (`diagnose` names it).
+- **Teacher:** builds 280 of 300 goals. In the other 20, FreeCAD accepts every object, but the runtime's rule after each feature (one valid solid with volume) fails, most likely because DeepCAD joins pieces that touch only later, while PartDesign keeps one solid after every feature (`diagnose` 2026.10.06.2 prints solids and volume of the failing feature). From `convert_deepcad.py` 2026.10.06.3 on, the converter reorders consecutive joins so every step stays one solid, and leaves out the models where no order works.
 - **Verified:** 278 of 300 goals rebuild their original to IoU ≥ 0.99 (the 2 others: inner loops over earlier material, rule 5).
 - **Length:** median 1 feature, at most 13. The start of the test split is mostly single extrudes (plates); longer designs need the whole split (`LIMIT=0`), bucketed by length.
 
@@ -80,6 +80,6 @@ First 300 convertible models of DeepCAD's test split (originals that aren't one 
 
 | File | Version |
 |---|---|
-| `convert_deepcad.py` | 2026.10.06.2 |
+| `convert_deepcad.py` | 2026.10.06.3 |
 | `run_deepcad.sh` | 2026.10.06.4 |
-| `diagnose_goals.py` | 2026.10.06.1 |
+| `diagnose_goals.py` | 2026.10.06.2 |

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """convert_deepcad.py — DeepCAD build histories (sketch + extrude) as Taiga-S1 goals.
-Version: 2026.10.06.2
+Version: 2026.10.06.3
 
 Reads DeepCAD's JSON files (data/cad_json/<group>/<id>.json, the Fusion 360 Gallery
 reconstruction format) and writes, into --out:
@@ -21,6 +21,11 @@ Rules (see README.md in this folder):
             loops: profile_pocket over the same slab), Cut -> profile_pocket (inner loops:
             profile_boss), Intersect -> left out
   units     DeepCAD stores metres (--units m, default); Fusion 360 Gallery centimetres (cm)
+
+Build order (with --refs): PartDesign keeps one solid after every feature, while DeepCAD may
+join pieces that touch only later. The converter replays the goal in OpenCASCADE, reorders
+consecutive joins so that every step stays one solid (a union doesn't depend on order), and
+leaves the model out if no order works or a cut empties or splits the part.
 
 Inner loops of a join/cut are only exact when the slab holds no earlier material inside the
 loop; the --refs + teacher + IoU check (run_deepcad.sh) keeps only goals that match.
@@ -235,9 +240,11 @@ def feature(kind: str, o: dict, k: int, off: float, size: float) -> dict:
     return {"kind": kind, "params": p}
 
 
-def convert(extrudes: list[dict], unit: float, max_features: int) -> tuple[dict, tuple]:
+def convert(extrudes: list[dict], unit: float) -> tuple[list[tuple[str, list[dict]]], tuple]:
+    """Feature groups in build order, one per extrude profile: ("base" | "join" | "cut", features)
+    (the outer loop's feature, then its inner loops), and the goal frame (R, t)."""
     R, t = goal_frame(extrudes[0], unit)
-    feats = []
+    groups = []
     for i, ex in enumerate(extrudes):
         o, x, y, n = ex["frame"]
         ng = R @ (n / np.linalg.norm(n))
@@ -253,16 +260,128 @@ def convert(extrudes: list[dict], unit: float, max_features: int) -> tuple[dict,
         if i == 0:  # base: outline on XY at z = 0, height size (the frame puts it at z 0..size)
             ob = outline(outer, ex["frame"], R, t, unit, 2)
             cu, cv, w, d = bbox(ob)
-            feats.append({"kind": "profile_base", "params": {"outline": ob, "w": r3(w), "d": r3(d),
-                                                             "x": r3(cu), "y": r3(cv), "h": r3(size)}})
+            feats = [{"kind": "profile_base", "params": {"outline": ob, "w": r3(w), "d": r3(d),
+                                                         "x": r3(cu), "y": r3(cv), "h": r3(size)}}]
             feats += [feature("profile_pocket", outline(lp, ex["frame"], R, t, unit, 2), 2, mid, size) for lp in inner]
+            groups.append(("base", feats))
             continue
-        main, other = ("profile_boss", "profile_pocket") if ex["op"] in ("Join", "NewBody") else ("profile_pocket", "profile_boss")
-        feats.append(feature(main, outline(outer, ex["frame"], R, t, unit, k), k, mid, size))
+        join = ex["op"] in ("Join", "NewBody")
+        main, other = ("profile_boss", "profile_pocket") if join else ("profile_pocket", "profile_boss")
+        feats = [feature(main, outline(outer, ex["frame"], R, t, unit, k), k, mid, size)]
         feats += [feature(other, outline(lp, ex["frame"], R, t, unit, k), k, mid, size) for lp in inner]
+        groups.append(("join" if join else "cut", feats))
+    return groups, (R, t)
+
+
+def make_goal(groups, max_features: int) -> dict:
+    feats = [f for _, fs in groups for f in fs]
     if len(feats) > max_features:
         raise Skip(f"more than {max_features} features")
-    return {"features": feats, "level": 3}, (R, t)
+    return {"features": feats, "level": 3}
+
+
+# ----------------------------------------------------------------------------- build order (OCP)
+
+
+def feature_solid(f: dict):
+    """The prism a goal feature adds or removes (goal frame)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.GC import GC_MakeArcOfCircle
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    p = f["params"]
+    if f["kind"] == "profile_base":
+        k, lo, hi = 2, 0.0, p["h"]
+    else:
+        k = [p.get("nx", 0), p.get("ny", 0), p.get("nz", 0)].index(1.0)
+        size = p.get("h") if f["kind"] == "profile_boss" else p["depth"]
+        lo, hi = p["off"] - size / 2, p["off"] + size / 2
+    ua, va = [i for i in range(3) if i != k]
+
+    def P(u, v):
+        q = [0.0, 0.0, 0.0]
+        q[ua], q[va], q[k] = u, v, lo
+        return gp_Pnt(*q)
+
+    o = f["params"]["outline"]
+    mw, cur = BRepBuilderAPI_MakeWire(), o["start"]
+    for seg in o["segs"]:
+        if seg[0] == "L":
+            mw.Add(BRepBuilderAPI_MakeEdge(P(*cur), P(*seg[1:3])).Edge())
+            cur = seg[1:3]
+        else:
+            mw.Add(BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(P(*cur), P(*seg[1:3]), P(*seg[3:5])).Value()).Edge())
+            cur = seg[3:5]
+    v = [0.0, 0.0, 0.0]
+    v[k] = hi - lo
+    return BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(mw.Wire(), True).Face(), gp_Vec(*v)).Shape()
+
+
+def one_solid(shape) -> bool:
+    """PartDesign's rule after every feature (as the runtime checks it): one valid solid with volume."""
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+
+    if shape is None or shape.IsNull() or not BRepCheck_Analyzer(shape).IsValid():
+        return False
+    e, n = TopExp_Explorer(shape, TopAbs_SOLID), 0
+    while e.More():
+        n += 1
+        e.Next()
+    g = GProp_GProps()
+    BRepGProp.VolumeProperties_s(shape, g)
+    return n == 1 and g.Mass() > 1e-6
+
+
+def apply_group(state, group):
+    """`state` after the group's features, or None as soon as one leaves more or less than one solid."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+
+    for f in group[1]:
+        tool = feature_solid(f)
+        if state is None:
+            state = tool
+        elif f["kind"] == "profile_pocket":
+            state = BRepAlgoAPI_Cut(state, tool).Shape()
+        else:
+            state = BRepAlgoAPI_Fuse(state, tool).Shape()
+        if not one_solid(state):
+            return None
+    return state
+
+
+def order_for_partdesign(groups):
+    """Groups in an order PartDesign can build: consecutive joins reordered so every step is one
+    solid (a union is the same in any order); cuts stay where they are."""
+    state = apply_group(None, groups[0])
+    if state is None:
+        raise Skip("base is not one solid")
+    out, rest = [groups[0]], list(groups[1:])
+    while rest:
+        if rest[0][0] == "cut":
+            g = rest.pop(0)
+            state = apply_group(state, g)
+            if state is None:
+                raise Skip("a cut empties or splits the part")
+            out.append(g)
+            continue
+        run = []
+        while rest and rest[0][0] == "join":
+            run.append(rest.pop(0))
+        while run:
+            for j, g in enumerate(run):
+                nxt = apply_group(state, g)
+                if nxt is not None:
+                    state = nxt
+                    out.append(run.pop(j))
+                    break
+            else:
+                raise Skip("a join stays apart from the part (no build order keeps one solid)")
+    return out
 
 
 # ----------------------------------------------------------------------------- reference solid (OCP)
@@ -382,7 +501,10 @@ def main() -> None:
         name = "dc_" + mid.replace("/", "_")
         try:
             extrudes = read_model(path)
-            goal, (R, t) = convert(extrudes, unit, args.max_features)
+            groups, (R, t) = convert(extrudes, unit)
+            if args.refs:
+                groups = order_for_partdesign(groups)
+            goal = make_goal(groups, args.max_features)
             key = hashlib.sha1(json.dumps(goal["features"], sort_keys=True).encode()).hexdigest()
             if key in seen:
                 raise Skip("duplicate")

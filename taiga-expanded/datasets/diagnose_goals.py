@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """diagnose_goals.py — why can't the teacher build a goal? Runs in FreeCAD's Python.
-Version: 2026.10.06.1
+Version: 2026.10.06.2
 
 The scripted teacher builds each goal step by step; at the first feature FreeCAD rejects, it
 prints the goal intent (index, kind, the parameters that matter) and FreeCAD's own status of
@@ -43,8 +43,19 @@ def diagnose(s: HeadlessSession, name: str, g: dict, max_steps: int = 2000) -> s
             return f"{name}: builds"
         if acts[0] == "Std_Undo":
             i = s.progress()
-            bad = [o for o in s.doc.Objects if hasattr(o, "isValid") and not o.isValid()]
-            status = "; ".join(f"{o.Name} ({o.TypeId}): {o.getStatusString()}" for o in bad) or "no invalid object"
+            parts = []
+            for nm, om in s.meta.objects.items():  # the runtime's rule: one valid solid with volume
+                if om.valid:
+                    continue
+                o = s.doc.getObject(nm)
+                if o is None:
+                    parts.append(f"{nm}: missing")
+                    continue
+                shp = getattr(o, "Shape", None)
+                geo = "" if shp is None or shp.isNull() else (f", {len(shp.Solids)} solid(s), volume {shp.Volume:.3g}, "
+                                                               f"shape {'valid' if shp.isValid() else 'invalid'}")
+                parts.append(f"{nm} ({o.TypeId}): {o.getStatusString()}{geo}")
+            status = "; ".join(parts) or "no invalid object"
             k = min(i, len(goal.features) - 1)
             return f"{name}: feature {k} of {len(goal.features)} rejected: {brief(goal.features[k])}\n    FreeCAD: {status}"
         info = s.step(acts[0])
