@@ -81,6 +81,6 @@ First 300 convertible models of DeepCAD's test split (originals that aren't one 
 
 | File | Version |
 |---|---|
-| `convert_deepcad.py` | 2026.10.06.3 |
-| `run_deepcad.sh` | 2026.10.06.4 |
+| `convert_deepcad.py` | 2026.10.06.4 |
+| `run_deepcad.sh` | 2026.10.06.5 |
 | `diagnose_goals.py` | 2026.10.06.2 |

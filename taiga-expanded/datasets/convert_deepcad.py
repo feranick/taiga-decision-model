@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """convert_deepcad.py — DeepCAD build histories (sketch + extrude) as Taiga-S1 goals.
-Version: 2026.10.06.3
+Version: 2026.10.06.4
 
 Reads DeepCAD's JSON files (data/cad_json/<group>/<id>.json, the Fusion 360 Gallery
 reconstruction format) and writes, into --out:
@@ -456,13 +456,40 @@ def check_reference(shape) -> None:
         raise Skip("original model has no volume")
 
 
+class quiet_fds:
+    """Silence C-level stdout/stderr: OpenCASCADE's STEP writer prints coloured statistics
+    (terminal escape codes) for every file, which floods or garbles the terminal."""
+
+    def __enter__(self):
+        import os
+
+        sys.stdout.flush()
+        sys.stderr.flush()
+        self.null = os.open(os.devnull, os.O_WRONLY)
+        self.saved = [os.dup(1), os.dup(2)]
+        os.dup2(self.null, 1)
+        os.dup2(self.null, 2)
+        return self
+
+    def __exit__(self, *exc):
+        import os
+
+        os.dup2(self.saved[0], 1)
+        os.dup2(self.saved[1], 2)
+        for fd in (*self.saved, self.null):
+            os.close(fd)
+        return False
+
+
 def write_step(shape, path: Path) -> None:
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
 
-    w = STEPControl_Writer()
-    w.Transfer(shape, STEPControl_AsIs)
-    if w.Write(str(path)) != IFSelect_RetDone:
+    with quiet_fds():
+        w = STEPControl_Writer()
+        w.Transfer(shape, STEPControl_AsIs)
+        ok = w.Write(str(path)) == IFSelect_RetDone
+    if not ok:
         raise RuntimeError(f"STEP export failed: {path}")
 
 

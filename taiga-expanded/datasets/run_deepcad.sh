@@ -1,6 +1,6 @@
 #!/bin/bash
 # run_deepcad.sh — DeepCAD build histories as Taiga goals: download, convert, verify, score models.
-# Version: 2026.10.06.4
+# Version: 2026.10.06.5
 #
 # Usage:  ./run_deepcad.sh download          DeepCAD's data (cad_json + split) into $DATA
 #         ./run_deepcad.sh convert           JSON -> goals + reference STEP files        -> $OUT
@@ -33,6 +33,10 @@ BUILD=$REPO/build/taiga_build_part.py
 URL=${URL:-http://www.cs.columbia.edu/cg/deepcad/data.tar}
 
 die() { echo "error: $*" >&2; exit 1; }
+# drop terminal escape codes (OpenCASCADE prints coloured, cursor-moving output) and its STEP chatter
+clean() { sed -u -e 's/\x1b\[[0-9;?]*[A-Za-z]//g' -e 's/\x1b[A-Za-z]//g' \
+  | grep --line-buffered -v -e '^\*\*\*' -e 'Statistics on Transfer' -e 'Transfer Mode' -e 'Transferring Shape' \
+        -e 'WorkSession' -e 'Step File Name' -e '^\s*$'; }
 log() { printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 
 need_work() {
@@ -77,21 +81,21 @@ stage_convert() {
   log "convert $SUBSET (limit $LIMIT, at most $MAX_FEATURES features) -> $OUT"
   "$REF_PY" "$HERE/convert_deepcad.py" --data "$CAD_JSON" --split "$SPLIT" \
     --subset "$SUBSET" --out "$OUT" --refs --max-features "$MAX_FEATURES" --limit "$LIMIT" 2>&1 \
-    | grep -v -e '^\*\*\*' -e 'Statistics on Transfer' -e 'Transfer Mode' -e 'Transferring Shape' -e 'WorkSession' -e 'Step File Name' \
-    | tee "$OUT/convert.log"
+    | clean | tee "$OUT/convert.log"
 }
 
 stage_teacher() {
   need_work
   log "teacher builds -> $OUT/teacher"
-  "$PY" "$BUILD" --goals "$OUT/goals_$SUBSET.json" --teacher --quiet --out "$OUT/teacher" 2>&1 | tee "$OUT/teacher.log"
+  "$PY" "$BUILD" --goals "$OUT/goals_$SUBSET.json" --teacher --quiet --out "$OUT/teacher" 2>&1 | clean > "$OUT/teacher.log"
+  grep -a -E "INFEASIBLE|^all parts|^wall time" "$OUT/teacher.log" | tail -n 25
 }
 
 stage_verify() {
   need_work
   log "teacher builds vs the original models"
   "$FREECAD_PYTHON" "$REPO/taiga-expanded/eval/eval_s80.py" --spec "$OUT/eval_$SUBSET.json" --ref "$OUT/refs" \
-    --built "teacher=$OUT/teacher" --out "$OUT/verify_$SUBSET.json" 2>&1 | tail -n 5 | tee "$OUT/verify.log"
+    --built "teacher=$OUT/teacher" --out "$OUT/verify_$SUBSET.json" 2>&1 | clean > "$OUT/verify.log"
   "$PY" - "$OUT" "$SUBSET" "$MIN_IOU" <<'PYEOF'
 import json, sys
 from pathlib import Path
@@ -129,7 +133,8 @@ stage_models() {
     local label; label=$(basename "$(dirname "$hf")")
     log "model $hf -> $OUT/$label"
     # shellcheck disable=SC2086
-    "$PY" "$BUILD" --model "$hf" --goals "$goals" --quiet ${BUILD_ARGS:-} --out "$OUT/$label" 2>&1 | tail -n 4 | tee "$OUT/$label.log"
+    "$PY" "$BUILD" --model "$hf" --goals "$goals" --quiet ${BUILD_ARGS:-} --out "$OUT/$label" 2>&1 | clean > "$OUT/$label.log"
+    grep -a -E "^all parts|^wall time" "$OUT/$label.log"
     n=$((n + 1))
   done
   (( n > 0 )) || die "no exported models in $runs/seed*/hf"
@@ -141,7 +146,7 @@ stage_eval() {
   for d in "$OUT"/seed*/; do [[ -d $d ]] && built+=("$(basename "$d")=${d%/}"); done
   log "eval: ${built[*]}"
   "$FREECAD_PYTHON" "$REPO/taiga-expanded/eval/eval_s80.py" --spec "$OUT/eval_${SUBSET}_verified.json" --ref "$OUT/refs" \
-    --built "${built[@]}" --teacher "$OUT/teacher" --out "$OUT/eval_${SUBSET}_models.json" > "$OUT/eval.log" 2>&1 \
+    --built "${built[@]}" --teacher "$OUT/teacher" --out "$OUT/eval_${SUBSET}_models.json" 2>&1 | clean > "$OUT/eval.log" \
     || die "eval_s80.py failed, see $OUT/eval.log"
   "$PY" - "$OUT/eval_${SUBSET}_models.json" "$OUT/goals_${SUBSET}_verified.json" "$MIN_IOU" <<'PYEOF'
 import json, math, sys
