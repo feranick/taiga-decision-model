@@ -352,6 +352,18 @@ sudo rm /usr/lib/freecad-python3/Mod
 
 ---
 
+## Model size benchmark
+
+`taiga_bench_size.py` builds the network at several sizes (1.2M, the current model, up to 121M parameters) with random weights and times one decision on the CPU and the GPU. No training and no FreeCAD; the states are synthetic but of realistic size (a feature tree for 5 or 20 goal intents). It answers how much slower a larger model would build parts:
+
+```bash
+cd ~/taiga-expanded/taiga-s1
+.venv/bin/python <repo>/training/taiga_bench_size.py                       # all sizes, 5 and 20 intents, CPU + GPU
+.venv/bin/python <repo>/training/taiga_bench_size.py --threads 1 8 --features 5 20 50
+```
+
+"1 state" is an interactive build (one decision at a time); "per state" is the cost when the states of all FreeCAD workers are scored together (DAgger, evaluation). For comparison, one FreeCAD step takes 4–70 ms on small parts and up to 2.5 s on the S 80 casing.
+
 ## Versions
 
 Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header and in each run's `manifest.json`.
@@ -362,4 +374,5 @@ Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header 
 | `taiga_repro_5060ti.sh` | 2026.10.05.5 |
 | `taiga_repro_Quadro6000.sh` | 2026.10.05.5 |
 | `taiga_aggregate.py` | 2026.10.04.3 |
+| `taiga_bench_size.py` | 2026.10.06.1 |
 | `taiga_run.py` | 2026.10.04.1 |

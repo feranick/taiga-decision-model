@@ -1,6 +1,6 @@
 #!/bin/bash
 # run_s80.sh — S 80 evaluation of taiga-expanded: build the S 80 goals, score them against the reference CAD.
-# Version: 2026.10.05.2
+# Version: 2026.10.06.1
 #
 # Usage:  ./run_s80.sh check             check that every goal can be built (fast, nothing saved)
 #         ./run_s80.sh teacher           build every goal with the scripted teacher   -> $OUT/teacher
@@ -12,6 +12,8 @@
 #         OUT   (default $WORK/s80)
 #         REF   reference STEP folder (default ~/taiga/taiga-s1/parts/pump_s80, as written by
 #               build/pump_s80_reference_CAD/build_pump_s80.sh); generated if missing, with REF_PY
+#         BUILD_ARGS extra options for taiga_build_part.py in "models", e.g. "--no-loop-guard"
+#               (use another OUT to keep both results)
 #         REF_PY Python with OCP 7.9 for that (default: ~/taiga/taiga-s1/.venv/bin/python if it has
 #               OCP, else a small venv $WORK/ocp-venv with cadquery-ocp 7.9, created on first use)
 set -uo pipefail
@@ -51,7 +53,8 @@ stage_models() {
     [[ -d $hf ]] || continue
     local label; label=$(basename "$(dirname "$hf")")
     log "model $hf -> $OUT/$label"
-    "$PY" "$BUILD" --model "$hf" --goals "$GOALS" --quiet --out "$OUT/$label" 2>&1 | tee "$OUT/$label.log"
+    # shellcheck disable=SC2086
+    "$PY" "$BUILD" --model "$hf" --goals "$GOALS" --quiet ${BUILD_ARGS:-} --out "$OUT/$label" 2>&1 | tee "$OUT/$label.log"
     n=$((n + 1))
   done
   (( n > 0 )) || die "no exported models in $runs/seed*/hf (run the sweep, or pass the runs folder)"
@@ -95,5 +98,5 @@ case $stage in
   models) stage_models "$@" ;;
   eval) stage_eval ;;
   all) stage_check; stage_teacher; stage_models "$@"; stage_eval ;;
-  *) sed -n '3,18p' "$0"; exit 1 ;;
+  *) sed -n '3,20p' "$0"; exit 1 ;;
 esac

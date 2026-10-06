@@ -36,6 +36,7 @@ taiga-decision-model/
 ├── training/
 │   ├── README_training.md        stages, environment variables, outputs, variance studies, known issues
 │   ├── taiga_aggregate.py        distribution of results across runs (used by sweep/aggregate)
+│   ├── taiga_bench_size.py       time per decision at larger model sizes (random weights, CPU/GPU)
 │   ├── taiga_run.py              runs upstream training/evaluation with FreeCAD worker-crash recovery
 │   ├── taiga_repro_DGX.sh        NVIDIA DGX Spark, Ubuntu 24.04 (noble)
 │   ├── taiga_repro_5060ti.sh     PowerSpec G467 (RTX 5060 Ti), Ubuntu 26.04 (resolute)
@@ -65,6 +66,7 @@ taiga-decision-model/
     ├── patches/                  git patch series against upstream (+ BASE commit)
     ├── dev/                      make the dev branch, export and check the patches
     ├── eval/                     S 80 goals; builds them (teacher, models) and scores them against the reference CAD
+    ├── datasets/                 plan: public CAD build histories (DeepCAD) as training and test goals
     └── train_expanded.sh         trains the patched (or baseline) model with the training scripts
 ```
 

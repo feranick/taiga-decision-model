@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.05.8
+Version: 2026.10.06.1
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -21,6 +21,12 @@ repo (~/taiga/taiga-s1), so they work from any directory:
 --teacher: build the parts with the scripted teacher (the expert that labels the training
          data) instead of a model, and save them like model builds. Shows what the goal
          itself produces, independent of any model (e.g. to compare goals with a reference).
+
+Loop guard (model builds, on by default): when the model is back in a state it has already
+acted from (e.g. Pad -> invalid -> Undo -> the same state) and picks an action it already took
+there, the guard takes its most likely action not yet tried in that state instead. The model
+is unchanged; only repeated dead ends are skipped. --no-loop-guard turns it off (e.g. to score
+the model alone); the result line reports how often the guard stepped in.
 
 Timing: each part reports how long it took to make, split into model decisions,
 FreeCAD steps and saving/export; a summary table with the totals is printed at the end.
@@ -126,6 +132,11 @@ def export_step(fcstd: Path, step: Path) -> str | None:
     return None if r.returncode == 0 and step.is_file() else (r.stderr.strip().splitlines() or ["failed"])[-1]
 
 
+def state_key(state: dict) -> str:
+    """The document state without the action history (an Undo returns to the same key)."""
+    return json.dumps({k: v for k, v in state.items() if k not in ("recent", "events")}, sort_keys=True)
+
+
 def base_scale(goal: dict) -> float:
     """Largest extent of the base feature; upstream's goals use this as `scale`."""
     f = goal["features"][0]
@@ -165,6 +176,8 @@ def main() -> None:
     ap.add_argument("--no-step", action="store_true", help="don't export a .step file")
     ap.add_argument("--check", action="store_true", help="only check that the goals can be built")
     ap.add_argument("--teacher", action="store_true", help="build with the scripted teacher instead of a model")
+    ap.add_argument("--no-loop-guard", action="store_true",
+                    help="don't skip actions the model already took in the same state (see Loop guard above)")
     args = ap.parse_args()
 
     if not (os.environ.get("FREECAD_PYTHON") and os.environ.get("FREECAD_LIB")):
@@ -205,14 +218,29 @@ def main() -> None:
                       f"target volume {goal.target.volume:.0f} mm3, bbox {tuple(round(x, 1) for x in goal.target.bbox)}")
                 continue
             print(f"\n== {name}: " + " -> ".join(f"{f.kind}{json.dumps(f.params)}" for f in goal.features))
-            state, actions, expert = State.from_json(r["state"]), r["actions"], r["expert"]
-            steps = agree = 0
+            raw = r["state"]
+            state, actions, expert = State.from_json(raw), r["actions"], r["expert"]
+            steps = agree = guarded = 0
+            tried: dict[str, set[str]] = {}  # loop guard: actions already taken from each state
             done = False
             t_model = t_fc = 0.0
             t0 = time.perf_counter()
             while steps < r["budget"]:
                 t = time.perf_counter()
-                action = expert[0] if args.teacher else policy.act([state], [goal], [actions])[0]
+                if args.teacher:
+                    action = expert[0]
+                elif args.no_loop_guard:
+                    action = policy.act([state], [goal], [actions])[0]
+                else:
+                    probs = policy.distributions([state], [goal], [actions])[0]
+                    ranked = [actions[j] for j in sorted(range(len(actions)), key=lambda j: -float(probs[j]))]
+                    seen = tried.setdefault(state_key(raw), set())
+                    action = next((a for a in ranked if a not in seen), ranked[0])
+                    if action != ranked[0]:
+                        guarded += 1
+                        if not args.quiet:
+                            print(f"      loop guard: {ranked[0]} already tried here")
+                    seen.add(action)
                 t_model += time.perf_counter() - t
                 steps += 1
                 agree += action in expert
@@ -227,7 +255,8 @@ def main() -> None:
                 if s["info"]["done"] or not s["expert"]:
                     done = s["info"]["done"]
                     break
-                state, actions, expert = State.from_json(s["state"]), s["actions"], s["expert"]
+                raw = s["state"]
+                state, actions, expert = State.from_json(raw), s["actions"], s["expert"]
             t_built = time.perf_counter()
             sc = env.call({"op": "score"})
             t_score = time.perf_counter() - t_built
@@ -247,7 +276,8 @@ def main() -> None:
             ok = done and sc["match"]
             failures += not ok
             print(f"{name}: {'SUCCESS' if ok else 'FAIL'}  IoU {sc['iou']:.4f}  done {done}  steps {steps}  "
-                  f"agreement {agree}/{steps}  -> {fcstd}" + (f" (+ {', '.join(extra)})" if extra else ""))
+                  f"agreement {agree}/{steps}" + (f"  loop guard {guarded}x" if guarded else "")
+                  + f"  -> {fcstd}" + (f" (+ {', '.join(extra)})" if extra else ""))
             print(f"   time to make: {t_make:.2f} s  (model {t_model:.2f} s = {1000 * t_model / max(steps, 1):.1f} ms/step, "
                   f"FreeCAD {t_fc:.2f} s = {1000 * t_fc / max(steps, 1):.1f} ms/step)  |  "
                   f"check {t_score:.2f} s, save/export {t_save:.2f} s  |  total {t_make + t_score + t_save:.2f} s")

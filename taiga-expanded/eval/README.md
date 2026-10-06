@@ -36,6 +36,8 @@ Once the sweep has exported its models (`~/taiga-expanded/taiga-s1/runs/data2/se
 ./run_s80.sh eval               # teacher and all seeds, with mean ± sd over the seeds
 ```
 
+Model builds use `taiga_build_part.py`'s loop guard (when the model is back in a state it already acted from and repeats the same action, its most likely untried action is taken instead). To score the models without it: `OUT=~/taiga-expanded/s80_noguard BUILD_ARGS=--no-loop-guard ./run_s80.sh models` (copy or link `s80/teacher` into that folder for the comparison with the teacher). The first model builds (2026-10-06) were made before the guard existed.
+
 `./run_s80.sh models <runs folder>` takes another experiment's runs (e.g. `.../runs/x2_data2`); use a different `OUT` for each experiment. The reference STEP files are read from `~/taiga/taiga-s1/parts/pump_s80` (written by `build_pump_s80.sh`) and generated there if missing. That needs OpenCASCADE's Python bindings (OCP 7.9): the variance-study venv `~/taiga/taiga-s1/.venv` if it has them, otherwise a small separate venv `~/taiga-expanded/ocp-venv`, created on first use (the training venv is left alone). `REF`, `REF_PY`, `WORK` and `OUT` override the defaults.
 
 ## Outputs (in `~/taiga-expanded/s80`)
@@ -91,4 +93,4 @@ So the vocabulary expresses the S 80 to within 0.2 % of its volume; anything a m
 | `make_s80_goals.py` | 2026.10.05.2 |
 | `eval_s80.py` | 2026.10.05.2 |
 | `voxel_iou.py` | 2026.10.05.1 |
-| `run_s80.sh` | 2026.10.05.2 |
+| `run_s80.sh` | 2026.10.06.1 |

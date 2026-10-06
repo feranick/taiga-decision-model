@@ -25,7 +25,8 @@ taiga-expanded/
 ├── patches/             the patch series (git format-patch) + BASE (upstream commit it applies to)
 ├── dev/                 make_dev_branch.sh, export_patches.sh, check_patches.sh (+ config.sh)
 ├── train_expanded.sh    runs ../training/taiga_repro_<machine>.sh on the patched (or baseline) code
-└── eval/                S 80 goals and their part-by-part comparison with the reference CAD (eval/README.md)
+├── eval/                S 80 goals and their part-by-part comparison with the reference CAD (eval/README.md)
+└── datasets/            plan for converting public CAD build histories (DeepCAD) into goals (datasets/README.md)
 ```
 
 ## Design
