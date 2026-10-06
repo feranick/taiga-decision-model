@@ -1,6 +1,6 @@
 #!/bin/bash
 # run_s80.sh — S 80 evaluation of taiga-expanded: build the S 80 goals, score them against the reference CAD.
-# Version: 2026.10.05.1
+# Version: 2026.10.05.2
 #
 # Usage:  ./run_s80.sh check             check that every goal can be built (fast, nothing saved)
 #         ./run_s80.sh teacher           build every goal with the scripted teacher   -> $OUT/teacher
@@ -11,8 +11,9 @@
 # Env:    WORK  (default ~/taiga-expanded: the patched code, venv and FreeCAD paths from train_expanded.sh setup)
 #         OUT   (default $WORK/s80)
 #         REF   reference STEP folder (default ~/taiga/taiga-s1/parts/pump_s80, as written by
-#               build/pump_s80_reference_CAD/build_pump_s80.sh); generated with REF_PY if missing
-#         REF_PY Python with OCP 7.9 (default ~/taiga/taiga-s1/.venv/bin/python)
+#               build/pump_s80_reference_CAD/build_pump_s80.sh); generated if missing, with REF_PY
+#         REF_PY Python with OCP 7.9 for that (default: ~/taiga/taiga-s1/.venv/bin/python if it has
+#               OCP, else a small venv $WORK/ocp-venv with cadquery-ocp 7.9, created on first use)
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -20,7 +21,7 @@ REPO=$(cd "$HERE/../.." && pwd)
 WORK=${WORK:-$HOME/taiga-expanded}
 OUT=${OUT:-$WORK/s80}
 REF=${REF:-$HOME/taiga/taiga-s1/parts/pump_s80}
-REF_PY=${REF_PY:-$HOME/taiga/taiga-s1/.venv/bin/python}
+REF_PY=${REF_PY:-}
 PY=$WORK/taiga-s1/.venv/bin/python
 BUILD=$REPO/build/taiga_build_part.py
 GOALS=$HERE/s80_goals.json
@@ -58,8 +59,20 @@ stage_models() {
 
 ensure_ref() {
   [[ -f $REF/casing.step ]] && return 0
+  if [[ -z $REF_PY ]]; then
+    REF_PY=$HOME/taiga/taiga-s1/.venv/bin/python
+    if ! "$REF_PY" -c "import OCP" 2>/dev/null; then
+      REF_PY=$WORK/ocp-venv/bin/python   # a separate venv, so the training venv stays as it is
+      if ! "$REF_PY" -c "import OCP" 2>/dev/null; then
+        log "creating $WORK/ocp-venv with cadquery-ocp 7.9 (OpenCASCADE bindings for the reference CAD)"
+        command -v uv >/dev/null || die "uv not found (it is installed by the training setup)"
+        uv venv --python 3.11 "$WORK/ocp-venv" && uv pip install --python "$REF_PY" "cadquery-ocp>=7.9,<8" \
+          || die "could not install cadquery-ocp into $WORK/ocp-venv"
+      fi
+    fi
+  fi
+  "$REF_PY" -c "import OCP" 2>/dev/null || die "$REF_PY has no OCP (pip install 'cadquery-ocp>=7.9,<8')"
   log "reference STEP files not found in $REF: generating them with $REF_PY"
-  "$REF_PY" -c "import OCP" 2>/dev/null || die "$REF_PY has no OCP; run build/pump_s80_reference_CAD/build_pump_s80.sh once, or set REF_PY"
   "$REF_PY" "$REPO/build/pump_s80_reference_CAD/pump_s80.py" --out "$REF" || die "pump_s80.py failed"
 }
 
@@ -82,5 +95,5 @@ case $stage in
   models) stage_models "$@" ;;
   eval) stage_eval ;;
   all) stage_check; stage_teacher; stage_models "$@"; stage_eval ;;
-  *) sed -n '3,16p' "$0"; exit 1 ;;
+  *) sed -n '3,18p' "$0"; exit 1 ;;
 esac
