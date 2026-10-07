@@ -209,17 +209,21 @@ Each step as a sweep on the same machine (DGX shown), with fixed data (`DATA_SEE
 - Perturbed (20 % random actions): new suites 0.93–0.99 (outline and revolve lowest); original suites as the baseline except len5/len6.
 - Time per sweep: about 7–8 h, mostly evaluation (training 0.9 h for 5 seeds, perturbed evaluation 3.8 h).
 
-**Step 2 results so far** (Spark2, 5 seeds, fixed data, 2026-10-06): the expanded model at 8 epochs, against step 1 (4 epochs) and the original model at 8 epochs (`a6e81d3`, variance study, three machines):
+**Step 2 results** (Spark2, 5 seeds, fixed data, patches 0001–0008, 2026-10-06/07): the expanded model at 8 epochs and at 2× data, against step 1 (4 epochs), unpatched `4a31bcf` at 8 epochs (same machine) and the original model at 8 epochs (`a6e81d3`, variance study, three machines):
 
-| Suite | Expanded, 4 epochs | Expanded, 8 epochs | Original, 8 epochs |
-|---|---|---|---|
-| comp / comp2 / comp3 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 (sd 0) | 0.48–0.61 / 0.94–1.00 / 0.77–0.94 |
-| len5 (8 intents) | 0.68 ± 0.18 | 0.84 ± 0.23 | 0.95–0.99 |
-| len6 (9 intents) | 0.14 ± 0.03 | 0.67 ± 0.29 | 0.93–0.94 |
-| new suites, large | 1.00 | 1.00 | — |
+| Suite (clean) | Expanded, 4 ep | Expanded, 8 ep | Expanded, 2× data, 4 ep | Unpatched `4a31bcf`, 8 ep | Original `a6e81d3`, 8 ep |
+|---|---|---|---|---|---|
+| comp | 1.00 | 1.00 (sd 0) | 0.84 ± 0.22 (one seed 0.49) | 0.66 ± 0.25 | 0.48–0.61 |
+| comp2 / comp3 | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 1.00 | 0.90 / 0.93 | 0.94–1.00 / 0.77–0.94 |
+| len5 (8 intents) | 0.68 ± 0.18 | 0.84 ± 0.23 | 0.98 ± 0.04 | 0.99 ± 0.01 | 0.95–0.99 |
+| len6 (9 intents) | 0.14 ± 0.03 | 0.67 ± 0.29 | 0.69 ± 0.27 | 0.89 ± 0.15 | 0.93–0.94 |
+| new suites, large | 1.00 | 1.00 | 1.00 | — | — |
+| last-epoch NLL drop | — | 0–10 % | 7–16 % | 3–8 % | — |
 
-- **Composition holds with more training.** The original model loses its held-out compositions when trained longer (comp to 0.48, all seeds alike); the expanded one keeps all three at 1.00 on every seed. The diversity of the new families, not stopping early, is what generalizes.
-- **Length improves but needs more than 8 epochs.** len6 rises from 0.14 to 0.67 but stays below the original's 0.93, with a large spread (0.20–0.96); the loss has mostly settled (last-epoch drop 0–10 %). With more to learn, the same budget goes less far on length: next, 2× data (running) and longer goals in training.
+- **Composition mostly holds.** The original model loses its held-out compositions when trained longer (comp to 0.48, all seeds alike); the expanded one keeps comp2/comp3 at 1.00 in every setting and comp at 1.00 at 8 epochs. At 2× data one seed of five drops to 0.49 on comp (the same bimodal 0.49-or-1.00 pattern as the original), so the family diversity makes it much more robust, not immune.
+- **Length: data fixes len5, len6 needs more.** 2× data brings len5 to 0.98 (the baseline's level); len6 stays at about 0.68 with either 8 epochs or 2× data, against 0.89 for the unpatched model at the same budget. The spread is per seed (len6 0.27 on seed 2, 0.91–0.93 on two others), and the loss at 2× data was still falling (last-epoch drop up to 16 %): 2× data needs more epochs.
+- **Training is cheap, evaluation isn't:** per seed 11 min (4 ep), 15 min (8 ep), 18 min (2× data); evaluation 1.2–1.5 h. 2× data at 8 epochs costs about 35 min of training per seed.
+- **Chosen budget for the patch-0009 run:** 2× data and 8 epochs. Then longer goals in training for len6 and beyond.
 
 Compare with `../training/taiga_aggregate.py` on the run folders (`~/taiga-head/taiga-s1/runs/data2`, `~/taiga-expanded/taiga-s1/runs/data2`, `.../x2_data2`, ...).
 
