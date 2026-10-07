@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.06.1
+Version: 2026.10.07.1
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -27,6 +27,9 @@ acted from (e.g. Pad -> invalid -> Undo -> the same state) and picks an action i
 there, the guard takes its most likely action not yet tried in that state instead. The model
 is unchanged; only repeated dead ends are skipped. --no-loop-guard turns it off (e.g. to score
 the model alone); the result line reports how often the guard stepped in.
+
+If the FreeCAD worker crashes on a part (e.g. on a degenerate shape the model made), the part
+is reported as CRASH (a failure), the worker is restarted and the remaining goals are built.
 
 Timing: each part reports how long it took to make, split into model decisions,
 FreeCAD steps and saving/export; a summary table with the totals is printed at the end.
@@ -207,7 +210,11 @@ def main() -> None:
                               "start": {"doc_open": True, "workbench": "PartDesignWorkbench"}})
             except WorkerError as exc:
                 failures += 1
-                if env.proc.poll() is not None:  # the worker died (FreeCAD crash): start a new one
+                if env.proc.poll() is not None or "exited" in str(exc):  # the worker died: start a new one
+                    try:
+                        env.close()
+                    except Exception:
+                        pass
                     env = FreeCADEnv()
                 print(f"\n{name}: INFEASIBLE  {exc}")
                 summary.append((name, "INFEASIBLE", 0, 0.0, 0.0, 0.0, 0.0))
@@ -217,71 +224,81 @@ def main() -> None:
                 print(f"{name}: OK  {len(goal.features)} features, budget {r['budget']} steps, "
                       f"target volume {goal.target.volume:.0f} mm3, bbox {tuple(round(x, 1) for x in goal.target.bbox)}")
                 continue
-            print(f"\n== {name}: " + " -> ".join(f"{f.kind}{json.dumps(f.params)}" for f in goal.features))
-            raw = r["state"]
-            state, actions, expert = State.from_json(raw), r["actions"], r["expert"]
-            steps = agree = guarded = 0
-            tried: dict[str, set[str]] = {}  # loop guard: actions already taken from each state
-            done = False
-            t_model = t_fc = 0.0
-            t0 = time.perf_counter()
-            while steps < r["budget"]:
-                t = time.perf_counter()
-                if args.teacher:
-                    action = expert[0]
-                elif args.no_loop_guard:
-                    action = policy.act([state], [goal], [actions])[0]
-                else:
-                    probs = policy.distributions([state], [goal], [actions])[0]
-                    ranked = [actions[j] for j in sorted(range(len(actions)), key=lambda j: -float(probs[j]))]
-                    seen = tried.setdefault(state_key(raw), set())
-                    action = next((a for a in ranked if a not in seen), ranked[0])
-                    if action != ranked[0]:
-                        guarded += 1
-                        if not args.quiet:
-                            print(f"      loop guard: {ranked[0]} already tried here")
-                    seen.add(action)
-                t_model += time.perf_counter() - t
-                steps += 1
-                agree += action in expert
-                if not args.quiet:
-                    mark = "ok" if action in expert else f"(expert: {expert[0]})"
-                    print(f"{steps:3d}  {action:34s} {mark}")
-                t = time.perf_counter()
-                s = env.call({"op": "step", "action": action})
-                t_fc += time.perf_counter() - t
-                if s["info"].get("error") and not args.quiet:
-                    print("      error:", s["info"]["error"])
-                if s["info"]["done"] or not s["expert"]:
-                    done = s["info"]["done"]
-                    break
-                raw = s["state"]
-                state, actions, expert = State.from_json(raw), s["actions"], s["expert"]
-            t_built = time.perf_counter()
-            sc = env.call({"op": "score"})
-            t_score = time.perf_counter() - t_built
-            t_save0 = time.perf_counter()
-            fcstd = out / f"{name}.FCStd"
-            env.call({"op": "save", "fcstd": str(fcstd)})
-            extra = []
-            if not args.no_gui_data:
-                n = add_gui_document(fcstd)
-                if n == 0:
-                    extra.append("no visible objects")
-            if not args.no_step:
-                err = export_step(fcstd, fcstd.with_suffix(".step"))
-                extra.append(f"STEP export failed: {err}" if err else f"{fcstd.with_suffix('.step').name}")
-            t_save = time.perf_counter() - t_save0
-            t_make = t_built - t0
-            ok = done and sc["match"]
-            failures += not ok
-            print(f"{name}: {'SUCCESS' if ok else 'FAIL'}  IoU {sc['iou']:.4f}  done {done}  steps {steps}  "
-                  f"agreement {agree}/{steps}" + (f"  loop guard {guarded}x" if guarded else "")
-                  + f"  -> {fcstd}" + (f" (+ {', '.join(extra)})" if extra else ""))
-            print(f"   time to make: {t_make:.2f} s  (model {t_model:.2f} s = {1000 * t_model / max(steps, 1):.1f} ms/step, "
-                  f"FreeCAD {t_fc:.2f} s = {1000 * t_fc / max(steps, 1):.1f} ms/step)  |  "
-                  f"check {t_score:.2f} s, save/export {t_save:.2f} s  |  total {t_make + t_score + t_save:.2f} s")
-            summary.append((name, "SUCCESS" if ok else "FAIL", steps, t_model, t_fc, t_save + t_score, t_make + t_score + t_save))
+            try:
+                print(f"\n== {name}: " + " -> ".join(f"{f.kind}{json.dumps(f.params)}" for f in goal.features))
+                raw = r["state"]
+                state, actions, expert = State.from_json(raw), r["actions"], r["expert"]
+                steps = agree = guarded = 0
+                tried: dict[str, set[str]] = {}  # loop guard: actions already taken from each state
+                done = False
+                t_model = t_fc = 0.0
+                t0 = time.perf_counter()
+                while steps < r["budget"]:
+                    t = time.perf_counter()
+                    if args.teacher:
+                        action = expert[0]
+                    elif args.no_loop_guard:
+                        action = policy.act([state], [goal], [actions])[0]
+                    else:
+                        probs = policy.distributions([state], [goal], [actions])[0]
+                        ranked = [actions[j] for j in sorted(range(len(actions)), key=lambda j: -float(probs[j]))]
+                        seen = tried.setdefault(state_key(raw), set())
+                        action = next((a for a in ranked if a not in seen), ranked[0])
+                        if action != ranked[0]:
+                            guarded += 1
+                            if not args.quiet:
+                                print(f"      loop guard: {ranked[0]} already tried here")
+                        seen.add(action)
+                    t_model += time.perf_counter() - t
+                    steps += 1
+                    agree += action in expert
+                    if not args.quiet:
+                        mark = "ok" if action in expert else f"(expert: {expert[0]})"
+                        print(f"{steps:3d}  {action:34s} {mark}")
+                    t = time.perf_counter()
+                    s = env.call({"op": "step", "action": action})
+                    t_fc += time.perf_counter() - t
+                    if s["info"].get("error") and not args.quiet:
+                        print("      error:", s["info"]["error"])
+                    if s["info"]["done"] or not s["expert"]:
+                        done = s["info"]["done"]
+                        break
+                    raw = s["state"]
+                    state, actions, expert = State.from_json(raw), s["actions"], s["expert"]
+                t_built = time.perf_counter()
+                sc = env.call({"op": "score"})
+                t_score = time.perf_counter() - t_built
+                t_save0 = time.perf_counter()
+                fcstd = out / f"{name}.FCStd"
+                env.call({"op": "save", "fcstd": str(fcstd)})
+                extra = []
+                if not args.no_gui_data:
+                    n = add_gui_document(fcstd)
+                    if n == 0:
+                        extra.append("no visible objects")
+                if not args.no_step:
+                    err = export_step(fcstd, fcstd.with_suffix(".step"))
+                    extra.append(f"STEP export failed: {err}" if err else f"{fcstd.with_suffix('.step').name}")
+                t_save = time.perf_counter() - t_save0
+                t_make = t_built - t0
+                ok = done and sc["match"]
+                failures += not ok
+                print(f"{name}: {'SUCCESS' if ok else 'FAIL'}  IoU {sc['iou']:.4f}  done {done}  steps {steps}  "
+                      f"agreement {agree}/{steps}" + (f"  loop guard {guarded}x" if guarded else "")
+                      + f"  -> {fcstd}" + (f" (+ {', '.join(extra)})" if extra else ""))
+                print(f"   time to make: {t_make:.2f} s  (model {t_model:.2f} s = {1000 * t_model / max(steps, 1):.1f} ms/step, "
+                      f"FreeCAD {t_fc:.2f} s = {1000 * t_fc / max(steps, 1):.1f} ms/step)  |  "
+                      f"check {t_score:.2f} s, save/export {t_save:.2f} s  |  total {t_make + t_score + t_save:.2f} s")
+                summary.append((name, "SUCCESS" if ok else "FAIL", steps, t_model, t_fc, t_save + t_score, t_make + t_score + t_save))
+            except WorkerError as exc:  # FreeCAD crashed on the part the model built: count it as failed, go on
+                failures += 1
+                print(f"{name}: CRASH  FreeCAD worker died ({exc}); restarting the worker")
+                summary.append((name, "CRASH", steps, t_model, t_fc, 0.0, time.perf_counter() - t0))
+                try:
+                    env.close()
+                except Exception:
+                    pass
+                env = FreeCADEnv()
     finally:
         env.close()
     if summary and not args.check:

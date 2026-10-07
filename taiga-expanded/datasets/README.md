@@ -80,10 +80,26 @@ First 300 convertible models of DeepCAD's test split (originals that aren't one 
 
 On the sample: 10 of the 19 now convert, 9 of them to IoU ≥ 0.99. The rest are degenerate designs (profiles with zero-width cusps or slivers, rejected as invalid shapes) or joins that touch the part only along an edge (two solids in the original too).
 
+**Full test split, second pass** (`convert_deepcad.py` 2026.10.06.10): 6,836 converted; the teacher builds 6,821, and **6,762 match their original** (IoU ≥ 0.99). Features per goal: median 2, at most 18 (6,187 with 1–5, 544 with 6–10, 31 with 11–20).
+
+**Models on the verified goals** (step-1 expanded models, `runs/data2`, 4 epochs, before patch 0009). In this run each model build stopped early: the FreeCAD worker crashed on one part, and `taiga_build_part.py` (2026.10.06.1) then gave up on the remaining goals, which `eval` counted as IoU 0. The `eval` table (12.5 ± 8.8 % overall) therefore mostly shows where each run crashed. The share of goals built correctly among those the models actually attempted:
+
+| seed | goals attempted | 1 feature | 2–5 | 6+ | with an XY datum-plane feature | side datum planes only |
+|---|---|---|---|---|---|---|
+| 2 | 3,360 | 0.96 | 0.06 | 0.01 | 0.02 | 0.35 |
+| 12 | 254 | 0.97 | 0.06 | 0.00 | 0.00 | 0.64 |
+| 22 | 736 | 0.99 | 0.05 | 0.00 | 0.00 | 0.45 |
+| 32 | 2,250 | 1.00 | 0.14 | 0.02 | 0.05 | 0.80 |
+| 42 | 1,963 | 0.98 | 0.08 | 0.02 | 0.03 | 0.45 |
+
+The converter writes every DeepCAD extrude after the first as a feature on a datum plane, and most of them are parallel to XY (a hole or boss started from the sketch plane, often symmetric about mid-height). That is the case the S 80 showed these models can't do. They build single extrudes almost perfectly and fail nearly every goal with an XY datum feature, usually declaring the part done with the wrong shape. Patch 0009 adds exactly these features to training, so the numbers to compare are the 0009 models'.
+
+Fix: `taiga_build_part.py` 2026.10.07.1 reports a crashed part as CRASH (a failure), restarts the worker and goes on, so every goal gets a result.
+
 ## Next
 
-1. Run it on the test split; look at the report (what is left out and why) and at the verified share.
-2. Score the current models on the verified goals (`models`, `eval`).
+1. Rerun `models` and `eval` with `taiga_build_part.py` 2026.10.07.1 (a clean baseline, and the crash count).
+2. The same with the patch-0009 models, once trained.
 3. Face form (rule 6), then the training family.
 
 ## Versions

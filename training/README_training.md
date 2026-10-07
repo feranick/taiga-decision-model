@@ -297,17 +297,17 @@ How to read the outcome: if the spread with fixed data (`data2`) is about as lar
 
 ### Results so far (original model, `a6e81d3`, 2026-10-06)
 
-Clean success, mean ± sd over 5 seeds (Quadro fixed-data: 4 seeds); fixed data (`DATA_SEED=2`) unless "fresh data". 4 DAgger rounds instead of 2 (5060 Ti, fixed data): comp-L3 0.54 ± 0.13, comp3 0.87 ± 0.16, len6 0.75 ± 0.13: the same trade-off as more epochs or data. Partial: the Quadro 2× data sweep is still running.
+Clean success, mean ± sd over 5 seeds (Quadro fixed-data 4 epochs: 4 seeds in the last aggregate); fixed data (`DATA_SEED=2`) unless "fresh data". 4 DAgger rounds instead of 2 (5060 Ti, fixed data): comp-L3 0.54 ± 0.13, comp3 0.87 ± 0.16, len6 0.75 ± 0.13: the same trade-off as more epochs or data.
 
 | Suite | Machine | Fresh data | Fixed data | 8 epochs | 2× data |
 |---|---|---|---|---|---|
 | comp-L3 | 5060 Ti | 0.83 ± 0.24 | 0.76 ± 0.26 | 0.61 ± 0.18 | 0.45 ± 0.03 |
 | | Spark1 (DGX) | 0.71 ± 0.27 | 0.70 ± 0.27 | 0.48 ± 0.01 | 0.45 ± 0.03 |
-| | Quadro | 0.87 ± 0.20 | 0.62 ± 0.21 | 0.48 ± 0.02 | — |
-| comp3-L3 | 5060 Ti / Spark1 / Quadro | 0.97 / 1.00 / 0.96 | 0.99 / 0.87 / 0.99 | 0.94 / 0.81 / 0.77 | 0.46 / 0.52 / — |
+| | Quadro | 0.87 ± 0.20 | 0.62 ± 0.21 | 0.48 ± 0.02 | 0.55 ± 0.23 |
+| comp3-L3 | 5060 Ti / Spark1 / Quadro | 0.97 / 1.00 / 0.96 | 0.99 / 0.87 / 0.99 | 0.94 / 0.81 / 0.77 | 0.46 / 0.52 / 0.73 |
 | len6-L9 (9 intents) | 5060 Ti | 0.52 ± 0.31 | 0.53 ± 0.35 | 0.93 ± 0.07 | 0.92 ± 0.05 |
 | | Spark1 (DGX) | 0.68 ± 0.25 | 0.41 ± 0.25 | 0.93 ± 0.14 | 0.81 ± 0.35 |
-| | Quadro | 0.72 ± 0.29 | 0.43 ± 0.30 | 0.94 ± 0.05 | — |
+| | Quadro | 0.72 ± 0.29 | 0.43 ± 0.30 | 0.94 ± 0.05 | 0.69 ± 0.07 |
 | last-epoch NLL drop | all | 9–11 % | 12–19 % | 3–6 % | 12 % |
 
 What it shows, the same on all three machines:
