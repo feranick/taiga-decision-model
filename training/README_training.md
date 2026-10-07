@@ -297,7 +297,7 @@ How to read the outcome: if the spread with fixed data (`data2`) is about as lar
 
 ### Results so far (original model, `a6e81d3`, 2026-10-06)
 
-Clean success, mean ± sd over 5 seeds (Quadro fixed-data: 4 seeds); fixed data (`DATA_SEED=2`) unless "fresh data". Partial: the DAgger-rounds sweep (5060 Ti) and the Quadro 2× data sweep are still running.
+Clean success, mean ± sd over 5 seeds (Quadro fixed-data: 4 seeds); fixed data (`DATA_SEED=2`) unless "fresh data". 4 DAgger rounds instead of 2 (5060 Ti, fixed data): comp-L3 0.54 ± 0.13, comp3 0.87 ± 0.16, len6 0.75 ± 0.13: the same trade-off as more epochs or data. Partial: the Quadro 2× data sweep is still running.
 
 | Suite | Machine | Fresh data | Fixed data | 8 epochs | 2× data |
 |---|---|---|---|---|---|
@@ -315,6 +315,12 @@ What it shows, the same on all three machines:
 - **The spread at the default budget is under-training.** At 4 epochs the loss is still falling (12–19 % in the last epoch), and the long-goal suites swing from seed to seed (len6 from 0.16 to 0.92 on one machine). With 8 epochs the loss has settled (3–6 %), len6 rises to about 0.93 and its spread drops to 0.05–0.14. 2× data does about the same for length.
 - **Held-out compositions get worse with more training, and stop varying.** comp-L3 is bimodal at 4 epochs: each seed scores either about 0.49 (one of the suite's two held-out compositions always fails) or 1.00. More epochs or more data push every seed to about 0.48 (sd 0.01–0.03); comp3 drops too. The occasional compositional generalization at the default budget is a side effect of stopping early, not something training reliably produces. Picking the seed that happened to get 1.00 would hide exactly this.
 - **So budget fixes length but not composition.** That needs the data: the taiga-expanded model, whose new families include patterns and mirrors of many feature types (never the held-out pairs), scores 1.00 ± 0.00 on comp, comp2 and comp3 at 4 epochs. It keeps 1.00 on all three at 8 epochs, on every seed (`../taiga-expanded/README.md`, step 2).
+
+**In plain terms.** The more the model trains on the same examples, the better it does what it practised, and the more it sticks to exactly what it saw.
+
+- *Length improves* because it is a skill still being learned: building a long part is bookkeeping (what is done, what comes next), every example practises it, and at the default budget the model had not finished learning it. More training makes it better and the same on every seed.
+- *Composition degrades* because the model learns the rules of its data too well. In training a `boss_box` is never patterned; early on the model has not noticed that and sometimes handles the new pair by treating features generally (the lucky 1.00 seeds). Trained longer, it learns "patterns never go with boxes", and every seed makes the same mistake (0.48). Like a student who drills only the practice problems: faster on those, but thrown by familiar pieces mixed in a new way.
+- *The cure is better examples, not less training.* The expanded model practised patterns and mirrors of many feature types (never the held-out pairs), so it learned the general rule, "a pattern works on any feature", and keeps 1.00 on composition when trained longer.
 
 ### Notes
 
