@@ -222,7 +222,8 @@ Only installs made by these script versions are recorded. Anything installed by 
 - **The GPU is not the bottleneck.** The model is small, so most of the time goes into the FreeCAD steps (data generation, DAgger and evaluation), which run on the CPU. Upstream reports about 25 minutes of training on an Apple M-series Mac.
 - **Restarting a run.**
   - `data` skips generation if complete shards exist. An interrupted generation is detected and redone. Runs sharing a `DATA_SEED` generate the data once.
-  - The Quadro script marks the test set complete only after a full generation.
+  - The test set is generated under a lock (one generator; other runs wait) and marked complete only after a full generation.
+  - Before reusing training or test data, `data` checks that every shard decompresses (`gzip -t`) and regenerates the set if one is damaged.
   - `train` does not resume from a checkpoint; it starts over.
   - The published-model baseline is computed once per machine and then reused. If it lacks any suite in the current suite list (e.g. after the stress suites were added), `eval` evaluates the published model again.
   - To add the stress suites to an existing run, rerun only `eval` (e.g. `./taiga_repro_5060ti.sh eval`); data and training are not redone.
@@ -442,9 +443,9 @@ Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header 
 
 | Script | Version |
 |---|---|
-| `taiga_repro_DGX.sh` | 2026.10.05.6 |
-| `taiga_repro_5060ti.sh` | 2026.10.05.5 |
-| `taiga_repro_Quadro6000.sh` | 2026.10.05.5 |
+| `taiga_repro_DGX.sh` | 2026.10.07.1 |
+| `taiga_repro_5060ti.sh` | 2026.10.07.1 |
+| `taiga_repro_Quadro6000.sh` | 2026.10.07.1 |
 | `taiga_aggregate.py` | 2026.10.04.3 |
 | `taiga_bench_size.py` | 2026.10.06.1 |
 | `taiga_run.py` | 2026.10.04.1 |

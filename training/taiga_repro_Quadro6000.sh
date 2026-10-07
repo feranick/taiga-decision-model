@@ -2,7 +2,7 @@
 # =============================================================================
 # taiga_repro_Quadro6000.sh — reproduce Taiga-S1 from scratch on a dual Quadro RTX 6000
 # (Turing, sm_75, 2 x 24 GB) workstation, Ubuntu 24.04 or 26.04, driver 595-open
-# Version: 2026.10.05.5
+# Version: 2026.10.07.1
 #
 # Same pipeline as the Spark/mochi scripts; differences:
 #   - FreeCAD from your PPA matching the release: noble -> bleedingedge/noble-bleed,
@@ -336,6 +336,10 @@ stage_setup() {
 }
 
 # ----------------------------------------------------------------------------- data
+shards_ok() {  # every *.jsonl.gz in $1 decompresses completely
+  local f; compgen -G "$1/*.jsonl.gz" >/dev/null || return 1
+  for f in "$1"/*.jsonl.gz; do gzip -t "$f" 2>/dev/null || { log "damaged shard: $f"; return 1; }; done
+}
 stage_data() {
   load_fc; cd "$REPO"
   local train=$TRAIN_DATA test=data/gen_test eps
@@ -343,7 +347,7 @@ stage_data() {
   eps=$(awk -v s="$DATA_SCALE" 'BEGIN { printf "%d %d %d", 4000*s+0.5, 8000*s+0.5, 12000*s+0.5 }')
   mkdir -p data
   exec 7>"data/.$(basename "$train").lock"; flock 7   # runs sharing DATA_SEED generate it once
-  if compgen -G "$train/*.jsonl.gz" >/dev/null && [[ ! -f $train/.incomplete ]]; then
+  if [[ ! -f $train/.incomplete ]] && shards_ok "$train"; then
     log "Training data exists in $train — skipping (delete it to regenerate)"
   else
     rm -rf "$train"; mkdir -p "$train"; touch "$train/.incomplete"
@@ -355,12 +359,14 @@ stage_data() {
   exec 7>&-
   mkdir -p data
   exec 9>"data/.gen_test.lock"; flock 9            # one generator; other runs wait
-  if [[ -f $test/.complete ]]; then
+  if shards_ok "$test"; then   # complete, or intact from before the .complete marker existed
+    touch "$test/.complete"
     log "Test data exists in $test — skipping"
   else
     rm -rf "$test"
     timed datagen_test "$PY" -m freecad_s1.datagen --out "$test" \
       --episodes 300 600 900 --workers "$TEST_WORKERS" --seed "$TEST_SEED"
+    shards_ok "$test" || die "test data in $test is damaged right after generation; check the disk"
     touch "$test/.complete"
   fi
   exec 9>&-
