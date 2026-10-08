@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.08.1
+Version: 2026.10.08.2
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -29,6 +29,9 @@ is unchanged; only repeated dead ends are skipped. One exception: if the action 
 to repeat had worked (no error) and the model itself then undid it, the Undo was the mistake, not
 the action. The guard then lets the action through once more and blocks Undo in the state it
 leads to, so the model takes its next choice there (e.g. Done) instead of tearing the part down.
+"Worked" only means FreeCAD accepted it, not that it was right (a hole on the wrong face also
+works), so this exception is used at most --guard-redos times per part (default 1); after that
+the guard treats every undo as the model's correction again.
 --no-loop-guard turns it off (e.g. to score the model alone); the result line reports how often
 the guard stepped in.
 
@@ -185,6 +188,8 @@ def main() -> None:
     ap.add_argument("--teacher", action="store_true", help="build with the scripted teacher instead of a model")
     ap.add_argument("--no-loop-guard", action="store_true",
                     help="don't skip actions the model already took in the same state (see Loop guard above)")
+    ap.add_argument("--guard-redos", type=int, default=1,
+                    help="how often per part the guard may redo a step the model undid (see Loop guard above)")
     args = ap.parse_args()
 
     if not (os.environ.get("FREECAD_PYTHON") and os.environ.get("FREECAD_LIB")):
@@ -254,7 +259,7 @@ def main() -> None:
                         top = ranked[0]
                         nxt, err = went.get((key, top), ("", True))
                         if (top in seen and top != "Std_Undo" and not err and (key, top) not in redone
-                                and "Std_Undo" in tried.get(nxt, ())):
+                                and len(redone) < args.guard_redos and "Std_Undo" in tried.get(nxt, ())):
                             action = top  # it worked and was undone: redo it; Undo stays blocked there
                             redone.add((key, top))
                             guarded += 1

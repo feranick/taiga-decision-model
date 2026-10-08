@@ -200,6 +200,8 @@ Unchanged: the original suites, and the suites of patches 0001–0009 except `re
 | `MAX_GOAL` | 24 | Only the first 24 intents of a goal are encoded; the casing's last 28 are never seen |
 | `MAX_ORD` | 32 | Goal intents and tree objects past ordinal 31 share one ordinal |
 
+**Found after patch 0010 was written:** features on a bottom face (`Face-Z`: the holes under the S 80 bearing bracket's foot) occur in no training family, and the model puts them on another face. The next patch adds bottom-face features (holes, pockets, pins, mirrored and in rows) to `side` and `mixed`.
+
 Patch 0010 stays within these (at most 14 intents). Phase 2 needs a patch that raises them as model-config options, so that existing checkpoints keep loading with the old values, and keeps the newest tree objects when the tree is longer than the table.
 
 ### Training plan

@@ -93,6 +93,22 @@ So the vocabulary expresses the S 80 to within 0.2 % of its volume; anything a m
 - The bearings fail on two seeds although the goal is a single revolve: its profile sits 211–228 mm along the shaft, far from the origin compared with its 17 mm width. The revolve samplers put profiles near the origin, so this is a position the model has not seen (positions are divided by the part's scale, so the offset looks like 12× the part).
 - The bearing bracket (13 features) exhausts its step budget on every seed and the casing parts collapse after a few dozen steps, with the loop guard stepping in about every other step: long goals, the limit already seen in `len6`.
 
+**Same models, fixed loop guard** (`taiga_build_part.py` 2026.10.08.1: a step that worked and was then undone by the model is redone, and Undo is blocked after it; Spark2, 2026-10-08, `OUT=~/taiga-expanded-0009/s80_g2`):
+
+| Part | Seeds at IoU ≥ 0.999 | Mean ± sd | Before the fix |
+|---|---|---|---|
+| Six short parts (as above) | 5 / 5 | 1.000 | 5 / 5 |
+| Bearings | **5 / 5** | 1.000 | 3 / 5, 0.60 |
+| Impeller | **3 / 5** | 0.91 ± 0.12 | 2 / 5, 0.40 |
+| Bearing bracket | 0 / 5 | **0.994 ± 0.002** | 0.55 ± 0.16 |
+| Casing core / casing | 0 / 5 | 0.56 ± 0.29 / 0.58 ± 0.30 | 0.57 / 0.48 |
+| Whole pump (volume-weighted) | | 0.26–0.84 per seed (0.84 on three seeds) | 0.33–0.76 |
+
+- **The guard's teardowns were most of the short-part losses.** The bearings now build on every seed; the impeller on three, and on the other two the model runs out of steps (54) after part of the blade pattern (IoU 0.78).
+- **The bracket is now almost right on every seed** (0.99 against the reference), where it lost half its volume before. A step-by-step build (seed 2) shows why it is not exact: the first 42 steps (revolve, window, flange holes and their pattern, the foot on two XY datum planes) match the teacher, then the two holes on the foot's **underside** (`Face-Z`) are put on `Face+Y` instead. The missing Ø18 holes in the 16 mm plate are exactly the 8 cm³ excess. No training family puts features on a bottom face, so this is a coverage gap, like the XY datum planes before patch 0009. The build's own check scores 0 on three seeds because those builds ran out of steps in the middle of the recovery (an open sketch); the exported STEP only shows the body as it stood.
+- **The guard made that recovery worse.** The model correctly undid the hole on the wrong face; the guard took it for a spurious Undo (the step had worked, i.e. FreeCAD accepted it), redid it and blocked Undo, and the model flailed until the step budget ran out. `taiga_build_part.py` 2026.10.08.2 allows that exception once per part (`--guard-redos`, default 1): enough for the bearings and the impeller, after which undos count as corrections again.
+- **The casing parts are unchanged:** they fail on length and on the model's input limits (`../README.md`, primitive 8), not on the guard.
+
 ## Limits of the vocabulary found on the way
 
 - **Patterns only about the origin axes.** The suction flange's 8 bolt holes are on a circle around the port axis (z = 110), not the shaft axis, so they are written as 4 holes, each mirrored. A polar pattern about a feature's own axis would make it one hole and one pattern.
