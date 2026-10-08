@@ -225,6 +225,23 @@ Each step as a sweep on the same machine (DGX shown), with fixed data (`DATA_SEE
 - **Training is cheap, evaluation isn't:** per seed 11 min (4 ep), 15 min (8 ep), 18 min (2× data); evaluation 1.2–1.5 h. 2× data at 8 epochs costs about 35 min of training per seed.
 - **Chosen budget for the patch-0009 run:** 2× data and 8 epochs. Then longer goals in training for len6 and beyond.
 
+**Step 3: patches 0001–0009, 2× data, 8 epochs** (Spark2, 5 seeds, fixed data, `WORK=~/taiga-expanded-0009`, 2026-10-08):
+
+| Suite (clean) | Expanded 8 ep (0001–0008) | Expanded 2× data, 4 ep (0001–0008) | **0001–0009, 2× data, 8 ep** | Unpatched `4a31bcf`, 8 ep |
+|---|---|---|---|---|
+| datum_z, overhang (new) | — | — | **1.00 (sd 0)** | — |
+| other new suites, large | 1.00 | 1.00 | 1.00 | — |
+| comp | 1.00 | 0.84 ± 0.22 | **0.53 ± 0.09** (four seeds 0.49) | 0.66 ± 0.25 |
+| comp2 / comp3 | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 0.98 | 0.90 / 0.93 |
+| len5 | 0.84 ± 0.23 | 0.98 ± 0.04 | 0.93 ± 0.11 | 0.99 ± 0.01 |
+| len6 | 0.67 ± 0.29 | 0.69 ± 0.27 | **0.78 ± 0.09** | 0.89 ± 0.15 |
+| last-epoch NLL drop | 0–10 % | 7–16 % | −1–5 % (converged) | 3–8 % |
+
+- **The S 80 failure modes are learned.** XY datum-plane features and overhanging features score 1.00 on every seed, clean, and 0.97–0.99 perturbed. Nothing else regressed.
+- **Length: better and much steadier, not yet at the baseline.** len6 0.78 with sd 0.09 (0.63–0.83), against 0.67 ± 0.29 before; the loss has converged. The remaining gap to the unpatched model (0.89) is not under-training any more, so it needs longer goals in training.
+- **comp fell back to the original model's failure.** At this budget four of five seeds score 0.49 (zero-deviation 0.49 on all five): one of comp's two held-out rules always fails, exactly as the original model does when trained longer. comp2 and comp3 hold (1.00 / 0.98). So the family diversity *delayed* the over-specialization (1.00 at 8 epochs or at 2× data alone) but did not prevent it once both were combined. This is the expanded model's version of the trade-off in `../training/README_training.md`: the more it trains on the same distribution, the more it learns that the held-out pair never occurs.
+- **What that means in practice.** The held-out pairs exist only to measure generalization; nothing stops a production model from training on them. But real designs will contain other unseen combinations, so this suite is the warning that the model's generalization across feature combinations degrades with budget. The fix is the same as before, in the data: make "any feature can be patterned / mirrored" overwhelming in training (more feature kinds per pattern and mirror goal, and patterns of patterns), and check comp at every budget step.
+
 Compare with `../training/taiga_aggregate.py` on the run folders (`~/taiga-head/taiga-s1/runs/data2`, `~/taiga-expanded/taiga-s1/runs/data2`, `.../x2_data2`, ...).
 
 ## Workflow
@@ -280,7 +297,7 @@ Typical order: S 80 `check → teacher → eval` (vocabulary), then `models → 
 
 1. **No regression:** on the original suites, the expanded model's distribution over seeds is not worse than the baseline's at the same commit.
 2. **New features:** high clean and perturbed success on each new suite.
-3. **Real parts:** S 80 parts rebuilt with Taiga goals, scored by IoU against `../build/pump_s80_reference_CAD`, first with the scripted teacher (can the vocabulary express them?), then with the trained models (`eval/`, see [`eval/README.md`](eval/README.md)). Teacher: every part builds, IoU 0.9986–1.0000 per part, 0.9989 for the whole pump (2026-10-05); the models are next.
+3. **Real parts:** S 80 parts rebuilt with Taiga goals, scored by IoU against `../build/pump_s80_reference_CAD`, first with the scripted teacher (can the vocabulary express them?), then with the trained models (`eval/`, see [`eval/README.md`](eval/README.md)). Teacher: every part builds, IoU 0.9986–1.0000 per part, 0.9989 for the whole pump (2026-10-05). Models with patch 0009 (2026-10-08): the six short parts exact on every seed, bearings 3/5 and impeller 2/5, bearing bracket and casing not yet (long goals); whole pump 0.33–0.76 per seed.
 
 ## Versions
 

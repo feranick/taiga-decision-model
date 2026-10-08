@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.07.1
+Version: 2026.10.08.1
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -25,8 +25,12 @@ repo (~/taiga/taiga-s1), so they work from any directory:
 Loop guard (model builds, on by default): when the model is back in a state it has already
 acted from (e.g. Pad -> invalid -> Undo -> the same state) and picks an action it already took
 there, the guard takes its most likely action not yet tried in that state instead. The model
-is unchanged; only repeated dead ends are skipped. --no-loop-guard turns it off (e.g. to score
-the model alone); the result line reports how often the guard stepped in.
+is unchanged; only repeated dead ends are skipped. One exception: if the action the model wants
+to repeat had worked (no error) and the model itself then undid it, the Undo was the mistake, not
+the action. The guard then lets the action through once more and blocks Undo in the state it
+leads to, so the model takes its next choice there (e.g. Done) instead of tearing the part down.
+--no-loop-guard turns it off (e.g. to score the model alone); the result line reports how often
+the guard stepped in.
 
 If the FreeCAD worker crashes on a part (e.g. on a degenerate shape the model made), the part
 is reported as CRASH (a failure), the worker is restarted and the remaining goals are built.
@@ -230,6 +234,9 @@ def main() -> None:
                 state, actions, expert = State.from_json(raw), r["actions"], r["expert"]
                 steps = agree = guarded = 0
                 tried: dict[str, set[str]] = {}  # loop guard: actions already taken from each state
+                went: dict[tuple[str, str], tuple[str, bool]] = {}  # (state, action) -> (next state, error)
+                redone: set[tuple[str, str]] = set()  # actions let through again after an undo
+                key = ""
                 done = False
                 t_model = t_fc = 0.0
                 t0 = time.perf_counter()
@@ -242,12 +249,23 @@ def main() -> None:
                     else:
                         probs = policy.distributions([state], [goal], [actions])[0]
                         ranked = [actions[j] for j in sorted(range(len(actions)), key=lambda j: -float(probs[j]))]
-                        seen = tried.setdefault(state_key(raw), set())
-                        action = next((a for a in ranked if a not in seen), ranked[0])
-                        if action != ranked[0]:
+                        key = state_key(raw)
+                        seen = tried.setdefault(key, set())
+                        top = ranked[0]
+                        nxt, err = went.get((key, top), ("", True))
+                        if (top in seen and top != "Std_Undo" and not err and (key, top) not in redone
+                                and "Std_Undo" in tried.get(nxt, ())):
+                            action = top  # it worked and was undone: redo it; Undo stays blocked there
+                            redone.add((key, top))
                             guarded += 1
                             if not args.quiet:
-                                print(f"      loop guard: {ranked[0]} already tried here")
+                                print(f"      loop guard: {top} worked before and was undone; redo it, no Undo after it")
+                        else:
+                            action = next((a for a in ranked if a not in seen), top)
+                            if action != top:
+                                guarded += 1
+                                if not args.quiet:
+                                    print(f"      loop guard: {top} already tried here")
                         seen.add(action)
                     t_model += time.perf_counter() - t
                     steps += 1
@@ -260,6 +278,8 @@ def main() -> None:
                     t_fc += time.perf_counter() - t
                     if s["info"].get("error") and not args.quiet:
                         print("      error:", s["info"]["error"])
+                    if key and s.get("state") is not None:
+                        went[(key, action)] = (state_key(s["state"]), bool(s["info"].get("error")))
                     if s["info"]["done"] or not s["expert"]:
                         done = s["info"]["done"]
                         break

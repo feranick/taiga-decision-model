@@ -78,6 +78,21 @@ Goal frames: parts turned about the shaft use pump coordinates (shaft along X th
 
 So the vocabulary expresses the S 80 to within 0.2 % of its volume; anything a model loses beyond that is the model's. The casing's FreeCAD steps get slow as the part grows (each step re-reads the whole shape), which matters for model builds: 5 seeds take about an hour for the casing alone.
 
+**Model scores, patch 0009** (Spark2, 5 seeds, patches 0001–0009, 2× data, 8 epochs, loop guard on, 2026-10-08). IoU with the reference:
+
+| Part | Features | Seeds at IoU ≥ 0.999 | Mean ± sd | Step-1 models (0001–0008, 4 epochs) |
+|---|---|---|---|---|
+| Wear plate, inspection cover, priming cover, check valve, shaft, mechanical seal | 1–8 | 5 / 5 | 1.000 | failed on XY datum planes and overhangs (cover caps, check-valve flap, shaft keyways) |
+| Bearings | 1 (revolve far from the origin) | 3 / 5 | 0.60 ± 0.55 | |
+| Impeller | 3 (revolve, spline blade, polar pattern) | 2 / 5 | 0.40 ± 0.55 | |
+| Bearing bracket | 13 | 0 / 5 | 0.55 ± 0.16 | every seed runs out of steps (106) |
+| Casing core / casing | 24 / 52 | 0 / 5 | 0.57 ± 0.27 / 0.48 ± 0.28 | |
+| Whole pump (volume-weighted) | | | 0.33–0.76 per seed | |
+
+- Patch 0009 fixed what it was made for: every part whose failure was an XY datum plane or an overhang now builds exactly on every seed.
+- The bearings fail on two seeds although the goal is a single revolve: its profile sits 211–228 mm along the shaft, far from the origin compared with its 17 mm width. The revolve samplers put profiles near the origin, so this is a position the model has not seen (positions are divided by the part's scale, so the offset looks like 12× the part).
+- The bearing bracket (13 features) exhausts its step budget on every seed and the casing parts collapse after a few dozen steps, with the loop guard stepping in about every other step: long goals, the limit already seen in `len6`.
+
 ## Limits of the vocabulary found on the way
 
 - **Patterns only about the origin axes.** The suction flange's 8 bolt holes are on a circle around the port axis (z = 110), not the shaft axis, so they are written as 4 holes, each mirrored. A polar pattern about a feature's own axis would make it one hole and one pattern.
