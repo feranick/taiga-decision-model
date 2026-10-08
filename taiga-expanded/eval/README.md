@@ -106,7 +106,21 @@ So the vocabulary expresses the S 80 to within 0.2 % of its volume; anything a m
 
 - **The guard's teardowns were most of the short-part losses.** The bearings now build on every seed; the impeller on three, and on the other two the model runs out of steps (54) after part of the blade pattern (IoU 0.78).
 - **The bracket is now almost right on every seed** (0.99 against the reference), where it lost half its volume before. A step-by-step build (seed 2) shows why it is not exact: the first 42 steps (revolve, window, flange holes and their pattern, the foot on two XY datum planes) match the teacher, then the two holes on the foot's **underside** (`Face-Z`) are put on `Face+Y` instead. The missing Ø18 holes in the 16 mm plate are exactly the 8 cm³ excess. No training family puts features on a bottom face, so this is a coverage gap, like the XY datum planes before patch 0009. The build's own check scores 0 on three seeds because those builds ran out of steps in the middle of the recovery (an open sketch); the exported STEP only shows the body as it stood.
-- **The guard made that recovery worse.** The model correctly undid the hole on the wrong face; the guard took it for a spurious Undo (the step had worked, i.e. FreeCAD accepted it), redid it and blocked Undo, and the model flailed until the step budget ran out. `taiga_build_part.py` 2026.10.08.2 allows that exception once per part (`--guard-redos`, default 1): enough for the bearings and the impeller, after which undos count as corrections again.
+- **The guard cannot tell a right step from a wrong one.** The model correctly undid the hole on the wrong face; the guard took it for a spurious Undo (FreeCAD had accepted the step), redid it and blocked Undo, and the model flailed until the step budget ran out.
+
+**Guard variants on the same models** (Spark2, 2026-10-08): no guard (`--no-loop-guard`), the redo exception limited to once per part (`--guard-redos 1`), and without a limit (`s80_g2` above). Seeds exact (IoU ≥ 0.999) / mean IoU against the reference:
+
+| Part | No guard | Redo once per part | Redo without limit |
+|---|---|---|---|
+| Six short parts | 5 / 5 | 5 / 5 | 5 / 5 |
+| Bearings | 3 / 5 (two loop until out of steps) | 5 / 5 | 5 / 5 |
+| Impeller | 3 / 5, 0.91 | 3 / 5, 0.60 | 3 / 5, 0.91 |
+| Bearing bracket | 0 / 5, 0.79 | 0 / 5, 0.73 | 0 / 5, **0.99** |
+| Casing core / casing | 0 / 5, 0.48 / 0.49 | 0 / 5, 0.66 / 0.57 | 0 / 5, 0.56 / 0.58 |
+
+- **Without a guard the model loops:** every failure ends out of steps, repeating a dead end (22 steps on a single revolve, the full 540 on the casing). Breaking repeated dead ends is needed.
+- **The two guard variants build exactly the same parts.** Without a limit, failed builds keep more of their correct steps (the bracket complete except the two bottom holes); with the limit, the old teardown comes back after the first redo. `taiga_build_part.py` 2026.10.08.3 therefore sets no limit by default (`--guard-redos -1`; a number limits it).
+- **What is left is training, not the guard:** the bracket's bottom-face holes (next patch), the impeller's blade pattern on two seeds (patch 0010's `turned` family) and the casing's length and input limits (`../README.md`, primitive 8).
 - **The casing parts are unchanged:** they fail on length and on the model's input limits (`../README.md`, primitive 8), not on the guard.
 
 ## Limits of the vocabulary found on the way
