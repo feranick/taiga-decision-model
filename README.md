@@ -27,7 +27,7 @@ The planner decides *what* to build; Taiga-S1 decides *how*, command by command.
 | [`training/`](training/) | Setup, data generation, training, evaluation and calibration, one script per machine; multi-seed sweeps and variance analysis | [`README_training.md`](training/README_training.md) |
 | [`build/`](build/) | Building parts with a trained model (inference) and example goals | [`README_build_part.md`](build/README_build_part.md) |
 | [`taiga-expanded/`](taiga-expanded/) | Extends Taiga-S1's vocabulary (side faces, curved outlines, revolve, …) as a patch series on a pinned upstream commit; trains with the scripts in `training/` | [`README.md`](taiga-expanded/README.md) |
-| [`docs/`](docs/) | Notes beyond this repository's scripts: which other tools the approach suits | [`README_beyond_freecad.md`](docs/README_beyond_freecad.md) |
+| [`docs/`](docs/) | Planning notes: the road to a production model, and which other tools the approach suits | [`README_production_plan.md`](docs/README_production_plan.md), [`README_beyond_freecad.md`](docs/README_beyond_freecad.md) |
 
 More folders will be added as the project grows.
 
@@ -70,6 +70,7 @@ taiga-decision-model/
 │   ├── datasets/                 public CAD build histories (DeepCAD) converted into goals, verified, scored
 │   └── train_expanded.sh         trains the patched (or baseline) model with the training scripts
 └── docs/
+    ├── README_production_plan.md training set, evaluation and phases toward a production model
     └── README_beyond_freecad.md  which other tools the approach suits, and which are LLM territory
 ```
 
