@@ -1,0 +1,709 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Thu, 8 Oct 2026 10:16:57 -0400
+Subject: [PATCH] ext: turned hubs with end-face outlines, mixed-family and
+ longer goals, revolves off the origin
+
+- ext/mixed.py: split "turned" (a hub turned about X, Y or Z, optionally bored and away
+  from the origin; a curved blade, curved slot or other outline on its end face, polar-patterned
+  about the axis; optional axial bore or bolt circle) and split "mixed" (a box base with
+  several feature groups from different families on different regions: top features, rows
+  and mirrors, side-face features, rows, windows and mirrors, cross bores; 3-11 intents at
+  level 3, 8-14 at level 4). Neither produces a held-out composition.
+- Revolve goals: 35 % of the profiles away from the origin along the axis (0.3-3 x scale).
+- Training: mixed drawn 3x as often as the other expanded splits; level-1 training goals
+  include lone outline, revolve and turned bases (half the expanded fraction), so the model
+  learns to stop right after such a base.
+- Suites turned, mixed, mixed_long (level 4, longer than training).
+- python -m freecad_s1.ext.mixed writes sampled goals to a goals JSON (for a teacher check).
+---
+ freecad_s1/evaluate.py           |   5 +-
+ freecad_s1/ext/mixed.py          | 388 +++++++++++++++++++++++++++++++
+ freecad_s1/ext/sampler.py        |  54 ++++-
+ freecad_s1/goals.py              |   4 +-
+ tests/test_ext_datum_overhang.py |   2 +-
+ tests/test_ext_mixed.py          | 119 ++++++++++
+ 6 files changed, 559 insertions(+), 13 deletions(-)
+ create mode 100644 freecad_s1/ext/mixed.py
+ create mode 100644 tests/test_ext_mixed.py
+
+diff --git a/freecad_s1/evaluate.py b/freecad_s1/evaluate.py
+index 7c794c1..ef1cd0f 100644
+--- a/freecad_s1/evaluate.py
++++ b/freecad_s1/evaluate.py
+@@ -69,7 +69,7 @@ def offline_metrics(model: S1Model, ds: Dataset, device: torch.device, batch_siz
+ 
+ 
+ # Seed offsets keep suites that share a level (iid-L3, comp, comp2, comp3) on disjoint seeds.
+-SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000, "edges": 90_000, "large": 0, "large_ext": 95_000, "datum_z": 96_000, "overhang": 97_000}  # large: the iid seeds
++SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000, "edges": 90_000, "large": 0, "large_ext": 95_000, "datum_z": 96_000, "overhang": 97_000, "turned": 98_000, "mixed": 99_000}  # large: the iid seeds
+ 
+ SUITES = {
+     "iid": [(1, "iid"), (2, "iid"), (3, "iid")],  # training distribution, fresh goals
+@@ -88,6 +88,9 @@ SUITES = {
+     "large_ext": [(3, "large_ext")],  # taiga-expanded: expanded goals x4
+     "datum_z": [(3, "datum_z")],  # taiga-expanded: features on XY datum planes (cavities, slots, plates, feet, keyways)
+     "overhang": [(3, "overhang")],  # taiga-expanded: features wider than their face (caps, covers, flaps, flanges on necks)
++    "turned": [(3, "turned")],  # taiga-expanded: outline features on the end face of turned hubs, polar about the axis
++    "mixed": [(3, "mixed")],  # taiga-expanded: several families on one part, 3-11 intents
++    "mixed_long": [(4, "mixed")],  # taiga-expanded: mixed goals of 8-14 intents (longer than training)
+     "len3": [(6, "len")],  # held-out length: 11 intents (2.2x the training maximum)
+     "len4": [(7, "len")],  # stress: 13 intents
+     "len5": [(8, "len")],  # stress: 15 intents
+diff --git a/freecad_s1/ext/mixed.py b/freecad_s1/ext/mixed.py
+new file mode 100644
+index 0000000..6bb6dfa
+--- /dev/null
++++ b/freecad_s1/ext/mixed.py
+@@ -0,0 +1,388 @@
++"""Turned parts with outline features on an end face, and mixed-family goals (taiga-expanded, patch 0010).
++
++turned: a hub turned about X, Y or Z (optionally bored, optionally away from the origin along
++        its axis); on its end face a curved blade, curved slot or other outline (boss or
++        pocket) off the axis, polar-patterned about the axis (impeller-like); optionally an
++        axial bore and a bolt circle.
++mixed:  a box base with several feature groups drawn from different families on different
++        regions of the part: top features, rows and mirrors on the top face, side-face
++        features, rows, windows and mirrors, cross bores (datum planes), and a final edge
++        break. Level 3 gives 3-11 intents, level >= 4 8-14 (longer than upstream's training
++        maximum of 5).
++
++Neither family produces a composition upstream holds out (goals.heldout_composition): no
++boss_box at all, no mirrored hole_std, no patterned pocket_rect.
++
++Pure stdlib.
++"""
++from __future__ import annotations
++
++import math
++import random
++
++from ..schema import Goal, GoalFeature
++
++
++def _u(rng: random.Random, lo: float, hi: float) -> float:
++    return round(rng.uniform(lo, hi), 1)
++
++
++def _r3(x: float) -> float:
++    return round(x, 3)
++
++
++# ----------------------------------------------------------------------------- outlines
++
++def blade(r1: float, r2: float, theta0: float, sweep: float, thick: float, n: int = 8) -> dict:
++    """Curved blade between radii r1 < r2 about the in-plane origin: a leading spline and a
++    trailing spline `thick` apart (constant width), joined by straight ends."""
++    def lead(t):
++        r = r1 + (r2 - r1) * t
++        a = theta0 + sweep * t
++        return r, a
++
++    def pt(r, a):
++        return [_r3(r * math.cos(a)), _r3(r * math.sin(a))]
++
++    side = 1.0 if sweep >= 0 else -1.0
++    a_pts = [pt(*lead(i / n)) for i in range(n + 1)]
++    b_pts = []
++    for i in range(n, -1, -1):
++        r, a = lead(i / n)
++        b_pts.append(pt(r, a - side * thick / r))  # trailing side, behind the leading curve
++    return {"start": a_pts[0], "segs": [["S", a_pts[1:]], ["L", *b_pts[0]], ["S", b_pts[1:]], ["L", *a_pts[0]]]}
++
++
++def blade_extent(r1: float, r2: float, sweep: float, thick: float) -> float:
++    """Angle (rad) one blade occupies about the axis."""
++    return abs(sweep) + thick / r1
++
++
++def _offaxis_shape(rng: random.Random, rho: float, half: float, phi: float) -> dict:
++    from .sampler import _shape
++
++    return _shape(rng, rho * math.cos(phi), rho * math.sin(phi), half, half)
++
++
++# ----------------------------------------------------------------------------- turned
++
++def _end_face_params(axis: int, end: float) -> dict:
++    """Support params of a feature on the +axis end face at axial position `end`
++    (axis Z: the top face, no normal; X / Y: side face +X / +Y)."""
++    if axis == 2:
++        return {}
++    p = {"nx": 0.0, "ny": 0.0, "nz": 0.0}
++    p[("nx", "ny")[axis]] = 1.0
++    p["xy"[axis]] = round(end, 1)
++    return p
++
++
++def _uv_to_xyz(axis: int, end: float, u: float, v: float) -> dict:
++    """Global centre of an end-face feature from in-plane (u, v) (ext.faces.inplane_axes order)."""
++    from . import faces
++
++    c = [0.0, 0.0, 0.0]
++    c[axis] = end
++    ua, va = faces.inplane_axes(axis)
++    c[ua], c[va] = u, v
++    return {"x": round(c[0], 1), "y": round(c[1], 1), "z": round(c[2], 1)}
++
++
++def _end_outline_feature(kind: str, outline: dict, axis: int, end: float, **extra) -> GoalFeature:
++    from . import profiles as pr
++
++    cu, cv, w, d = pr.bbox(outline)
++    p = {"outline": outline, "w": round(w, 1), "d": round(d, 1), **_end_face_params(axis, end)}
++    if axis == 2:
++        p.update(x=round(cu, 1), y=round(cv, 1))
++    else:
++        p.update({k: v for k, v in _uv_to_xyz(axis, end, cu, cv).items() if k != "xyz"[axis]})
++    p.update(extra)
++    return GoalFeature(kind, p)
++
++
++def _end_hole(axis: int, end: float, r: float, u: float, v: float) -> GoalFeature:
++    p = {"r": round(r, 1), **_end_face_params(axis, end)}
++    if axis == 2:
++        p.update(x=round(u, 1), y=round(v, 1))
++    else:
++        p.update({k: val for k, val in _uv_to_xyz(axis, end, u, v).items() if k != "xyz"[axis]})
++    return GoalFeature("hole", p)
++
++
++def sample_turned_goal(level: int, rng: random.Random) -> Goal:
++    from . import patterns as pt
++    from . import profiles as pr
++    from . import revolve as rv
++
++    for _ in range(200):
++        axis = rng.choice([0, 1, 2])
++        R, L = _u(rng, 20, 50), _u(rng, 6, 25)
++        r_in = _u(rng, 3, R * 0.25) if rng.random() < 0.4 else 0.0
++        shift = 0.0
++        if rng.random() < 0.3:
++            shift = round(rng.choice([1.0, -1.0]) * rng.uniform(0.3, 3.0) * max(2 * R, L), 1)
++        a0, a1 = shift, shift + L
++        base = GoalFeature("profile_revolve", rv.revolve_params(
++            axis, outline=rv.lathe_outline(axis, [(a0, r_in), (a0, R), (a1, R), (a1, r_in)]), angle=360.0))
++        scale = max(2 * R, L)
++        if level <= 1:
++            return Goal([base], level=1, scale=scale)
++        kind = rng.choice(["profile_boss", "profile_boss", "profile_pocket"])
++        lo = max(r_in + 2.0, 0.15 * R)
++        if rng.random() < 0.6:  # curved blade or curved slot
++            r1 = _u(rng, lo, max(lo + 0.1, 0.45 * R))
++            r2 = _u(rng, min(r1 + 0.3 * R, R - 2.0), R - 2.0)
++            if r2 - r1 < 4:
++                continue
++            thick = _u(rng, 1.5, max(1.6, min(0.12 * R, 0.4 * r1)))
++            sweep = rng.choice([1.0, -1.0]) * rng.uniform(0.3, 1.2)
++            ext = blade_extent(r1, r2, sweep, thick)
++            n_max = int(0.85 * 2 * math.pi / ext)
++            if n_max < 3:
++                continue
++            outline = blade(r1, r2, rng.uniform(0, 2 * math.pi), sweep, thick)
++            n = rng.randint(3, min(8, n_max))
++        else:  # another outline shape off the axis
++            n = rng.randint(3, 8)
++            rho = _u(rng, lo + 3, max(lo + 3.1, 0.6 * R))
++            half = min(rho * math.sin(math.pi / n) * 0.6, R - rho - 1.5, rho - lo) * 0.9
++            if half < 1.5:
++                continue
++            outline = _offaxis_shape(rng, rho, half, rng.uniform(0, 2 * math.pi))
++        if pr.area(outline) < 4:
++            continue
++        extra = {"h": _u(rng, 2, 0.6 * R)} if kind == "profile_boss" else {"depth": _u(rng, 1, L * 0.6)}
++        feats = [base, _end_outline_feature(kind, outline, axis, a1, **extra),
++                 GoalFeature("polar_pattern", pt.pattern_params("polar_pattern", axis, rng.choice([1.0, -1.0]),
++                                                                n=float(n), angle=360.0))]
++        if level >= 3:
++            if r_in == 0.0 and rng.random() < 0.5:  # axial bore through the hub
++                feats.append(_end_hole(axis, a1, _u(rng, 1.5, max(1.6, lo * 0.6)), 0.0, 0.0))
++            elif kind == "profile_pocket" and rng.random() < 0.4:  # bolt circle outside the slots
++                rb = _u(rng, min(R - 3.0, 0.8 * R), R - 3.0)
++                r = _u(rng, 1.0, max(1.1, min(2.5, R - rb - 1.0)))
++                if R - rb - r > 0.8:
++                    feats += [_end_hole(axis, a1, r, rb, 0.0),
++                              GoalFeature("polar_pattern", pt.pattern_params("polar_pattern", axis, 1.0,
++                                                                             n=float(rng.randint(3, 8)), angle=360.0))]
++        return Goal(feats, level=min(level, 3), scale=scale)
++    raise ValueError("could not sample a turned goal")
++
++
++# ----------------------------------------------------------------------------- mixed
++
++def _top_single(rng, base, xr, yr):
++    """One top-face feature inside x in xr, y in yr (no boss_box)."""
++    from .sampler import _shape, _outline_feature
++
++    h = base.params["h"]
++    kind = rng.choice(["hole", "hole_std", "boss_cyl", "pocket_rect", "outline"])
++    span = min(xr[1] - xr[0], yr[1] - yr[0])
++    cx, cy = (xr[0] + xr[1]) / 2, (yr[0] + yr[1]) / 2
++    if kind in ("hole", "hole_std", "boss_cyl"):
++        r = _u(rng, 1.5, max(1.6, span * 0.2))
++        p = {"r": r, "x": _u(rng, xr[0] + r + 1, max(xr[0] + r + 1.1, xr[1] - r - 1)),
++             "y": _u(rng, yr[0] + r + 1, max(yr[0] + r + 1.1, yr[1] - r - 1))}
++        if kind == "boss_cyl":
++            p["h"] = _u(rng, 2, 15)
++        return [GoalFeature(kind, p)]
++    if kind == "pocket_rect":
++        w, d = _u(rng, 2, max(2.1, (xr[1] - xr[0]) * 0.5)), _u(rng, 2, max(2.1, (yr[1] - yr[0]) * 0.5))
++        return [GoalFeature("pocket_rect", {"w": w, "d": d, "x": round(cx, 1), "y": round(cy, 1),
++                                            "depth": _u(rng, 1, h * 0.6)})]
++    half = max(1.5, span * 0.3)
++    outline = _shape(rng, cx, cy, half, half)
++    if rng.random() < 0.5:
++        return [_outline_feature("profile_boss", outline, h=_u(rng, 2, 12))]
++    return [_outline_feature("profile_pocket", outline, depth=_u(rng, 1, h * 0.6))]
++
++
++def _top_row(rng, base, xr, yr):
++    """A row along +-Y of holes / pins / slots / outline pockets, within x in xr."""
++    from . import patterns as pt
++    from .sampler import _span, _top_feature, _shape, _outline_feature
++
++    h = base.params["h"]
++    kind = rng.choice(["hole", "hole_std", "boss_cyl", "slot_pocket", "outline"])
++    r = _u(rng, 1.5, max(1.6, (xr[1] - xr[0]) * 0.2))
++    sp = _span(rng, yr[0] + r + 1.5, yr[1] - r - 1.5, 2 * r)
++    if sp is None:
++        return None
++    first, length, n, sign = sp
++    x = round((xr[0] + xr[1]) / 2, 1)
++    if kind == "outline":
++        f = _outline_feature(rng.choice(["profile_pocket", "profile_boss"]), _shape(rng, x, first, r, r))
++        f.params.update({"h": _u(rng, 2, 10)} if f.kind == "profile_boss" else {"depth": _u(rng, 1, h * 0.6)})
++    else:
++        f = _top_feature(rng, kind, x, first, r, h)
++    return [f, GoalFeature("linear_pattern", pt.pattern_params("linear_pattern", 1, sign, n=float(n), length=length))]
++
++
++def _top_mirror(rng, base, xr, yr):
++    """A top feature at y > 0 mirrored across XZ (no hole_std: mirrored hole_std is held out)."""
++    from . import patterns as pt
++    from .sampler import _top_feature, _shape, _outline_feature
++
++    h = base.params["h"]
++    y_lo = max(yr[0], 0.0)
++    kind = rng.choice(["hole", "boss_cyl", "pocket_rect", "outline"])
++    r = _u(rng, 1.5, max(1.6, min(xr[1] - xr[0], yr[1] - y_lo) * 0.2))
++    x = round((xr[0] + xr[1]) / 2, 1)
++    y = _u(rng, y_lo + r + 1, max(y_lo + r + 1.1, yr[1] - r - 1))
++    if kind == "pocket_rect":
++        f = GoalFeature("pocket_rect", {"w": round(2 * r, 1), "d": round(r, 1), "x": x, "y": y, "depth": _u(rng, 1, h * 0.6)})
++    elif kind == "outline":
++        f = _outline_feature(rng.choice(["profile_pocket", "profile_boss"]), _shape(rng, x, y, r, r))
++        f.params.update({"h": _u(rng, 2, 10)} if f.kind == "profile_boss" else {"depth": _u(rng, 1, h * 0.6)})
++    else:
++        f = _top_feature(rng, kind, x, y, r, h)
++    return [f, GoalFeature("mirror", pt.pattern_params("mirror", 1))]
++
++
++def _side_group(rng, base, face, faces_free):
++    """Features on one side face: a single feature, a row along the face, a window / outline
++    boss, or a mirror to the opposite face (which then counts as used)."""
++    from . import patterns as pt
++    from .sampler import side_feature, _span, _shape, _outline_feature
++
++    p = base.params
++    w, d, h = p["w"], p["d"], p["h"]
++    axis, sign = face[1], (1.0 if face[0] == "+" else -1.0)
++    k_face = 0 if axis == "X" else 1
++    what = rng.choice(["single", "row", "outline", "mirror"])
++    opposite = ("-" if face[0] == "+" else "+") + axis
++    if what == "mirror" and opposite not in faces_free:
++        what = "single"
++    if what == "outline":
++        half_u = (d if axis == "X" else w) / 2
++        ru, rv = _u(rng, 2, max(2.1, half_u * 0.4)), _u(rng, 2, max(2.1, h * 0.3))
++        cu, cv = _u(rng, -(half_u - ru) * 0.6, (half_u - ru) * 0.6), h / 2
++        params = {"nx": 0.0, "ny": 0.0, "nz": 0.0}
++        params["n" + axis.lower()] = sign
++        if axis == "X":
++            params.update(x=round(sign * w / 2, 1), y=round(cu, 1), z=round(cv, 1))
++        else:
++            params.update(x=round(cu, 1), y=round(sign * d / 2, 1), z=round(cv, 1))
++        kind = rng.choice(["profile_pocket", "profile_boss"])
++        params.update({"h": _u(rng, 2, 10)} if kind == "profile_boss" else {"depth": _u(rng, 1, (w if axis == "X" else d) * 0.3)})
++        return [_outline_feature(kind, _shape(rng, cu, cv, ru, rv), **params)], []
++    kinds = ["hole", "hole_std", "boss_cyl", "pocket_rect"] if what == "single" else (
++        ["hole", "hole_std", "boss_cyl"] if what == "row" else ["hole", "boss_cyl", "pocket_rect"])
++    f = side_feature(rng, rng.choice(kinds), base, face)
++    if f is None:
++        return None
++    if what == "single":
++        return [f], []
++    if what == "mirror":
++        return [f, GoalFeature("mirror", pt.pattern_params("mirror", k_face))], [opposite]
++    r = f.params["r"]
++    k = 1 if axis == "X" else 0
++    half = (d if k == 1 else w) / 2
++    sp = _span(rng, -(half - r - 1.5), half - r - 1.5, 2 * r)
++    if sp is None:
++        return [f], []
++    first, length, n, sgn = sp
++    f.params["xyz"[k]] = first
++    return [f, GoalFeature("linear_pattern", pt.pattern_params("linear_pattern", k, sgn, n=float(n), length=length))], []
++
++
++def _cross_group(rng, base):
++    """A cross bore through the part (datum plane), optionally repeated up the height."""
++    from . import patterns as pt
++    from .sampler import datum_feature, _span
++
++    f = datum_feature(rng, "hole", base, rng.choice([0, 1]))
++    if f is None:
++        return None
++    if rng.random() < 0.4:
++        r, h = f.params["r"], base.params["h"]
++        sp = _span(rng, r + 2, h - r - 2, 2 * r)
++        if sp is not None:
++            first, length, n, sign = sp
++            f.params["z"] = first
++            return [f, GoalFeature("linear_pattern", pt.pattern_params("linear_pattern", 2, sign, n=float(n), length=length))]
++    return [f]
++
++
++def sample_mixed_goal(level: int, rng: random.Random) -> Goal:
++    for _ in range(200):
++        base = GoalFeature("base_box", {"w": _u(rng, 40, 95), "d": _u(rng, 30, 80), "h": _u(rng, 16, 45)})
++        w, d, h = base.params["w"], base.params["d"], base.params["h"]
++        if level <= 2:
++            n_groups = 1
++        elif level == 3:
++            n_groups = rng.randint(2, 5)
++        else:
++            n_groups = rng.randint(5, 7)
++        # top regions: the two halves along X (rows and mirrors run along Y inside a half)
++        top_regions = [((-w / 2 + 1.5, -1.5), (-d / 2 + 1.5, d / 2 - 1.5)), ((1.5, w / 2 - 1.5), (-d / 2 + 1.5, d / 2 - 1.5))]
++        rng.shuffle(top_regions)
++        faces_free = ["+X", "-X", "+Y", "-Y"]
++        rng.shuffle(faces_free)
++        cross_free = True
++        top, side, cross = [], [], []
++        for _g in range(n_groups * 3):
++            if len(top) + len(side) + len(cross) >= n_groups:
++                break
++            where = rng.choice(["top", "top", "side", "side", "cross"])
++            if where == "top" and top_regions:
++                xr, yr = top_regions.pop()
++                g = rng.choice([_top_single, _top_row, _top_mirror])(rng, base, xr, yr)
++                if g:
++                    top.append(g)
++            elif where == "side" and faces_free:
++                face = faces_free.pop()
++                out = _side_group(rng, base, face, faces_free)
++                if out:
++                    g, used = out
++                    for u in used:
++                        faces_free.remove(u)
++                    side.append(g)
++            elif where == "cross" and cross_free:
++                cross_free = False
++                g = _cross_group(rng, base)
++                if g:
++                    cross.append(g)
++        groups = top + side + cross
++        if len(groups) < min(n_groups, 2 if level >= 3 else 1):
++            continue
++        feats = [base] + [f for g in groups for f in g]
++        if level >= 3 and rng.random() < 0.2:
++            feats.append(GoalFeature("chamfer_top", {"size": _u(rng, 0.5, 1.0)}))
++        return Goal(feats, level=min(level, 3), scale=max(w, d, h))
++    raise ValueError("could not sample a mixed goal")
++
++
++# ----------------------------------------------------------------------------- goal files
++
++def main(argv: list[str] | None = None) -> None:
++    """Write sampled goals of a split to a goals JSON for build/taiga_build_part.py, e.g. to
++    check with FreeCAD that the teacher builds them:
++        python -m freecad_s1.ext.mixed --split mixed --level 3 --n 200 --out mixed_goals.json
++        python <repo>/build/taiga_build_part.py --goals mixed_goals.json --check"""
++    import argparse
++    import json
++
++    from ..goals import sample_split_goal
++
++    ap = argparse.ArgumentParser(description=main.__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++    ap.add_argument("--split", required=True, help="any split of goals.SPLITS, e.g. mixed, turned, revolve, train")
++    ap.add_argument("--level", type=int, default=3)
++    ap.add_argument("--n", type=int, default=100)
++    ap.add_argument("--seed", type=int, default=0)
++    ap.add_argument("--out", required=True)
++    args = ap.parse_args(argv)
++    rng = random.Random(args.seed)
++    goals = {}
++    for i in range(args.n):
++        g = sample_split_goal(args.split, args.level, rng)
++        goals[f"{args.split}_L{args.level}_{i:04d}"] = {"features": [{"kind": f.kind, "params": f.params} for f in g.features],
++                                                       "level": g.level, "scale": g.scale}
++    with open(args.out, "w") as fh:
++        json.dump(goals, fh, indent=1)
++    print(f"wrote {len(goals)} goals to {args.out}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/freecad_s1/ext/sampler.py b/freecad_s1/ext/sampler.py
+index 1e26ab6..8c30774 100644
+--- a/freecad_s1/ext/sampler.py
++++ b/freecad_s1/ext/sampler.py
+@@ -16,7 +16,12 @@ from ..schema import Goal, GoalFeature
+ TRAIN_FRACTION = float(os.environ.get("TAIGA_EXT_FRACTION", "0.35"))
+ 
+ # new evaluation splits (each also feeds training through sample_train)
+-SPLITS = ("side", "plane", "outline", "revolve", "pattern", "edges", "datum_z", "overhang")
++SPLITS = ("side", "plane", "outline", "revolve", "pattern", "edges", "datum_z", "overhang", "turned", "mixed")
++# how often each split is drawn for training (patch 0010: mixed goals carry the long-goal and
++# composition load, so they are drawn more often)
++TRAIN_WEIGHTS = {"mixed": 3.0}
++# level-1 training goals from the expanded families: a lone base that only these families make
++LEVEL1_SPLITS = ("outline", "revolve", "turned")
+ 
+ 
+ def _u(rng: random.Random, lo: float, hi: float) -> float:
+@@ -309,7 +314,16 @@ def sample_revolve_goal(level: int, rng: random.Random) -> Goal:
+                 pts.append((a, radii[i + 1]))
+         pts.append((a, r_in))
+         total = a
+-        base = GoalFeature("profile_revolve", rv.revolve_params(axis, outline=rv.lathe_outline(axis, pts), angle=360.0))
++        # patch 0010: often away from the origin along the axis (e.g. a bearing seat far down a
++        # shaft); the scale stays the part's own, so the offset is visible in the encoding
++        shift = 0.0
++        if rng.random() < 0.35:
++            shift = round(rng.choice([1.0, -1.0]) * rng.uniform(0.3, 3.0) * max(2 * max(radii), total), 1)
++
++        def lathe(ps):
++            return rv.lathe_outline(axis, [(pa + shift, pr_) for pa, pr_ in ps])
++
++        base = GoalFeature("profile_revolve", rv.revolve_params(axis, outline=lathe(pts), angle=360.0))
+         feats = [base]
+         r_max = max(radii)
+ 
+@@ -334,7 +348,7 @@ def sample_revolve_goal(level: int, rng: random.Random) -> Goal:
+                 depth = _u(rng, 1.0, max(1.1, (radii[i] - r_in) * 0.35))
+                 ring = [(ag - w / 2, radii[i] - depth), (ag + w / 2, radii[i] - depth),
+                         (ag + w / 2, radii[i] + 2), (ag - w / 2, radii[i] + 2)]
+-                feats.append(GoalFeature("profile_groove", rv.revolve_params(axis, outline=rv.lathe_outline(axis, ring),
++                feats.append(GoalFeature("profile_groove", rv.revolve_params(axis, outline=lathe(ring),
+                                                                              angle=360.0)))
+             elif what == "collar":
+                 i = rng.randrange(n_steps)
+@@ -345,7 +359,7 @@ def sample_revolve_goal(level: int, rng: random.Random) -> Goal:
+                 r_max = max(r_max, r_out)
+                 collar = [(ac - w / 2, max(r_in, radii[i] - 2)), (ac + w / 2, max(r_in, radii[i] - 2)),
+                           (ac + w / 2, r_out), (ac - w / 2, r_out)]
+-                feats.append(GoalFeature("profile_revolve", rv.revolve_params(axis, outline=rv.lathe_outline(axis, collar),
++                feats.append(GoalFeature("profile_revolve", rv.revolve_params(axis, outline=lathe(collar),
+                                                                               angle=360.0)))
+             elif top_ok(feats):  # axial hole through the top face of a part turned about Z
+                 r_top = radii[-1]
+@@ -971,10 +985,23 @@ def sample_overhang_goal(level: int, rng: random.Random) -> Goal:
+     return Goal(feats, level=min(level, 3), scale=_scale(feats[0]))
+ 
+ 
++def _turned(level: int, rng: random.Random) -> Goal:
++    from .mixed import sample_turned_goal
++
++    return sample_turned_goal(level, rng)
++
++
++def _mixed(level: int, rng: random.Random) -> Goal:
++    from .mixed import sample_mixed_goal
++
++    return sample_mixed_goal(level, rng)
++
++
+ SAMPLERS = {"side": sample_side_goal, "plane": sample_plane_goal, "outline": _outline_split,
+             "revolve": sample_revolve_goal, "pattern": sample_pattern_goal,
+             "edges": sample_edges_goal,
+-            "datum_z": sample_datum_z_goal, "overhang": sample_overhang_goal}
++            "datum_z": sample_datum_z_goal, "overhang": sample_overhang_goal,
++            "turned": _turned, "mixed": _mixed}
+ 
+ 
+ def sample_split(split: str, level: int, rng: random.Random) -> Goal:
+@@ -983,10 +1010,19 @@ def sample_split(split: str, level: int, rng: random.Random) -> Goal:
+     raise ValueError(split)
+ 
+ 
+-def use_expanded_for_train(rng: random.Random) -> bool:
+-    return rng.random() < TRAIN_FRACTION
++def use_expanded_for_train(rng: random.Random, level: int = 2) -> bool:
++    """Level >= 2: TRAIN_FRACTION of the training goals are expanded ones; level 1: half that
++    (patch 0010), the rest stays upstream's single base features."""
++    return rng.random() < (TRAIN_FRACTION if level >= 2 else TRAIN_FRACTION / 2)
+ 
+ 
+ def sample_train(level: int, rng: random.Random) -> Goal:
+-    """Expanded training goal at `level` >= 2, one of the expanded splits at random."""
+-    return SAMPLERS[rng.choice(SPLITS)](max(level, 2), rng)
++    """Expanded training goal: at level >= 2 one of the expanded splits (weighted by
++    TRAIN_WEIGHTS); at level 1 the lone base of a curved-outline, turned or revolved part, so
++    the model also learns to stop right after such a base (patch 0010)."""
++    if level <= 1:
++        split = rng.choice(LEVEL1_SPLITS)
++        g = SAMPLERS[split](2, rng)
++        return Goal(g.features[:1], level=1, scale=g.scale)
++    weights = [TRAIN_WEIGHTS.get(s, 1.0) for s in SPLITS]
++    return SAMPLERS[rng.choices(SPLITS, weights)[0]](level, rng)
+diff --git a/freecad_s1/goals.py b/freecad_s1/goals.py
+index 155e33a..6ef21f2 100644
+--- a/freecad_s1/goals.py
++++ b/freecad_s1/goals.py
+@@ -260,7 +260,7 @@ def heldout_composition(goal: Goal) -> str | None:
+     return None
+ 
+ 
+-SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext", "datum_z", "overhang")  # side .. overhang: taiga-expanded
++SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext", "datum_z", "overhang", "turned", "mixed")  # side .. mixed: taiga-expanded
+ 
+ 
+ def goal_in_split(goal: Goal, split: str) -> bool:
+@@ -318,7 +318,7 @@ def sample_split_goal(split: str, level: int, rng: random.Random, tries: int = 2
+     if not _sized and sizes.applies(split):  # taiga-expanded: goals at other sizes
+         return sizes.sample(split, level, rng, lambda s: sample_split_goal(s, level, rng, tries, _sized=True))
+ 
+-    if split in ext.SPLITS or (split == "train" and level >= 2 and ext.use_expanded_for_train(rng)):
++    if split in ext.SPLITS or (split == "train" and ext.use_expanded_for_train(rng, level)):
+         for _ in range(tries):  # never a composition upstream holds out for its comp suites
+             goal = ext.sample_split(split, level, rng) if split in ext.SPLITS else ext.sample_train(level, rng)
+             if heldout_composition(goal) is None:
+diff --git a/tests/test_ext_datum_overhang.py b/tests/test_ext_datum_overhang.py
+index f255354..0e18c18 100644
+--- a/tests/test_ext_datum_overhang.py
++++ b/tests/test_ext_datum_overhang.py
+@@ -9,7 +9,7 @@ from freecad_s1.schema import Goal
+ 
+ 
+ def test_new_splits_and_suites():
+-    assert sampler.SPLITS[-2:] == ("datum_z", "overhang")
++    assert sampler.SPLITS[6:8] == ("datum_z", "overhang")
+     assert SUITES["datum_z"] == [(3, "datum_z")] and SUITES["overhang"] == [(3, "overhang")]
+ 
+ 
+diff --git a/tests/test_ext_mixed.py b/tests/test_ext_mixed.py
+new file mode 100644
+index 0000000..80c0b5f
+--- /dev/null
++++ b/tests/test_ext_mixed.py
+@@ -0,0 +1,119 @@
++"""taiga-expanded: turned hubs with outline features on the end face, mixed-family goals,
++revolve profiles away from the origin, level-1 expanded bases (patch 0010)."""
++import json
++import math
++import random
++
++from freecad_s1.expert import Meta, ObjMeta, expert_actions
++from freecad_s1.ext import faces, mixed, profiles as pr, revolve as rv, sampler
++from freecad_s1.goals import RECIPES, SPLITS, heldout_composition, sample_split_goal
++from freecad_s1.schema import Goal
++
++
++def _lathe(base):
++    """(along-axis, radius) points of a revolve feature's outline."""
++    axis = rv.axis_index(base)
++    ua, _ = faces.inplane_axes(rv.plane_for_axis(axis))
++    return axis, [(p[0], p[1]) if ua == axis else (p[1], p[0]) for p in pr.polyline(base.params["outline"])]
++
++
++def test_new_splits_are_registered():
++    assert sampler.SPLITS[-2:] == ("turned", "mixed")
++    assert {"turned", "mixed"} <= set(SPLITS)
++
++
++def test_blade_is_a_closed_curved_strip_inside_its_radii():
++    o = mixed.blade(10.0, 30.0, 0.3, 0.9, 3.0)
++    assert pr.is_closed(o)
++    assert [s[0] for s in o["segs"]] == ["S", "L", "S", "L"]
++    radii = [math.hypot(*p) for p in pr.polyline(o)]
++    assert 9.0 < min(radii) and max(radii) < 31.0
++    assert pr.area(o) > 0.5 * 3.0 * 20.0  # roughly thickness x length
++
++
++def test_turned_goals_put_the_outline_on_the_hub_end_face_and_pattern_about_the_axis():
++    rng = random.Random(1)
++    shifted = 0
++    for _ in range(300):
++        g = mixed.sample_turned_goal(3, rng)
++        base, f, pat = g.features[:3]
++        axis, ar = _lathe(base)
++        assert base.kind == "profile_revolve" and f.kind in ("profile_boss", "profile_pocket")
++        assert pat.kind == "polar_pattern" and rv.axis_index(pat) == axis
++        a_end, r_hub = max(a for a, _ in ar), max(r for _, r in ar)
++        shifted += abs(min(a for a, _ in ar)) > 1e-6
++        assert max(math.hypot(*p) for p in pr.polyline(f.params["outline"])) < r_hub
++        if axis == 2:
++            assert not faces.has_normal(f)  # the top face
++        else:
++            assert faces.normal(f) == (axis, 1.0) and f.params["xyz"[axis]] == round(a_end, 1)
++            assert faces.support_for(f, RECIPES[f.kind]) == f"Face+{'XY'[axis]}"
++        assert heldout_composition(g) is None
++    assert 40 < shifted < 160  # about 30 % away from the origin
++
++
++def test_revolve_goals_are_often_away_from_the_origin():
++    rng = random.Random(2)
++    n = 0
++    for _ in range(400):
++        g = sampler.sample_revolve_goal(3, rng)
++        _, ar = _lathe(g.features[0])
++        n += abs(min(a for a, _ in ar)) > 0.25 * g.scale
++    assert 80 < n < 200
++
++
++def test_mixed_goals_are_long_varied_and_never_held_out():
++    rng = random.Random(3)
++    lengths, kinds = [], set()
++    for _ in range(400):
++        g = sample_split_goal("mixed", 3, rng)
++        assert heldout_composition(g) is None
++        assert "boss_box" not in [f.kind for f in g.features]
++        lengths.append(len(g.features))
++        kinds |= {f.kind for f in g.features}
++        for a, b in zip(g.features, g.features[1:]):  # a pattern / mirror copies the feature just before it
++            if b.kind in ("linear_pattern", "mirror", "polar_pattern"):
++                assert a.kind not in ("linear_pattern", "mirror", "polar_pattern", "base_box")
++    assert min(lengths) >= 3 and max(lengths) >= 10 and sum(x >= 6 for x in lengths) > 150
++    assert {"profile_boss", "profile_pocket", "hole_std", "linear_pattern", "mirror"} <= kinds
++    long_ = [len(sample_split_goal("mixed", 4, rng).features) for _ in range(200)]
++    assert min(long_) >= 6 and sum(x >= 9 for x in long_) > 100
++
++
++def test_mixed_side_features_use_distinct_faces():
++    rng = random.Random(4)
++    for _ in range(300):
++        g = sampler.sample_split("mixed", 3, rng)
++        side = [faces.face_arg(f) for f in g.features[1:] if faces.has_normal(f) and not faces.is_datum(f)]
++        assert len(set(side)) == len(side)
++
++
++def test_level1_training_goals_include_lone_expanded_bases():
++    rng = random.Random(5)
++    goals = [sample_split_goal("train", 1, rng) for _ in range(2000)]
++    assert all(len(g.features) == 1 for g in goals)
++    names = [g.features[0].kind for g in goals]
++    assert names.count("profile_revolve") > 60 and names.count("profile_base") > 10
++    assert names.count("base_box") > 300  # upstream's level-1 bases stay most of level 1
++
++
++def test_expert_starts_an_end_face_feature_on_the_end_face():
++    rng = random.Random(7)
++    g = mixed.sample_turned_goal(2, rng)
++    while rv.axis_index(g.features[0]) == 2:
++        g = mixed.sample_turned_goal(2, rng)
++    meta = Meta(doc_open=True, workbench="PartDesignWorkbench", body="Body")
++    meta.objects["Body"] = ObjMeta("Body", "body")
++    meta.objects["Revolution"] = ObjMeta("Revolution", "feature", goal_ref=0)
++    axis = rv.axis_index(g.features[0])
++    assert expert_actions(Goal(g.features[:2], level=2, scale=g.scale), meta) == [f"Select:Face+{'XY'[axis]}"]
++
++
++def test_goal_file_cli(tmp_path):
++    out = tmp_path / "g.json"
++    mixed.main(["--split", "mixed", "--level", "3", "--n", "5", "--out", str(out)])
++    goals = json.loads(out.read_text())
++    assert len(goals) == 5
++    for spec in goals.values():
++        g = Goal.from_json(spec)
++        assert g.features[0].kind == "base_box" and g.scale > 0

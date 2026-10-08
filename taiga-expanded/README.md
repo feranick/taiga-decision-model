@@ -14,6 +14,7 @@ Extends Taiga-S1's vocabulary so it can build real parts like the Victor S 80 pu
 | 5b | **Fillets and chamfers on chosen edges** (`fillet_edges`, `chamfer_edges`): the edge loop of a face with any normal, or all edges along X, Y or Z; **features on a chosen face** (point `at`), e.g. a hole or hub on top of a boss, a chamfer on a shoulder; new suite `edges` | Patch 0006. All 67 tests pass, including FreeCAD (DGX, FreeCAD 1.1.3, 2026-10-05) |
 | 6 | **Training options**: size test suites `large` and `large_ext` (goals ×4, up to ~360 mm) and optional size augmentation (`TAIGA_SIZE_AUG`); perturbed DAgger (`DAGGER_PERTURB`) in the training scripts; data and experiment names follow these settings | Patch 0007 + training scripts. All 71 tests pass, including FreeCAD builds of the ×4 goals (DGX, FreeCAD 1.1.3, 2026-10-05) |
 | 7 | **Training coverage found with the S 80**: features on XY datum planes (closed cavities, slots through two sides, plates through the part, foot plates, keyways and webs on turned parts) and features wider than the face they stand on (caps over plugs, cover plates over spigots, flaps, flanges on necks); new suites `datum_z` and `overhang` | Patch 0009. Pure-Python tests pass; FreeCAD tests run during `setup` |
+| 8 | **Toward production goals** (phase 1 of `../docs/README_production_plan.md`): turned hubs with outline features (curved blades, slots) on the end face, polar about the axis; mixed-family goals of 3–11 intents (14 in the `mixed_long` suite); revolve profiles away from the origin; lone expanded bases at level 1; new suites `turned`, `mixed`, `mixed_long` | Patch 0010. 81 pure-Python tests pass (2026-10-08); FreeCAD tests and a teacher check of sampled goals run on the machines (below) |
 
 Out of scope for now (Phase 2): sweep, loft, helix, multi-body parts, assemblies.
 
@@ -178,6 +179,29 @@ Both mix into training like the other families and have their own level-3 suites
 
 Because these families were added after looking at S 80 failures, the next S 80 score is no longer a fully independent test: after retraining, also check a part the changes were not made for (the engine kit, or a dataset slice).
 
+### Primitive 8: toward production goals (patch 0010)
+
+The S 80 builds with patch 0009 (`eval/README.md`) and the step-3 sweep left three gaps, all addressed in the training goals rather than in the vocabulary:
+
+- **Turned parts with features on the end face.** The impeller (a hub, a spline blade on its face, a polar pattern about the shaft) was a combination no family produced. `turned`: a hub turned about X, Y or Z, optionally bored, with a curved blade, a curved slot or another outline off the axis on its end face (boss or pocket), polar-patterned about the axis; optionally an axial bore or a bolt circle.
+- **Position along the axis.** The bearings (one revolve 211–228 mm down the shaft) failed on 2 of 5 seeds; every revolve in training started at the origin. Now 35 % of `revolve` profiles and 30 % of `turned` hubs sit 0.3–3 × their scale away from the origin along the axis.
+- **Length and composition together.** `mixed`: a box base with several feature groups from different families on different regions of the part (top features, rows and mirrors on the top; side-face features, rows, windows and mirrors to the opposite face; cross bores), 3–11 intents at level 3 and 8–14 at level 4 (suite `mixed_long`, longer than anything in training). It patterns and mirrors outline bosses and pockets, pins, plain and standard holes, but never a held-out pair. Training draws `mixed` 3 × as often as each other expanded split.
+- **Stopping after an expanded base.** Expanded goals used to enter training only from level 2, so a lone outline base or revolve never ended a goal. Level 1 now draws such lone bases for half the expanded fraction.
+
+`python -m freecad_s1.ext.mixed --split mixed --level 3 --n 200 --out mixed_goals.json` writes sampled goals for a teacher check (`build/taiga_build_part.py --goals mixed_goals.json --check`), which should be run before training: the pure-Python tests check the geometry of the goals (outlines closed and inside their face, distinct side faces, no held-out pairs), but only FreeCAD shows whether every goal builds. Goals the teacher cannot build are skipped during data generation, so a small share only costs time.
+
+Unchanged: the original suites, and the suites of patches 0001–0009 except `revolve` (now with off-origin profiles) and `large_ext` (which also draws from the new families).
+
+**Model limits found on the way** (upstream featurization, `freecad_s1/model/featurize.py`). `ord_table` (12) and `pos_table` (48) are only the ranges simulated during training; with `index_eval: identity` the model reads ordinals up to `MAX_ORD` (32) and positions up to `MAX_POS` (128). The hard limits are elsewhere:
+
+| Limit | Value | Effect on long parts |
+|---|---|---|
+| `MAX_NODES` | 40 | Only the **first** 40 objects of the feature tree are encoded (Body, then a sketch and a feature per intent). From about 19 sketch-based features on, the newest objects, the ones the model is working on, are invisible. The casing core (24) and casing (52) are past it; the bearing bracket (13) is not |
+| `MAX_GOAL` | 24 | Only the first 24 intents of a goal are encoded; the casing's last 28 are never seen |
+| `MAX_ORD` | 32 | Goal intents and tree objects past ordinal 31 share one ordinal |
+
+Patch 0010 stays within these (at most 14 intents). Phase 2 needs a patch that raises them as model-config options, so that existing checkpoints keep loading with the old values, and keeps the newest tree objects when the tree is longer than the table.
+
 ### Training plan
 
 The suites (`iid`, `comp*`, `len*` and the ones added here) are explained in [`../training/README_training.md`, Evaluation suites](../training/README_training.md#evaluation-suites).
@@ -303,6 +327,6 @@ Typical order: S 80 `check → teacher → eval` (vocabulary), then `models → 
 
 | File | Version |
 |---|---|
-| `train_expanded.sh` | 2026.10.06.1 |
+| `train_expanded.sh` | 2026.10.08.1 |
 | `dev/*.sh` | 2026.10.05.1 (`export_patches.sh` 2026.10.05.2) |
-| `patches/` | 0001 (features on any planar face), 0002 (features on origin planes with an offset), 0003 (curved outlines), 0004 (revolve and groove with a profile), 0005 (patterns and mirrors about any axis, wider goal rows), 0006 (fillets and chamfers on chosen edges, features on a chosen face), 0007 (goals at other sizes), 0008 (enough steps for the target build of long goals), 0009 (XY datum planes and overhanging features in training), against upstream `4a31bcf` |
+| `patches/` | 0001 (features on any planar face), 0002 (features on origin planes with an offset), 0003 (curved outlines), 0004 (revolve and groove with a profile), 0005 (patterns and mirrors about any axis, wider goal rows), 0006 (fillets and chamfers on chosen edges, features on a chosen face), 0007 (goals at other sizes), 0008 (enough steps for the target build of long goals), 0009 (XY datum planes and overhanging features in training), 0010 (turned hubs with end-face outlines, mixed-family and longer goals, revolves off the origin), against upstream `4a31bcf` |

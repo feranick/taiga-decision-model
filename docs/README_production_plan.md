@@ -72,7 +72,7 @@ The router is a small script, `taiga_route.py`, to be written once there are two
 
 ### 4.1 Long goals (largest item)
 
-- **Check the architecture first.** The model config has `ord_table: 12` and `pos_table: 48`. If either indexes a feature's position in the goal, goals past 12 features cannot be represented, whatever the data. If so, change it in a patch (relative positions, or a pointer to the next unfinished feature) and retrain from scratch.
+- **Raise the model's hard limits first** (checked 2026-10-08, `../taiga-expanded/README.md`, primitive 8). `ord_table: 12` and `pos_table: 48` are not limits: they are the ranges simulated in training, and at run time the model reads ordinals up to 32 and positions up to 128. The real limits are in the featurization: only the first 40 tree objects (`MAX_NODES`, reached at about 19 sketch-based features, after which the newest objects are dropped) and the first 24 goal intents (`MAX_GOAL`) are encoded, and ordinals stop at 31 (`MAX_ORD`). A patch makes them model-config options (old checkpoints keep the old values), keeps the newest tree objects when the tree is longer, and the long-goal model is trained from scratch with larger tables.
 - **Curriculum.** Goal lengths 5 → 10 → 20 → 50 features, with the long end built by chaining families (a body, then several feature groups, then patterns and dressups).
 - **Mid-part start states.** The teacher builds the first k features of a long goal, the document is saved, and episodes start from it. The model learns the late steps of long parts without paying for the whole build each time. This matters because FreeCAD steps get slow as the part grows (about 2.5 s per step on the full casing).
 - **Step budget.** Patch 0008 sets it to max(200, 2 × the expert's plan + 10); keep that for long goals.
@@ -141,7 +141,7 @@ Fixed before the production training starts:
 | Phase | Content | Done when |
 |---|---|---|
 | 0 | Convert a few dozen production parts with the teacher | The list of missing vocabulary and the real length distribution are known |
-| 1 | Next patch: off-axis revolves, spline bosses, goals up to 10–12 features, mixed-family goals, wider pattern/mirror coverage; check `ord_table`/`pos_table` | Bearings and impeller build without the guard; comp back to 1.00 at the large budget; len6 ≥ the baseline's 0.89 |
+| 1 | Next patch: off-axis revolves, spline bosses, goals up to 10–12 features, mixed-family goals, wider pattern/mirror coverage; (done in patch 0010; the `ord_table`/`pos_table` check found the real limits elsewhere) | Bearings and impeller build without the guard; comp back to 1.00 at the large budget; len6 ≥ the baseline's 0.89 |
 | 2 | Architecture change if needed; mid-part start states; curriculum to 20–50 features | The bearing bracket and casing core build on most seeds |
 | 3 | DeepCAD train-split family; own parts as a family and as a test set | DeepCAD test split by length bucket at or near the teacher's verified share |
 | 4 | Scale data and model; fix the gates | Gates met on all frozen test sets, 5 seeds |
