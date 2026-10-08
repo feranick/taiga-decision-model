@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.08.3
+Version: 2026.10.08.4
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -190,6 +190,9 @@ def main() -> None:
     ap.add_argument("--teacher", action="store_true", help="build with the scripted teacher instead of a model")
     ap.add_argument("--no-loop-guard", action="store_true",
                     help="don't skip actions the model already took in the same state (see Loop guard above)")
+    ap.add_argument("--device", default="cpu", help="where the model runs: cpu (default) or cuda")
+    ap.add_argument("--threads", type=int, default=1,
+                    help="CPU threads for the model (default 1, fastest for the 1.2M model; 0: PyTorch's default)")
     ap.add_argument("--guard-redos", type=int, default=-1,
                     help="how often per part the guard may redo a step the model undid; -1 (default): no limit "
                          "(see Loop guard above)")
@@ -201,7 +204,11 @@ def main() -> None:
     if goals_path is None:
         sys.exit(f"error: goals file not found: {args.goals}\n  looked in {Path.cwd()} and {REPO_ROOT}")
     goals = json.loads(goals_path.read_text())
-    policy = None if (args.check or args.teacher) else Policy(load_model(args.model), "cpu")
+    if args.threads > 0:
+        import torch
+
+        torch.set_num_threads(args.threads)
+    policy = None if (args.check or args.teacher) else Policy(load_model(args.model), args.device)
     if args.name and args.name not in goals:
         sys.exit(f"error: no goal named '{args.name}' in {goals_path}; available: {', '.join(goals)}")
     names = [args.name] if args.name else list(goals)

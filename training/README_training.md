@@ -458,7 +458,17 @@ cd ~/taiga-expanded/taiga-s1
 | 54M | 22.8 | 9.2 | 30.9 | 12.2 | 3.6 | 0.7–1.0 |
 | 121M | 42.6 | 9.1 | 47.7 | 12.3 | 5.6 | 1.3–1.5 |
 
-The Spark's GPU is the fastest by far (a 121M model in 5.6 ms). Its CPU numbers (62 ms for the 1.2M model, 242 ms for 121M) are left out: the benchmark ran while the DeepCAD model builds were using the Spark's CPU, so they measure contention, not the CPU. Rerun with the machine idle (and `--threads 1 4 8`) before relying on CPU inference there; `build/taiga_build_part.py` runs the model on the CPU.
+The Spark's GPU is the fastest by far (a 121M model in 5.6 ms). Its CPU is the slowest, and more threads make the small model slower (idle Spark2, `--threads 1 4 8`, 20 intents, one decision):
+
+| Size | Spark CPU ×1 | ×4 | ×8 | Spark GPU |
+|---|---|---|---|---|
+| 1.2M | **4.5** | 26.3 | 19.9 | 1.7 |
+| 7M | **22.5** | 39.5 | 30.3 | 2.0 |
+| 22M | 63.9 | 58.3 | **45.1** | 2.4 |
+| 54M | 90.5 | 87.2 | **69.3** | 3.6 |
+| 121M | 126.2 | 104.0 | **88.3** | 5.5 |
+
+PyTorch uses all 20 cores by default, which for the 1.2M model costs up to 60 ms per decision instead of 4.5 (the first Spark run, ×20 with the CPU also busy; the DeepCAD builds on Spark1 logged 20–35 ms per decision). `build/taiga_build_part.py` 2026.10.08.4 therefore runs the model on one CPU thread by default (`--threads`) and can run it on the GPU (`--device cuda`); for a larger model on the Spark, use the GPU.
 
 - **Decision time does not limit the model size.** On a GPU even the 121M model decides in about 12 ms, less than a typical FreeCAD step; on a CPU, models up to 22M stay under 20 ms. Batched scoring (DAgger, evaluation) stays under 1.5 ms per state at every size.
 - **What limits the size is training:** data and training time grow with it, so the long-goal model's size is set by a data-scaling run (`../docs/README_production_plan.md`, section 5), not by speed.

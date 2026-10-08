@@ -1,6 +1,6 @@
 taiga_bench_size.py 2026.10.06.1 on spark-5da5 (Spark1, NVIDIA DGX Spark), 2026-10-08
 NOTE: run while the DeepCAD model builds were using the CPU; the CPU timings measure contention,
-not the CPU. GPU timings are usable. Rerun idle with --threads 1 4 8 for CPU numbers.
+not the CPU. GPU timings are usable. Idle CPU numbers: bench_size_spark2_threads_2026-10-08.txt.
 torch 2.14.1+cu130, CPU threads available 20, GPU NVIDIA GB10
 size           params intents tokens     device 1 state (ms)  16 states (ms) per state (ms)
 1.2M             1.2M       5     21    cpu x20         32.3           106.7           6.67
