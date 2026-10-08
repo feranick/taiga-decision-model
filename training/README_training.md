@@ -296,33 +296,33 @@ cd ~/taiga/taiga-s1
 
 How to read the outcome: if the spread with fixed data (`data2`) is about as large as the baseline, it comes from optimization, and more epochs or a different schedule are the levers to try. If fixed data removes most of it, the training sample matters, and more data (`DATA_SCALE`) should narrow it. The goal is a mean that rises while the spread shrinks; a higher best run alone is not.
 
-### Results so far (original model, `a6e81d3`, 2026-10-06)
+### Results (original model, `a6e81d3`, 2026-10-04 to 2026-10-08)
 
-Clean success, mean ± sd over 5 seeds; fixed data (`DATA_SEED=2`) unless "fresh data". Quadro with 4 DAgger rounds: 2 of 5 seeds so far.
+Clean success, mean ± sd over 5 seeds; fixed data (`DATA_SEED=2`) unless "fresh data".
 
 | Suite | Machine | Fresh data | Fixed data | 8 epochs | 2× data | 4 DAgger rounds |
 |---|---|---|---|---|---|---|
 | comp-L3 | 5060 Ti | 0.83 ± 0.24 | 0.76 ± 0.26 | 0.61 ± 0.18 | 0.45 ± 0.03 | 0.54 ± 0.13 |
 | | Spark1 (DGX) | 0.71 ± 0.27 | 0.70 ± 0.27 | 0.48 ± 0.01 | 0.45 ± 0.03 | 0.59 ± 0.23 |
-| | Quadro | 0.87 ± 0.20 | 0.69 ± 0.25 | 0.48 ± 0.02 | 0.55 ± 0.23 | 0.90, 0.49 |
-| comp3-L3 | 5060 Ti / Spark1 / Quadro | 0.97 / 1.00 / 0.96 | 0.99 / 0.87 / 0.99 | 0.94 / 0.81 / 0.77 | 0.46 / 0.52 / 0.73 | 0.87 / 0.84 / 0.96 |
+| | Quadro | 0.87 ± 0.20 | 0.69 ± 0.25 | 0.48 ± 0.02 | 0.55 ± 0.23 | 0.72 ± 0.22 |
+| comp3-L3 | 5060 Ti / Spark1 / Quadro | 0.97 / 1.00 / 0.96 | 0.99 / 0.87 / 0.99 | 0.94 / 0.81 / 0.77 | 0.46 / 0.52 / 0.73 | 0.87 / 0.84 / 0.82 |
 | len6-L9 (9 intents) | 5060 Ti | 0.52 ± 0.31 | 0.53 ± 0.35 | 0.93 ± 0.07 | 0.92 ± 0.05 | 0.75 ± 0.13 |
 | | Spark1 (DGX) | 0.68 ± 0.25 | 0.41 ± 0.25 | 0.93 ± 0.14 | 0.81 ± 0.35 | 0.66 ± 0.31 |
-| | Quadro | 0.72 ± 0.29 | 0.45 ± 0.26 | 0.94 ± 0.05 | 0.69 ± 0.07 | 0.78, 0.88 |
+| | Quadro | 0.72 ± 0.29 | 0.45 ± 0.26 | 0.94 ± 0.05 | 0.69 ± 0.07 | 0.65 ± 0.22 |
 | last-epoch NLL drop | all | 9–11 % | 12–19 % | 3–6 % | 12 % | 8–15 % |
 
 What it shows, the same on all three machines:
 
 - **The spread at the default budget is under-training.** At 4 epochs the loss is still falling (12–19 % in the last epoch), and the long-goal suites swing from seed to seed (len6 from 0.16 to 0.92 on one machine). With 8 epochs the loss has settled (3–6 %), len6 rises to about 0.93 and its spread drops to 0.05–0.14. 2× data does about the same for length.
 - **Held-out compositions get worse with more training, and stop varying.** comp-L3 is bimodal at 4 epochs: each seed scores either about 0.49 (one of the suite's two held-out compositions always fails) or 1.00. More epochs or more data push every seed to about 0.48 (sd 0.01–0.03); comp3 drops too. The occasional compositional generalization at the default budget is a side effect of stopping early, not something training reliably produces. Picking the seed that happened to get 1.00 would hide exactly this.
-- **More DAgger rounds sit in between.** 4 rounds instead of 2 lift len6 (0.41–0.53 → 0.66–0.75) but less than 8 epochs, with the loss still falling (8–15 %) and the spread still large on Spark1 (one seed at 0.15); composition starts to slip as with the other budgets (comp-L3 0.54–0.59, comp3 0.84–0.87). Extra DAgger is extra training on the model's own states, so it follows the same trade-off; 8 epochs is the cheaper way to get length.
-- **So budget fixes length but not composition.** That needs the data: the taiga-expanded model, whose new families include patterns and mirrors of many feature types (never the held-out pairs), scores 1.00 ± 0.00 on comp, comp2 and comp3 at 4 epochs. It keeps 1.00 on all three at 8 epochs, on every seed (`../taiga-expanded/README.md`, step 2).
+- **More DAgger rounds sit in between.** 4 rounds instead of 2 lift len6 (0.41–0.53 → 0.65–0.75) but less than 8 epochs, with the loss still falling (8–15 %) and the spread still large (single seeds at 0.15 on Spark1 and 0.36 on the Quadro); composition starts to slip as with the other budgets (comp-L3 0.54–0.72, comp3 0.82–0.87). Extra DAgger is extra training on the model's own states, so it follows the same trade-off; 8 epochs is the cheaper way to get length.
+- **So budget fixes length but not composition.** That needs the data: the taiga-expanded model, whose new families include patterns and mirrors of many feature types (never the held-out pairs), scores 1.00 ± 0.00 on comp, comp2 and comp3 at 4 epochs, and keeps 1.00 at 8 epochs or at 2× data (`../taiga-expanded/README.md`, step 2). With both together (2× data and 8 epochs, step 3) comp falls to 0.53, like the original: more diverse data delays the over-specialization but does not prevent it, so the data needs to be more diverse still (patch 0010) and comp checked at every budget.
 
 **In plain terms.** The more the model trains on the same examples, the better it does what it practised, and the more it sticks to exactly what it saw.
 
 - *Length improves* because it is a skill still being learned: building a long part is bookkeeping (what is done, what comes next), every example practises it, and at the default budget the model had not finished learning it. More training makes it better and the same on every seed.
 - *Composition degrades* because the model learns the rules of its data too well. In training a `boss_box` is never patterned; early on the model has not noticed that and sometimes handles the new pair by treating features generally (the lucky 1.00 seeds). Trained longer, it learns "patterns never go with boxes", and every seed makes the same mistake (0.48). Like a student who drills only the practice problems: faster on those, but thrown by familiar pieces mixed in a new way.
-- *The cure is better examples, not less training.* The expanded model practised patterns and mirrors of many feature types (never the held-out pairs), so it learned the general rule, "a pattern works on any feature", and keeps 1.00 on composition when trained longer.
+- *The cure is better examples, not less training.* The expanded model practised patterns and mirrors of many feature types (never the held-out pairs), so it learned the general rule, "a pattern works on any feature", and keeps 1.00 on composition when trained longer, up to a point: trained longer *and* on more of the same, it learns the exceptions again. The examples have to stay more varied than the training is long.
 
 **Determinism check** (5060 Ti, 2026-10-07). Three pairs of runs with the same seed (2) and the same training data (`gen_train_seed2`):
 
@@ -336,6 +336,16 @@ What it shows, the same on all three machines:
 - **Deterministic mode reproduces the run exactly.** `det_a` and `det_b` print the same loss and accuracy at every logged step (SFT and both DAgger rounds), and give the same clean results on every suite. The perturbed evaluation has the same outcomes too; one `mean_iou` differs (0.9922 vs 0.9827, len-L4), which is the IoU of the same wrong builds measured slightly differently, not a different model.
 - **Without it, the GPU alone reproduces the seed-to-seed spread.** The two non-deterministic runs start identically (same loss at step 200) and have drifted apart by step 2000. They end 0.17 apart on len6 and 0.09 on comp3, as far apart as different seeds. Training is sensitive enough that any tiny difference (seed, GPU rounding, operation order) sends it to a different model.
 - **What this means for the spread.** It is not caused by a seed or a machine: those only choose which of the possible models comes out. The spread is what the training budget and data allow, which is why it shrinks only when the cause is addressed (more epochs for length, more diverse data for composition) and why picking the best seed would not carry over to a retrain. Use `DETERMINISTIC=1` to compare settings one change at a time (it costs about nothing here: 788 s vs 857 s of training); use several seeds to state a result.
+
+### Conclusions of the variance study
+
+Three machines (5060 Ti, Spark1, Quadro), five seeds per setting, fixed and fresh data, three larger budgets, and a determinism check; the study is complete.
+
+1. **The machine does not matter.** The same setting gives the same mean and spread on all three machines within their seed-to-seed spread; there is no GPU or platform effect to correct for.
+2. **The seed does not cause the spread; it only picks one of the possible models.** With the same seed and data, GPU nondeterminism alone moves a run as far as a different seed does, and deterministic mode makes runs bit-identical. Picking the best seed would not survive a retrain.
+3. **Most of the spread is under-training.** At the default budget (4 epochs, 2 DAgger rounds) the loss is still falling and long goals swing from 0.16 to 0.92 between seeds. 8 epochs settles the loss and brings len6 to about 0.93 with sd 0.05–0.14 on every machine; 2× data does about the same; 4 DAgger rounds do less.
+4. **Composition goes the other way.** Every larger budget makes held-out compositions fail more consistently (comp-L3 about 0.48 on every seed); the fix is more varied data, not a smaller budget. Even then, enough training on enough of the same data brings the failure back (expanded model, step 3), so composition has to be checked at every budget.
+5. **How to train and report from here:** 8 epochs (or more data) as the budget for length; varied families for composition; `DETERMINISTIC=1` when comparing two settings; five seeds and mean ± sd when stating a result; perturbed DAgger off (no measurable gain at this budget, `../taiga-expanded/README.md`, training plan step 3).
 
 ### Notes
 
