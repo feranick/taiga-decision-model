@@ -1,0 +1,25 @@
+taiga_bench_size.py 2026.10.06.1 on spark-5da5 (Spark1, NVIDIA DGX Spark), 2026-10-08
+NOTE: run while the DeepCAD model builds were using the CPU; the CPU timings measure contention,
+not the CPU. GPU timings are usable. Rerun idle with --threads 1 4 8 for CPU numbers.
+torch 2.14.1+cu130, CPU threads available 20, GPU NVIDIA GB10
+size           params intents tokens     device 1 state (ms)  16 states (ms) per state (ms)
+1.2M             1.2M       5     21    cpu x20         32.3           106.7           6.67
+1.2M             1.2M       5     21        gpu          1.7             1.6           0.10
+1.2M             1.2M      20     66    cpu x20         62.6           117.2           7.32
+1.2M             1.2M      20     66        gpu          1.6             1.5           0.10
+7M               7.4M       5     21    cpu x20         88.1           148.5           9.28
+7M               7.4M       5     21        gpu          2.0             2.0           0.13
+7M               7.4M      20     66    cpu x20         87.2           175.0          10.94
+7M               7.4M      20     66        gpu          2.0             2.7           0.17
+22M             22.3M       5     21    cpu x20        115.6           228.1          14.25
+22M             22.3M       5     21        gpu          2.5             4.4           0.28
+22M             22.3M      20     66    cpu x20        132.3           281.4          17.59
+22M             22.3M      20     66        gpu          2.5             6.0           0.38
+54M             54.1M       5     21    cpu x20        179.2           354.3          22.14
+54M             54.1M       5     21        gpu          3.3             6.5           0.40
+54M             54.1M      20     66    cpu x20        220.1           459.1          28.70
+54M             54.1M      20     66        gpu          3.6            10.9           0.68
+121M           121.2M       5     21    cpu x20        180.2           466.1          29.13
+121M           121.2M       5     21        gpu          4.7            12.3           0.77
+121M           121.2M      20     66    cpu x20        242.1           616.8          38.55
+121M           121.2M      20     66        gpu          5.6            21.6           1.35

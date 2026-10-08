@@ -1,0 +1,23 @@
+taiga_bench_size.py 2026.10.06.1 on mochi (Dell Precision 7920, Quadro RTX 6000), 2026-10-08
+torch 2.14.1+cu130, CPU threads available 20, GPU Quadro RTX 6000
+size           params intents tokens     device 1 state (ms)  16 states (ms) per state (ms)
+1.2M             1.2M       5     21    cpu x20          5.3            11.4           0.71
+1.2M             1.2M       5     21        gpu          5.9             6.4           0.40
+1.2M             1.2M      20     66    cpu x20          6.3            14.5           0.91
+1.2M             1.2M      20     66        gpu          6.6             6.0           0.38
+7M               7.4M       5     21    cpu x20          9.9            21.0           1.31
+7M               7.4M       5     21        gpu          7.3             7.6           0.48
+7M               7.4M      20     66    cpu x20         11.2            34.2           2.14
+7M               7.4M      20     66        gpu          7.3             7.8           0.49
+22M             22.3M       5     21    cpu x20         13.1            43.0           2.68
+22M             22.3M       5     21        gpu          9.6            10.3           0.64
+22M             22.3M      20     66    cpu x20         19.6            68.1           4.26
+22M             22.3M      20     66        gpu          9.5             9.6           0.60
+54M             54.1M       5     21    cpu x20         26.6           106.3           6.65
+54M             54.1M       5     21        gpu         12.0            12.7           0.79
+54M             54.1M      20     66    cpu x20         30.9           157.2           9.82
+54M             54.1M      20     66        gpu         12.2            15.4           0.96
+121M           121.2M       5     21    cpu x20         43.2           157.1           9.82
+121M           121.2M       5     21        gpu         12.1            13.6           0.85
+121M           121.2M      20     66    cpu x20         47.7           259.5          16.22
+121M           121.2M      20     66        gpu         12.3            23.6           1.48

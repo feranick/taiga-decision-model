@@ -1,0 +1,46 @@
+taiga_bench_size.py 2026.10.06.1 on carbonio (PowerSpec G467, RTX 5060 Ti), 2026-10-08
+torch 2.14.1+cu130, CPU threads available 6, GPU NVIDIA GeForce RTX 5060 Ti
+size           params intents tokens     device 1 state (ms)  16 states (ms) per state (ms)
+1.2M             1.2M       5     21     cpu x6          3.0             6.9           0.43
+1.2M             1.2M       5     21        gpu          4.4             4.6           0.29
+1.2M             1.2M      20     66     cpu x6          3.1            11.0           0.69
+1.2M             1.2M      20     66        gpu          4.6             4.6           0.29
+7M               7.4M       5     21     cpu x6          4.9            20.2           1.26
+7M               7.4M       5     21        gpu          5.5             5.7           0.36
+7M               7.4M      20     66     cpu x6          6.1            40.5           2.53
+7M               7.4M      20     66        gpu          5.6             5.6           0.35
+22M             22.3M       5     21     cpu x6          9.6            45.9           2.87
+22M             22.3M       5     21        gpu          7.2             7.2           0.45
+22M             22.3M      20     66     cpu x6         11.8            93.9           5.87
+22M             22.3M      20     66        gpu          7.1             7.6           0.48
+54M             54.1M       5     21     cpu x6         17.3           110.6           6.91
+54M             54.1M       5     21        gpu          8.9             9.6           0.60
+54M             54.1M      20     66     cpu x6         22.8           209.4          13.09
+54M             54.1M      20     66        gpu          9.2            10.8           0.67
+121M           121.2M       5     21     cpu x6         32.0           196.4          12.27
+121M           121.2M       5     21        gpu          9.3            12.0           0.75
+121M           121.2M      20     66     cpu x6         42.6           404.3          25.27
+121M           121.2M      20     66        gpu          9.1            20.4           1.27
+
+Second run, same machine (agrees within 0.5 ms except 7M/20 GPU, 6.7 vs 5.6):
+size           params intents tokens     device 1 state (ms)  16 states (ms) per state (ms)
+1.2M             1.2M       5     21     cpu x6          3.3             6.8           0.42
+1.2M             1.2M       5     21        gpu          4.3             4.6           0.28
+1.2M             1.2M      20     66     cpu x6          3.0            10.7           0.67
+1.2M             1.2M      20     66        gpu          4.5             4.5           0.28
+7M               7.4M       5     21     cpu x6          4.8            20.6           1.29
+7M               7.4M       5     21        gpu          5.6             5.6           0.35
+7M               7.4M      20     66     cpu x6          6.0            40.5           2.53
+7M               7.4M      20     66        gpu          6.7             7.1           0.45
+22M             22.3M       5     21     cpu x6          9.9            49.6           3.10
+22M             22.3M       5     21        gpu          7.3             6.9           0.43
+22M             22.3M      20     66     cpu x6         11.8            93.6           5.85
+22M             22.3M      20     66        gpu          6.6             6.7           0.42
+54M             54.1M       5     21     cpu x6         18.1           114.2           7.13
+54M             54.1M       5     21        gpu          8.6             8.9           0.56
+54M             54.1M      20     66     cpu x6         22.4           213.1          13.32
+54M             54.1M      20     66        gpu          8.6            10.7           0.67
+121M           121.2M       5     21     cpu x6         33.4           200.8          12.55
+121M           121.2M       5     21        gpu          8.6            12.0           0.75
+121M           121.2M      20     66     cpu x6         42.5           439.8          27.49
+121M           121.2M      20     66        gpu          8.6            20.3           1.27

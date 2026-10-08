@@ -448,6 +448,22 @@ cd ~/taiga-expanded/taiga-s1
 
 "1 state" is an interactive build (one decision at a time); "per state" is the cost when the states of all FreeCAD workers are scored together (DAgger, evaluation). For comparison, one FreeCAD step takes 4–70 ms on small parts and up to 2.5 s on the S 80 casing.
 
+**Results** (2026-10-08; one decision, 20 intents, in ms; the 5060 Ti was run twice and agreed within 0.5 ms). The full outputs (5 and 20 intents, batched timings) are in [`benchmarks/`](benchmarks/):
+
+| Size | 5060 Ti, CPU ×6 | 5060 Ti, GPU | Quadro, CPU ×20 | Quadro RTX 6000, GPU | DGX Spark GB10, GPU | Per state, 16 at once, GPU |
+|---|---|---|---|---|---|---|
+| 1.2M (current) | 3.1 | 4.6 | 6.3 | 6.6 | 1.6 | 0.1–0.4 |
+| 7M | 6.1 | 5.6 | 11.2 | 7.3 | 2.0 | 0.2–0.5 |
+| 22M | 11.8 | 7.1 | 19.6 | 9.5 | 2.5 | 0.4–0.6 |
+| 54M | 22.8 | 9.2 | 30.9 | 12.2 | 3.6 | 0.7–1.0 |
+| 121M | 42.6 | 9.1 | 47.7 | 12.3 | 5.6 | 1.3–1.5 |
+
+The Spark's GPU is the fastest by far (a 121M model in 5.6 ms). Its CPU numbers (62 ms for the 1.2M model, 242 ms for 121M) are left out: the benchmark ran while the DeepCAD model builds were using the Spark's CPU, so they measure contention, not the CPU. Rerun with the machine idle (and `--threads 1 4 8`) before relying on CPU inference there; `build/taiga_build_part.py` runs the model on the CPU.
+
+- **Decision time does not limit the model size.** On a GPU even the 121M model decides in about 12 ms, less than a typical FreeCAD step; on a CPU, models up to 22M stay under 20 ms. Batched scoring (DAgger, evaluation) stays under 1.5 ms per state at every size.
+- **What limits the size is training:** data and training time grow with it, so the long-goal model's size is set by a data-scaling run (`../docs/README_production_plan.md`, section 5), not by speed.
+- On the 5060 Ti and the Quadro the current model is CPU-fastest (for 1.2M the GPU's launch overhead outweighs the work); on the Spark the GPU wins at every size.
+
 ## Versions
 
 Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header and in each run's `manifest.json`.
