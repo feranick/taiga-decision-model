@@ -1,0 +1,675 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Thu, 8 Oct 2026 15:27:13 -0400
+Subject: [PATCH] ext: configurable input limits, bottom-face features,
+ training goals from a goals file
+
+- Model input limits as S1Config options: max_nodes (feature-tree objects encoded, upstream
+  40), max_goal (goal intents, 24), max_ord / max_pos (ordinal and position tables, 32 / 128),
+  newest_nodes (a longer tree keeps the Body and the newest objects instead of the oldest;
+  ordinals are counted over the whole tree). Defaults are upstream's, so existing checkpoints
+  load and featurize exactly as before; non-default limits are featurization options (and
+  part of the data cache name). train_sft: --heads, --max-nodes, --max-goal, --max-ord,
+  --max-pos, --newest-nodes. Token positions and ordinals are int16.
+- Features on the bottom face (Face-Z) in the side and mixed families.
+- ext/goalsfile.py: TAIGA_GOALS_FILE / TAIGA_GOALS_FRACTION draw that share of the training
+  goals from goals files (e.g. verified DeepCAD designs), by length (1 intent: level 1, 2-3:
+  level 2, 4+: level 3, no upper limit); held-out compositions are dropped; evaluation splits
+  are unaffected.
+---
+ freecad_s1/data.py                 |  2 +-
+ freecad_s1/ext/goalsfile.py        | 90 ++++++++++++++++++++++++++++++
+ freecad_s1/ext/mixed.py            | 13 ++++-
+ freecad_s1/ext/sampler.py          | 19 ++++++-
+ freecad_s1/goals.py                |  7 +++
+ freecad_s1/model/featurize.py      | 50 ++++++++++-------
+ freecad_s1/model/net.py            | 29 +++++++---
+ freecad_s1/train_sft.py            | 14 ++++-
+ tests/test_ext_bottom_goalsfile.py | 74 ++++++++++++++++++++++++
+ tests/test_ext_faces.py            |  3 +
+ tests/test_ext_limits.py           | 76 +++++++++++++++++++++++++
+ 11 files changed, 345 insertions(+), 32 deletions(-)
+ create mode 100644 freecad_s1/ext/goalsfile.py
+ create mode 100644 tests/test_ext_bottom_goalsfile.py
+ create mode 100644 tests/test_ext_limits.py
+
+diff --git a/freecad_s1/data.py b/freecad_s1/data.py
+index d099df7..c31fb0b 100644
+--- a/freecad_s1/data.py
++++ b/freecad_s1/data.py
+@@ -90,7 +90,7 @@ def read_records(path: str):
+ 
+ def _load_shard(args: tuple[str, dict]) -> Dataset:
+     path, opts = args
+-    tag = "".join(f".{k}" for k, v in sorted(opts.items()) if v)
++    tag = "".join(f".{k}" if v is True else f".{k}{v}" for k, v in sorted(opts.items()) if v)  # taiga-expanded: values of numeric options
+     cache = Path(path + f".v{CACHE_VERSION}{tag}.pkl")
+     if cache.exists() and cache.stat().st_mtime >= Path(path).stat().st_mtime:
+         with open(cache, "rb") as fh:
+diff --git a/freecad_s1/ext/goalsfile.py b/freecad_s1/ext/goalsfile.py
+new file mode 100644
+index 0000000..ae0260e
+--- /dev/null
++++ b/freecad_s1/ext/goalsfile.py
+@@ -0,0 +1,90 @@
++"""Training goals read from a goals file, e.g. converted real designs (patch 0011).
++
++TAIGA_GOALS_FILE   one or more goals JSON files ({name: goal}, as written by
++                   taiga-expanded/datasets/convert_deepcad.py and its verify stage), separated by ":"
++TAIGA_GOALS_FRACTION  share of the training goals drawn from them (default 0.25), at every level
++
++A file goal enters the level its length belongs to (1 intent: level 1, 2-3: level 2, 4 and more:
++level 3; level 3 has no upper limit, so long real designs reach training). Goals that match a
++held-out composition (goals.heldout_composition) are dropped, so the comp suites stay unseen.
++Evaluation splits are unaffected. The file is read once per process.
++
++Pure stdlib.
++"""
++from __future__ import annotations
++
++import json
++import os
++import random
++
++from ..schema import Goal, GoalFeature
++
++_CACHE: dict[str, dict[int, list[Goal]]] = {}
++
++
++def files() -> list[str]:
++    return [p for p in os.environ.get("TAIGA_GOALS_FILE", "").split(":") if p]
++
++
++def fraction() -> float:
++    return float(os.environ.get("TAIGA_GOALS_FRACTION", "0.25")) if files() else 0.0
++
++
++def level_of(n_features: int) -> int:
++    return 1 if n_features <= 1 else 2 if n_features <= 3 else 3
++
++
++def goal_scale(features: list[GoalFeature]) -> float:
++    """Largest extent of the base feature, as build/taiga_build_part.py computes it for a goal without one."""
++    f = features[0]
++    p = f.params
++    if f.kind in ("base_box",):
++        return max(p["w"], p["d"], p["h"])
++    if f.kind in ("base_cyl", "base_hex"):
++        return max(2 * p["r"], p["h"])
++    if f.kind == "profile_base":
++        if "w" in p and "d" in p:
++            return max(p["w"], p["d"], p["h"])
++        from .profiles import bbox
++
++        _, _, w, d = bbox(p["outline"])
++        return max(w, d, p["h"])
++    from .profiles import bbox  # e.g. profile_revolve: extent of the outline
++
++    _, _, w, d = bbox(p["outline"])
++    return max(w, d)
++
++
++def load(paths: list[str]) -> dict[int, list[Goal]]:
++    from ..goals import heldout_composition
++
++    key = ":".join(paths)
++    if key not in _CACHE:
++        by_level: dict[int, list[Goal]] = {1: [], 2: [], 3: []}
++        for path in paths:
++            with open(path) as fh:
++                specs = json.load(fh)
++            for spec in specs.values():
++                feats = [GoalFeature(f["kind"], f.get("params", {})) for f in spec["features"]]
++                if not feats:
++                    continue
++                lv = level_of(len(feats))
++                g = Goal(feats, level=lv, scale=float(spec.get("scale") or goal_scale(feats)))
++                if heldout_composition(g) is None:
++                    by_level[lv].append(g)
++        _CACHE[key] = by_level
++    return _CACHE[key]
++
++
++def use_for_train(rng: random.Random) -> bool:
++    f = fraction()
++    return f > 0 and rng.random() < f
++
++
++def sample(level: int, rng: random.Random) -> Goal | None:
++    """A file goal of `level` (levels above 3 use level 3), or None if the files have none."""
++    pool = load(files()).get(min(max(level, 1), 3), [])
++    if not pool:
++        return None
++    g = rng.choice(pool)
++    return Goal([GoalFeature(f.kind, dict(f.params)) for f in g.features], level=g.level, scale=g.scale)
+diff --git a/freecad_s1/ext/mixed.py b/freecad_s1/ext/mixed.py
+index 6bb6dfa..ba0bae7 100644
+--- a/freecad_s1/ext/mixed.py
++++ b/freecad_s1/ext/mixed.py
+@@ -10,6 +10,8 @@ mixed:  a box base with several feature groups drawn from different families on
+         break. Level 3 gives 3-11 intents, level >= 4 8-14 (longer than upstream's training
+         maximum of 5).
+ 
++Patch 0011: mixed goals may also carry one group on the bottom face (Face-Z).
++
+ Neither family produces a composition upstream holds out (goals.heldout_composition): no
+ boss_box at all, no mirrored hole_std, no patterned pocket_rect.
+ 
+@@ -21,6 +23,7 @@ import math
+ import random
+ 
+ from ..schema import Goal, GoalFeature
++from .sampler import to_bottom
+ 
+ 
+ def _u(rng: random.Random, lo: float, hi: float) -> float:
+@@ -319,13 +322,14 @@ def sample_mixed_goal(level: int, rng: random.Random) -> Goal:
+         top_regions = [((-w / 2 + 1.5, -1.5), (-d / 2 + 1.5, d / 2 - 1.5)), ((1.5, w / 2 - 1.5), (-d / 2 + 1.5, d / 2 - 1.5))]
+         rng.shuffle(top_regions)
+         faces_free = ["+X", "-X", "+Y", "-Y"]
++        bottom_free = True  # patch 0011: one group on the bottom face (Face-Z)
+         rng.shuffle(faces_free)
+         cross_free = True
+         top, side, cross = [], [], []
+         for _g in range(n_groups * 3):
+             if len(top) + len(side) + len(cross) >= n_groups:
+                 break
+-            where = rng.choice(["top", "top", "side", "side", "cross"])
++            where = rng.choice(["top", "top", "side", "side", "cross", "bottom"])
+             if where == "top" and top_regions:
+                 xr, yr = top_regions.pop()
+                 g = rng.choice([_top_single, _top_row, _top_mirror])(rng, base, xr, yr)
+@@ -339,6 +343,13 @@ def sample_mixed_goal(level: int, rng: random.Random) -> Goal:
+                     for u in used:
+                         faces_free.remove(u)
+                     side.append(g)
++            elif where == "bottom" and bottom_free:
++                bottom_free = False
++                xr, yr = rng.choice([((-w / 2 + 1.5, -1.5), (-d / 2 + 1.5, d / 2 - 1.5)),
++                                     ((1.5, w / 2 - 1.5), (-d / 2 + 1.5, d / 2 - 1.5))])
++                g = rng.choice([_top_single, _top_row, _top_mirror])(rng, base, xr, yr)
++                if g:
++                    side.append([to_bottom(g[0])] + g[1:])
+             elif where == "cross" and cross_free:
+                 cross_free = False
+                 g = _cross_group(rng, base)
+diff --git a/freecad_s1/ext/sampler.py b/freecad_s1/ext/sampler.py
+index 8c30774..ed2ee73 100644
+--- a/freecad_s1/ext/sampler.py
++++ b/freecad_s1/ext/sampler.py
+@@ -71,6 +71,21 @@ def side_feature(rng: random.Random, kind: str, base: GoalFeature, face: str) ->
+     return GoalFeature(kind, params)
+ 
+ 
++def to_bottom(f: GoalFeature) -> GoalFeature:
++    """The same top-face feature on the bottom face (Face-Z) instead (patch 0011): x, y and the
++    outline keep their meaning (the bottom face's in-plane axes are X and Y as on top)."""
++    p = dict(f.params)
++    p.update(nx=0.0, ny=0.0, nz=-1.0, z=0.0)
++    return GoalFeature(f.kind, p)
++
++
++def bottom_feature(rng: random.Random, kind: str, base: GoalFeature) -> GoalFeature:
++    """A hole / hole_std / pocket_rect / boss_cyl / boss_box on the bottom face of a box base."""
++    from ..goals import _on_top
++
++    return to_bottom(_on_top(rng, kind, base))
++
++
+ def sample_side_goal(level: int, rng: random.Random) -> Goal:
+     """Box base, 1-2 side features (optionally a top feature from the original
+     vocabulary, a mirrored side boss or pocket), optional top dressup."""
+@@ -88,9 +103,9 @@ def sample_side_goal(level: int, rng: random.Random) -> Goal:
+         for _ in range(n_side):
+             if len(feats) - 1 >= budget:
+                 break
+-            face = rng.choice(["+X", "-X", "+Y", "-Y"])
++            face = rng.choice(["+X", "-X", "+Y", "-Y", "-Z"])  # -Z: the bottom face (patch 0011)
+             kind = rng.choice(["hole", "hole_std", "pocket_rect", "boss_cyl", "boss_box"])
+-            f = side_feature(rng, kind, base, face)
++            f = bottom_feature(rng, kind, base) if face == "-Z" else side_feature(rng, kind, base, face)
+             if f is None:
+                 continue
+             feats.append(f)
+diff --git a/freecad_s1/goals.py b/freecad_s1/goals.py
+index 6ef21f2..3cbe4ac 100644
+--- a/freecad_s1/goals.py
++++ b/freecad_s1/goals.py
+@@ -318,6 +318,13 @@ def sample_split_goal(split: str, level: int, rng: random.Random, tries: int = 2
+     if not _sized and sizes.applies(split):  # taiga-expanded: goals at other sizes
+         return sizes.sample(split, level, rng, lambda s: sample_split_goal(s, level, rng, tries, _sized=True))
+ 
++    if split == "train":  # taiga-expanded (patch 0011): goals from a goals file (TAIGA_GOALS_FILE)
++        from .ext import goalsfile
++
++        if goalsfile.use_for_train(rng):
++            g = goalsfile.sample(level, rng)
++            if g is not None:
++                return g
+     if split in ext.SPLITS or (split == "train" and ext.use_expanded_for_train(rng, level)):
+         for _ in range(tries):  # never a composition upstream holds out for its comp suites
+             goal = ext.sample_split(split, level, rng) if split in ext.SPLITS else ext.sample_train(level, rng)
+diff --git a/freecad_s1/model/featurize.py b/freecad_s1/model/featurize.py
+index b2902b6..367bc74 100644
+--- a/freecad_s1/model/featurize.py
++++ b/freecad_s1/model/featurize.py
+@@ -78,9 +78,9 @@ class Tokens:
+     seg: np.ndarray  # (L,) int8
+     a: np.ndarray  # (L,) int16  (already offset into A_VOCAB)
+     b: np.ndarray  # (L,) int16
+-    pos: np.ndarray  # (L,) int8
++    pos: np.ndarray  # (L,) int16 (taiga-expanded: int8 limited positions to 127)
+     num: np.ndarray  # (L, NUM_DIM) float16
+-    ord: np.ndarray  # (L,) int8: coupled ordinal, 0 = none (see encode_state)
++    ord: np.ndarray  # (L,) int16: coupled ordinal, 0 = none (see encode_state)
+ 
+ 
+ def _clip(x: float, lim: float = 8.0) -> float:
+@@ -106,7 +106,9 @@ def _pending_feature(state: State) -> int | None:
+ 
+ 
+ def encode_state(state: State, goal: Goal, invariant: bool = False, sentinel: bool = False, ui: bool = False,
+-                 ui_recent: bool = False, ui_pending: bool = False) -> Tokens:
++                 ui_recent: bool = False, ui_pending: bool = False, max_nodes: int = MAX_NODES,
++                 max_goal: int = MAX_GOAL, max_ord: int = MAX_ORD, max_pos: int = MAX_POS,
++                 newest_nodes: bool = False) -> Tokens:
+     """`invariant` (H5): drop numeric features whose magnitude grows with the
+     length of the build (tree size, number of intents, intents remaining) and
+     express face/edge counts relative to the target, so longer goals do not
+@@ -147,28 +149,38 @@ def encode_state(state: State, goal: Goal, invariant: bool = False, sentinel: bo
+     # node the ordinal is 1 + the number of solid features before it, so the
+     # k-th feature and the sketch it consumes line up with intent k. Computed
+     # from observable state only.
+-    node_ords = []
++    # taiga-expanded: the limits (max_nodes, max_goal, max_ord, max_pos) are model options
++    # (S1Config); with newest_nodes, a tree longer than max_nodes keeps its first object (the
++    # Body) and the newest ones, the objects being worked on, instead of the oldest. Ordinals
++    # are counted over the whole tree, so they keep matching the goal's intents.
++    all_ords = []
+     n_solid = 0
+     pending = _pending_feature(state) if ui_pending else None
+-    for j, node in enumerate(state.tree[:MAX_NODES]):
++    for j, node in enumerate(state.tree):
+         if j == pending:  # its task dialog is still open: not built yet, matches no intent
+-            node_ords.append(0)
++            all_ords.append(0)
+         elif node.type in SOLID_FEATURE_TYPES:
+-            node_ords.append(min(n_solid + 1, MAX_ORD - 1))
++            all_ords.append(min(n_solid + 1, max_ord - 1))
+             n_solid += 1
+         elif node.type == "Sketcher::SketchObject":
+-            node_ords.append(min(n_solid + 1, MAX_ORD - 1))
++            all_ords.append(min(n_solid + 1, max_ord - 1))
+         else:
+-            node_ords.append(0)
++            all_ords.append(0)
++    if newest_nodes and len(state.tree) > max_nodes:
++        keep = [0] + list(range(len(state.tree) - (max_nodes - 1), len(state.tree)))
++    else:
++        keep = list(range(min(len(state.tree), max_nodes)))
++    node_ords = [all_ords[i] for i in keep]
+ 
+-    for i, node in enumerate(state.tree[:MAX_NODES]):
++    for i in keep:
++        node = state.tree[i]
+         num = [_clip(node.num.get(k, 0.0) / (scale if k in LENGTH_KEYS else 1.0)) for k in NODE_NUM_KEYS]
+         num += [node.geo.get(k, 0) / 10 for k in GEOMETRY_KINDS]
+         num += [node.cons.get(k, 0) / 10 for k in CONSTRAINT_KINDS]
+         if invariant and "n_faces" in node.num:
+             num[NODE_NUM_KEYS.index("n_faces")] = _clip(node.num["n_faces"] * 50 / max(t.n_faces, 1), 4.0)
+         b = len(NODE_TYPES) + min(node.depth, 3)
+-        rows.append((SEG_NODE, _NODE_TYPE.get(node.type, 0), b, min(i, MAX_POS - 1), num))
++        rows.append((SEG_NODE, _NODE_TYPE.get(node.type, 0), b, min(i, max_pos - 1), num))
+         ords.append(len(rows) - 1)
+ 
+     for i, sel in enumerate(state.selection[:MAX_SEL]):
+@@ -194,7 +206,7 @@ def encode_state(state: State, goal: Goal, invariant: bool = False, sentinel: bo
+     rows.append((SEG_GOAL_GLOBAL, 0, 0, 0, gg))
+     goal_rows: list[int] = []
+ 
+-    for i, f in enumerate(goal.features[:MAX_GOAL]):
++    for i, f in enumerate(goal.features[:max_goal]):
+         num = []
+         for k in GOAL_PARAM_KEYS:
+             v = f.params.get(k)
+@@ -209,23 +221,23 @@ def encode_state(state: State, goal: Goal, invariant: bool = False, sentinel: bo
+         else:
+             num += [i / max(n_goal - 1, 1), float(i == n_goal - 1), 0.0 if invariant else (n_goal - 1 - i) / 10]
+         num += ext_num  # after upstream's block, so original goals featurize exactly as before
+-        rows.append((SEG_GOAL, _GOAL.get(f.kind, 0), 0, min(i, MAX_POS - 1), num))
++        rows.append((SEG_GOAL, _GOAL.get(f.kind, 0), 0, min(i, max_pos - 1), num))
+         goal_rows.append(len(rows) - 1)
+     if sentinel:
+         end_num = [0.0] * (2 * len(GOAL_PARAM_KEYS)) + [1.0, 1.0, 0.0]
+-        rows.append((SEG_GOAL, 0, 0, min(len(goal_rows), MAX_POS - 1), end_num))
++        rows.append((SEG_GOAL, 0, 0, min(len(goal_rows), max_pos - 1), end_num))
+         goal_rows.append(len(rows) - 1)
+ 
+     n = len(rows)
+-    ordinal = np.zeros(n, np.int8)
++    ordinal = np.zeros(n, np.int16)
+     for row, o in zip(ords, node_ords):
+         ordinal[row] = o
+     for k, row in enumerate(goal_rows):
+-        ordinal[row] = min(k + 1, MAX_ORD - 1)
++        ordinal[row] = min(k + 1, max_ord - 1)
+     seg = np.zeros(n, np.int8)
+     a = np.zeros(n, np.int16)
+     b = np.zeros(n, np.int16)
+-    pos = np.zeros(n, np.int8)
++    pos = np.zeros(n, np.int16)
+     num = np.zeros((n, NUM_DIM), np.float16)
+     for j, (s, ai, bi, p, v) in enumerate(rows):
+         seg[j], a[j], b[j], pos[j] = s, A_OFFSETS[s] + ai, bi, p
+@@ -316,10 +328,10 @@ class Example:
+ def make_example(state: State, goal: Goal, actions: list[str], acceptable: list[str] | None = None,
+                  progress: int | None = None, invariant: bool = False, sentinel: bool = False,
+                  ui: bool = False, ui_recent: bool = False, ui_pending: bool = False,
+-                 ui_param: bool = False) -> Example:
++                 ui_param: bool = False, **limits) -> Example:
+     acc = set(acceptable or [])
+     scale = goal.scale if goal.scale > 0 else 1.0
+-    return Example(encode_state(state, goal, invariant, sentinel, ui, ui_recent, ui_pending),
++    return Example(encode_state(state, goal, invariant, sentinel, ui, ui_recent, ui_pending, **limits),
+                    encode_actions(actions, ui, state.ui, scale, ui_param),
+                    np.array([a in acc for a in actions], dtype=bool), -1 if progress is None else int(progress))
+ 
+diff --git a/freecad_s1/model/net.py b/freecad_s1/model/net.py
+index d42500d..2eff3e8 100644
+--- a/freecad_s1/model/net.py
++++ b/freecad_s1/model/net.py
+@@ -25,7 +25,7 @@ from torch import nn
+ from ..actions import ACTION_IDS, CATEGORIES, SCOPES, WORD_VOCAB
+ from ..actions import CATALOGUE
+ from ..schema import NODE_TYPES
+-from .featurize import (A_OFFSETS, A_VOCAB, ACT_VEC_DIM, B_VOCAB, MAX_ORD, MAX_POS, N_SEGMENTS, NUM_DIM, SEG_GOAL,
++from .featurize import (A_OFFSETS, A_VOCAB, ACT_VEC_DIM, B_VOCAB, MAX_GOAL, MAX_NODES, MAX_ORD, MAX_POS, N_SEGMENTS, NUM_DIM, SEG_GOAL,
+                         SEG_NODE, SEG_RECENT, SEG_SEL, UI_ROLES, UI_VEC_DIM, UI_WORD_VOCAB)
+ 
+ # Functional category of each FreeCAD object type, in the action-category vocab.
+@@ -101,6 +101,15 @@ class S1Config:
+     ui_recent_fields: bool = False  # recent dialog edits carry which field they touched
+     ui_pending_feature: bool = False  # a feature whose dialog is open does not count as built (ordinals)
+     ui_param_match: bool = False  # numeric options say whether they hold the parameter stage's value
++    # taiga-expanded: input limits (defaults = upstream's constants, so existing checkpoints load
++    # and featurize exactly as before). max_nodes: feature-tree objects encoded; max_goal: goal
++    # intents encoded; max_ord / max_pos: ordinal and position tables; newest_nodes: when the
++    # tree is longer than max_nodes, keep the Body and the newest objects, not the oldest.
++    max_nodes: int = MAX_NODES
++    max_goal: int = MAX_GOAL
++    max_ord: int = MAX_ORD
++    max_pos: int = MAX_POS
++    newest_nodes: bool = False
+ 
+     def feature_opts(self) -> dict:
+         """Featurization options this model was trained with."""
+@@ -113,6 +122,11 @@ class S1Config:
+             opts["ui_pending"] = True
+         if self.ui_param_match:
+             opts["ui_param"] = True
++        for k, default in (("max_nodes", MAX_NODES), ("max_goal", MAX_GOAL), ("max_ord", MAX_ORD), ("max_pos", MAX_POS)):
++            if getattr(self, k) != default:  # only non-default limits, so caches and old models are unchanged
++                opts[k] = getattr(self, k)
++        if self.newest_nodes:
++            opts["newest_nodes"] = True
+         return opts
+ 
+     @property
+@@ -147,8 +161,8 @@ class StateEncoder(nn.Module):
+         self.a = nn.Embedding(A_VOCAB, d)
+         self.b = nn.Embedding(cfg.b_vocab, d)
+         self.seg = nn.Embedding(N_SEGMENTS, d)
+-        self.pos = nn.Embedding(MAX_POS, d)
+-        self.ord = nn.Embedding(MAX_ORD, d) if cfg.ordinal else None
++        self.pos = nn.Embedding(cfg.max_pos, d)
++        self.ord = nn.Embedding(cfg.max_ord, d) if cfg.ordinal else None
+         if cfg.type_dropout > 0:
+             a_cat, b_cat = category_tables(cfg.b_vocab)
+             self.register_buffer("a_cat", a_cat, persistent=False)
+@@ -172,7 +186,7 @@ class StateEncoder(nn.Module):
+         num = per_seg.gather(2, idx).squeeze(2) + self.num_b[seg]
+         pos = batch["pos"]
+         if self.cfg.pos_mode == "rand":
+-            pos = randomize_index(pos, self.cfg.pos_table, MAX_POS, self.training, eval_mode=self.cfg.index_eval)
++            pos = randomize_index(pos, self.cfg.pos_table, self.cfg.max_pos, self.training, eval_mode=self.cfg.index_eval)
+         a_ids, b_ids = batch["a"], batch["b"]
+         extra = 0
+         if self.cfg.type_dropout > 0:
+@@ -186,7 +200,7 @@ class StateEncoder(nn.Module):
+                 b_ids = torch.where(drop & is_sel, torch.zeros_like(b_ids), b_ids)
+         x = self.a(a_ids) + self.b(b_ids) + self.seg(seg) + self.pos(pos) + num + extra
+         if self.ord is not None:
+-            ordinal = randomize_index(batch["ord"], self.cfg.ord_table, MAX_ORD, self.training, keep_zero=True,
++            ordinal = randomize_index(batch["ord"], self.cfg.ord_table, self.cfg.max_ord, self.training, keep_zero=True,
+                                       eval_mode=self.cfg.index_eval)
+             x = x + self.ord(ordinal)
+         if attn_mask is not None:  # already folds in padding
+@@ -367,8 +381,9 @@ def load_checkpoint(path: str | Path, device: str | torch.device = "cpu") -> S1M
+     model = S1Model(S1Config(**blob["config"]))
+     state = blob["state_dict"]
+     key = "state_encoder.pos.weight"
+-    if key in state and state[key].shape[0] < MAX_POS:  # checkpoints from before the 128-slot table
+-        state[key] = torch.cat([state[key], torch.zeros(MAX_POS - state[key].shape[0], state[key].shape[1])])
++    n_pos = model.cfg.max_pos
++    if key in state and state[key].shape[0] < n_pos:  # checkpoints from before the 128-slot table
++        state[key] = torch.cat([state[key], torch.zeros(n_pos - state[key].shape[0], state[key].shape[1])])
+     model.load_state_dict(state)
+     return model.to(device).eval()
+ 
+diff --git a/freecad_s1/train_sft.py b/freecad_s1/train_sft.py
+index 297bd37..2303755 100644
+--- a/freecad_s1/train_sft.py
++++ b/freecad_s1/train_sft.py
+@@ -88,6 +88,14 @@ def main() -> None:
+     ap.add_argument("--enc-layers", type=int, default=3)
+     ap.add_argument("--dec-layers", type=int, default=2)
+     ap.add_argument("--ff", type=int, default=384)
++    # taiga-expanded: model size (heads) and input limits (S1Config max_* / newest_nodes)
++    ap.add_argument("--heads", type=int, default=4)
++    ap.add_argument("--max-nodes", type=int, default=40, help="feature-tree objects encoded (upstream: 40)")
++    ap.add_argument("--max-goal", type=int, default=24, help="goal intents encoded (upstream: 24)")
++    ap.add_argument("--max-ord", type=int, default=32, help="ordinal table size (upstream: 32)")
++    ap.add_argument("--max-pos", type=int, default=128, help="position table size (upstream: 128)")
++    ap.add_argument("--newest-nodes", action="store_true",
++                    help="trees longer than --max-nodes keep the Body and the newest objects (default: the oldest)")
+     ap.add_argument("--pos-mode", choices=["abs", "rand"], default="abs")
+     ap.add_argument("--ordinal", action="store_true", help="coupled goal/tree ordinals")
+     ap.add_argument("--progress-head", action="store_true", help="progress pointer + active-intent conditioning")
+@@ -135,9 +143,11 @@ def main() -> None:
+     out.mkdir(parents=True, exist_ok=True)
+ 
+     t0 = time.time()
++    limits = dict(max_nodes=args.max_nodes, max_goal=args.max_goal, max_ord=args.max_ord, max_pos=args.max_pos,
++                  newest_nodes=args.newest_nodes)
+     ap_cfg = S1Config(invariant_numerics=args.invariant_numerics, modular=args.modular, ui=args.ui,
+                       ui_recent_fields=args.ui_recent_fields, ui_pending_feature=args.ui_pending_feature,
+-                      ui_param_match=args.ui_param_match)
++                      ui_param_match=args.ui_param_match, **limits)
+     full = load_dataset(args.data, **ap_cfg.feature_opts())
+     train, val = full.split()
+     for path in args.extra_data:
+@@ -154,7 +164,7 @@ def main() -> None:
+                    invariant_numerics=args.invariant_numerics, modular=args.modular, pointer=args.pointer,
+                    index_eval=args.index_eval, type_dropout=args.type_dropout, ui=args.ui,
+                    ui_recent_fields=args.ui_recent_fields, ui_pending_feature=args.ui_pending_feature,
+-                      ui_param_match=args.ui_param_match)
++                      ui_param_match=args.ui_param_match, heads=args.heads, **limits)
+     model = S1Model(cfg)
+     if args.init:
+         state = torch.load(args.init, map_location="cpu", weights_only=True)["state_dict"]
+diff --git a/tests/test_ext_bottom_goalsfile.py b/tests/test_ext_bottom_goalsfile.py
+new file mode 100644
+index 0000000..5b9cff1
+--- /dev/null
++++ b/tests/test_ext_bottom_goalsfile.py
+@@ -0,0 +1,74 @@
++"""taiga-expanded: features on the bottom face, and training goals from a goals file (patch 0011)."""
++import json
++import random
++
++from freecad_s1.expert import Meta, ObjMeta, expert_actions
++from freecad_s1.ext import faces, goalsfile, sampler
++from freecad_s1.goals import RECIPES, heldout_composition, sample_split_goal
++from freecad_s1.schema import Goal, GoalFeature
++
++
++def test_bottom_features_go_on_face_minus_z():
++    rng = random.Random(1)
++    base = sampler._side_base(rng)
++    for kind in ("hole", "hole_std", "pocket_rect", "boss_cyl", "boss_box"):
++        f = sampler.bottom_feature(rng, kind, base)
++        assert faces.normal(f) == (2, -1.0) and f.params["z"] == 0.0
++        assert faces.support_for(f, RECIPES[kind]) == "Face-Z"
++        assert abs(f.params["x"]) < base.params["w"] / 2 and abs(f.params["y"]) < base.params["d"] / 2
++    meta = Meta(doc_open=True, workbench="PartDesignWorkbench", body="Body")
++    meta.objects["Body"] = ObjMeta("Body", "body")
++    meta.objects["Pad"] = ObjMeta("Pad", "feature", goal_ref=0)
++    hole = sampler.bottom_feature(rng, "hole", base)
++    assert expert_actions(Goal([base, hole], level=2, scale=40), meta) == ["Select:Face-Z"]
++
++
++def test_side_and_mixed_goals_now_use_the_bottom_face():
++    rng = random.Random(2)
++    for split, at_least in (("side", 60), ("mixed", 150)):
++        n = 0
++        for _ in range(500):
++            g = sample_split_goal(split, 3, rng)
++            assert heldout_composition(g) is None
++            n += any(faces.has_normal(f) and faces.face_arg(f) == "Face-Z" for f in g.features)
++        assert n >= at_least, (split, n)
++
++
++def _write_goals(tmp_path):
++    def outline(w, d):
++        return {"start": [-w / 2, -d / 2], "segs": [["L", w / 2, -d / 2], ["L", w / 2, d / 2], ["L", -w / 2, d / 2],
++                                                     ["L", -w / 2, -d / 2]]}
++    base = {"kind": "profile_base", "params": {"outline": outline(40, 30), "w": 40, "d": 30, "x": 0, "y": 0, "h": 8}}
++    pocket = {"kind": "profile_pocket", "params": {"outline": outline(6, 6), "w": 6, "d": 6, "x": 0, "y": 0, "depth": 4}}
++    specs = {"one": {"features": [base], "level": 3},
++             "three": {"features": [base, pocket, pocket], "level": 3},
++             "seven": {"features": [base] + [pocket] * 6, "level": 3},
++             "heldout": {"features": [base, {"kind": "boss_box", "params": {"w": 4, "d": 4, "x": 0, "y": 0, "h": 3}},
++                                      {"kind": "polar_pattern", "params": {"n": 4.0}}], "level": 3}}
++    path = tmp_path / "goals_train_verified.json"
++    path.write_text(json.dumps(specs))
++    return path
++
++
++def test_goals_file_feeds_training_by_length(tmp_path, monkeypatch):
++    path = _write_goals(tmp_path)
++    monkeypatch.setenv("TAIGA_GOALS_FILE", str(path))
++    monkeypatch.setenv("TAIGA_GOALS_FRACTION", "1.0")
++    goalsfile._CACHE.clear()
++    pools = goalsfile.load(goalsfile.files())
++    assert [len(pools[k]) for k in (1, 2, 3)] == [1, 1, 1]  # the held-out one is dropped
++    assert pools[3][0].scale == 40 and len(pools[3][0].features) == 7
++    rng = random.Random(3)
++    for level, n in ((1, 1), (2, 3), (3, 7), (4, 7)):
++        g = sample_split_goal("train", level, rng)
++        assert len(g.features) == n and g.features[0].kind == "profile_base"
++    # evaluation splits never draw from the file
++    assert sample_split_goal("iid", 3, random.Random(4)).features[0].kind != "profile_base"
++
++
++def test_without_a_goals_file_training_is_unchanged(monkeypatch):
++    monkeypatch.delenv("TAIGA_GOALS_FILE", raising=False)
++    a = [sample_split_goal("train", 3, random.Random(5)).to_json() for _ in range(5)]
++    monkeypatch.setenv("TAIGA_GOALS_FRACTION", "0.9")  # no file: the fraction does nothing
++    b = [sample_split_goal("train", 3, random.Random(5)).to_json() for _ in range(5)]
++    assert a == b and goalsfile.fraction() == 0.0
+diff --git a/tests/test_ext_faces.py b/tests/test_ext_faces.py
+index 2e6a4d2..987dd67 100644
+--- a/tests/test_ext_faces.py
++++ b/tests/test_ext_faces.py
+@@ -68,6 +68,9 @@ def test_side_sampler_geometry_within_faces():
+                 continue
+             n_side += 1
+             k, sign = faces.normal(f)
++            if k == 2:  # patch 0011: the bottom face
++                assert sign == -1.0 and f.params["z"] == 0.0
++                continue
+             assert k in (0, 1)
+             p = f.params
+             half = {0: base["w"] / 2, 1: base["d"] / 2}
+diff --git a/tests/test_ext_limits.py b/tests/test_ext_limits.py
+new file mode 100644
+index 0000000..682c684
+--- /dev/null
++++ b/tests/test_ext_limits.py
+@@ -0,0 +1,76 @@
++"""taiga-expanded: model input limits as options (patch 0011). Defaults reproduce upstream exactly;
++larger limits and newest-node truncation let long parts be seen."""
++from dataclasses import asdict
++
++import numpy as np
++import torch
++
++from freecad_s1.model.featurize import MAX_GOAL, MAX_NODES, SEG_GOAL, SEG_NODE, collate, encode_state, make_example
++from freecad_s1.model.net import S1Config, S1Model
++from freecad_s1.schema import Goal, GoalFeature, Node, State
++
++
++def _long_state(n_features: int) -> State:
++    """A Body followed by sketch + pad pairs, one per goal intent."""
++    tree = [Node("Body", "PartDesign::Body")]
++    for i in range(n_features):
++        tree.append(Node(f"Sketch{i:03d}", "Sketcher::SketchObject", parent=0, depth=1))
++        tree.append(Node(f"Pad{i:03d}", "PartDesign::Pad", parent=0, depth=1))
++    return State(doc_open=True, workbench="PartDesignWorkbench", has_body=True, tree=tree)
++
++
++def _goal(n: int) -> Goal:
++    feats = [GoalFeature("base_box", {"w": 40, "d": 30, "h": 10})]
++    feats += [GoalFeature("hole", {"r": 2.0, "x": float(i % 5), "y": 0.0}) for i in range(n - 1)]
++    return Goal(feats, level=3, scale=40.0)
++
++
++def _nodes(tokens):
++    return int((tokens.seg == SEG_NODE).sum()), int((tokens.seg == SEG_GOAL).sum())
++
++
++def test_defaults_are_upstreams_and_change_nothing():
++    cfg = S1Config(invariant_numerics=True, modular=True)
++    assert (cfg.max_nodes, cfg.max_goal, cfg.max_ord, cfg.max_pos, cfg.newest_nodes) == (MAX_NODES, MAX_GOAL, 32, 128, False)
++    assert cfg.feature_opts() == {"invariant": True, "sentinel": True}  # same cache names, same featurization
++    old = {k: v for k, v in asdict(cfg).items() if k not in ("max_nodes", "max_goal", "max_ord", "max_pos", "newest_nodes")}
++    assert S1Config(**old) == cfg  # configs of existing checkpoints load unchanged
++
++
++def test_default_truncation_keeps_the_oldest_objects_and_first_goal_intents():
++    st, g = _long_state(30), _goal(30)  # 61 tree objects, 30 intents
++    tok = encode_state(st, g, invariant=True, sentinel=True)
++    n_nodes, n_goal = _nodes(tok)
++    assert n_nodes == MAX_NODES and n_goal == MAX_GOAL + 1  # + END sentinel
++
++
++def test_larger_limits_and_newest_nodes_see_the_whole_long_part():
++    st, g = _long_state(30), _goal(30)
++    tok = encode_state(st, g, invariant=True, sentinel=True, max_nodes=160, max_goal=64, max_ord=72, max_pos=256)
++    assert _nodes(tok) == (61, 31)
++    assert tok.ord.max() == 31  # the END sentinel of 30 intents; ordinals no longer saturate at 31
++    # newest_nodes at the old size: the Body plus the newest 39 objects
++    tok = encode_state(st, g, invariant=True, sentinel=True, newest_nodes=True)
++    node_pos = tok.pos[tok.seg == SEG_NODE]
++    assert node_pos[0] == 0 and node_pos[1] == 61 - 39 and node_pos[-1] == 60
++    # ordinals are counted over the whole tree: the newest pad is intent 30
++    assert tok.ord[tok.seg == SEG_NODE][-1] == 30
++
++
++def test_a_model_with_larger_limits_runs_and_round_trips(tmp_path):
++    from freecad_s1.model.net import load_checkpoint, save_checkpoint
++
++    cfg = S1Config(pos_mode="rand", ordinal=True, invariant_numerics=True, modular=True, pointer="done",
++                   index_eval="identity", max_nodes=160, max_goal=64, max_ord=72, max_pos=256, newest_nodes=True,
++                   width=64, ff=128, heads=4)
++    model = S1Model(cfg).eval()
++    assert model.state_encoder.pos.num_embeddings == 256 and model.state_encoder.ord.num_embeddings == 72
++    st, g = _long_state(30), _goal(30)
++    ex = make_example(st, g, ["Select:Face+Z", "Std_Undo", "Done"], ["Select:Face+Z"], **cfg.feature_opts())
++    with torch.no_grad():
++        logits, _ = model(collate([ex]))
++    assert logits.shape == (1, 3) and torch.isfinite(logits[0]).all()
++    path = save_checkpoint(tmp_path / "m.pt", model)
++    again = load_checkpoint(path)
++    assert again.cfg == cfg and again.cfg.feature_opts()["newest_nodes"] is True
++    assert np.array_equal(again.state_encoder.pos.weight.detach().numpy(), model.state_encoder.pos.weight.detach().numpy())

@@ -90,6 +90,8 @@ Run them one at a time or several in sequence, for example `./script.sh train ex
 | `DAGGER_ROUNDS`, `DAGGER_EPISODES`, `DAGGER_EPOCHS` | `2`, `400`, `2` | DAgger rounds, episodes per level per round, training epochs per round |
 | `DAGGER_PERTURB`, `DAGGER_PERTURB_FRAC` | `0`, `0.5` | `> 0`: perturbed DAgger. In that fraction of the rollout batches, each step takes a random off-plan command with this probability, so the model learns to notice and repair mistakes (upstream `--dagger-perturb`; upstream's Mesa-S1 uses `0.2`). Needs a `REPO_REF` that has it, e.g. `4a31bcf`; the pinned `a6e81d3` does not. |
 | `TAIGA_EXT_FRACTION`, `TAIGA_SIZE_AUG`, `TAIGA_SIZE_MAX` | unset | `taiga-expanded` only: share of expanded training goals (0.35), share of training goals scaled up (0), largest scale factor (5). See `../taiga-expanded/README.md`. Recorded in `manifest.json` and added to the data and experiment names. |
+| `TAIGA_GOALS_FILE`, `TAIGA_GOALS_FRACTION` | unset, `0.25` | `taiga-expanded` (patch 0011): training goals read from goals files (`:`-separated), e.g. verified DeepCAD designs (`goals_train_verified.json`), for this share of the training goals at every level. The data name gets `_g<folder of the first file>f<fraction>`. |
+| `MODEL_ARGS` | unset | Extra `train_sft` flags for the model's size and input limits, e.g. `"--width 256 --ff 768 --enc-layers 4 --max-nodes 160 --max-goal 64 --max-ord 72 --max-pos 256 --newest-nodes"` (`--heads`, `--max-*` and `--newest-nodes` need `taiga-expanded` patch 0011). The experiment name gets `m<hash of the flags>`; `manifest.json` records them. |
 | `DETERMINISTIC` | `0` | `1`: deterministic PyTorch (stops on a non-deterministic operation); `warn`: only warns. Pins DAgger workers to `DAGGER_WORKERS` (8). |
 | `EXP` | derived | Experiment name; runs go to `runs/<EXP>/seed<N>`. Derived from the settings that differ from the defaults (e.g. `e8_x2_data2`); empty for the defaults, so plain runs stay in `runs/seed<N>`. |
 | `SEEDS` | `"2 12 22 32 42"` | Seeds used by `sweep` |
@@ -480,9 +482,9 @@ Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header 
 
 | Script | Version |
 |---|---|
-| `taiga_repro_DGX.sh` | 2026.10.07.1 |
-| `taiga_repro_5060ti.sh` | 2026.10.07.1 |
-| `taiga_repro_Quadro6000.sh` | 2026.10.07.1 |
+| `taiga_repro_DGX.sh` | 2026.10.08.1 |
+| `taiga_repro_5060ti.sh` | 2026.10.08.1 |
+| `taiga_repro_Quadro6000.sh` | 2026.10.08.1 |
 | `taiga_aggregate.py` | 2026.10.04.3 |
 | `taiga_bench_size.py` | 2026.10.06.1 |
 | `taiga_run.py` | 2026.10.04.1 |

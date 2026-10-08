@@ -2,7 +2,7 @@
 # =============================================================================
 # taiga_repro_Quadro6000.sh — reproduce Taiga-S1 from scratch on a dual Quadro RTX 6000
 # (Turing, sm_75, 2 x 24 GB) workstation, Ubuntu 24.04 or 26.04, driver 595-open
-# Version: 2026.10.07.1
+# Version: 2026.10.08.1
 #
 # Same pipeline as the Spark/mochi scripts; differences:
 #   - FreeCAD from your PPA matching the release: noble -> bleedingedge/noble-bleed,
@@ -41,7 +41,12 @@
 #   DAGGER_PERTURB=0  >0: off-plan action rate in DAgger rollouts, so the model learns to
 #                recover (upstream --dagger-perturb, in DAGGER_PERTURB_FRAC=0.5 of the
 #                rollout batches; needs a REPO_REF that has it, e.g. 4a31bcf)
-#   TAIGA_*      taiga-expanded settings (TAIGA_EXT_FRACTION, TAIGA_SIZE_AUG, TAIGA_SIZE_MAX):
+#   MODEL_ARGS=  extra train_sft flags for the model's size and input limits, e.g.
+#                "--width 256 --ff 768 --enc-layers 4 --max-nodes 160 --max-goal 64 --max-ord 72
+#                --max-pos 256 --newest-nodes" (taiga-expanded patch 0011); the experiment name
+#                gets m<hash>, and manifest.json records the flags
+#   TAIGA_*      taiga-expanded settings (TAIGA_EXT_FRACTION, TAIGA_SIZE_AUG, TAIGA_SIZE_MAX,
+#                TAIGA_GOALS_FILE, TAIGA_GOALS_FRACTION):
 #                recorded in manifest.json and in the data and experiment names
 #   DETERMINISTIC=0  1: deterministic PyTorch (fails on non-deterministic ops),
 #                    warn: only warn; DAgger workers pinned to DAGGER_WORKERS=8
@@ -93,6 +98,8 @@ data_tag() {  # taiga-expanded settings that change the training data
   local t=""
   [[ -n ${TAIGA_EXT_FRACTION:-} ]] && t+="_ext$TAIGA_EXT_FRACTION"
   [[ ${TAIGA_SIZE_AUG:-0} != 0 ]] && t+="_size$TAIGA_SIZE_AUG${TAIGA_SIZE_MAX:+x$TAIGA_SIZE_MAX}"
+  # goals file (patch 0011): named after the folder of the first file, plus the fraction
+  [[ -n ${TAIGA_GOALS_FILE:-} ]] && t+="_g$(basename "$(dirname "${TAIGA_GOALS_FILE%%:*}")")f${TAIGA_GOALS_FRACTION:-0.25}"
   echo "$t"
 }
 exp_tag() {  # experiment name from non-default settings; empty for the defaults
@@ -102,6 +109,7 @@ exp_tag() {  # experiment name from non-default settings; empty for the defaults
   [[ $EPOCHS != 4 ]] && t+=("e$EPOCHS")
   [[ "$DAGGER_ROUNDS/$DAGGER_EPISODES/$DAGGER_EPOCHS" != 2/400/2 ]] && t+=("dg${DAGGER_ROUNDS}x${DAGGER_EPISODES}x${DAGGER_EPOCHS}")
   [[ $DATA_SCALE != 1 ]] && t+=("x$DATA_SCALE")
+  [[ -n ${MODEL_ARGS:-} ]] && t+=("m$(printf '%s' "$MODEL_ARGS" | md5sum | cut -c1-6)")  # model size / input limits
   [[ -n $DATA_SEED ]] && t+=("data$DATA_SEED")
   [[ $DETERMINISTIC != 0 ]] && t+=("det")
   local IFS=_; echo "${t[*]}"
@@ -403,7 +411,7 @@ stage_train() {
     --epochs "$EPOCHS" --pos-mode rand --ordinal --invariant-numerics --modular --pointer "done" \
     --index-eval identity --type-dropout 0.15 \
     --dagger-rounds "$DAGGER_ROUNDS" --dagger-episodes "$DAGGER_EPISODES" --dagger-epochs "$DAGGER_EPOCHS" \
-    --dagger-workers "$dw" --seed "$SEED" --device auto "${pt[@]}"
+    --dagger-workers "$dw" --seed "$SEED" --device auto "${pt[@]}" ${MODEL_ARGS:-}
   cp "$LOGDIR/train_${LOGTAG}.log" "$RUN/train.log"   # read by taiga_aggregate.py
 }
 
@@ -606,10 +614,10 @@ def sh(c):
     try: return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
     except Exception: return None
 json.dump({
-  "script_version": "2026.10.05.5", "script": "taiga_repro_Quadro6000.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
+  "script_version": "2026.10.08.1", "script": "taiga_repro_Quadro6000.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
   "dagger_rounds": $DAGGER_ROUNDS, "dagger_episodes": $DAGGER_EPISODES, "dagger_epochs": $DAGGER_EPOCHS, "deterministic": "$DETERMINISTIC",
   "dagger_perturb": $DAGGER_PERTURB, "dagger_perturb_frac": $DAGGER_PERTURB_FRAC,
-  "taiga_env": {k: v for k, v in sorted(os.environ.items()) if k.startswith("TAIGA_")},
+  "taiga_env": {k: v for k, v in sorted(os.environ.items()) if k.startswith("TAIGA_")}, "model_args": "${MODEL_ARGS:-}",
   "gpu": "${GPU:-all}", "data_workers": $DATA_WORKERS, "workers": $WORKERS,
   "repo_commit": sh("git -C '$REPO' rev-parse HEAD"), "patches": "$(cat "$WORK/patches.sha" 2>/dev/null || true)", "host": platform.node(), "arch": platform.machine(),
   "python": sys.version.split()[0], "torch": torch.__version__, "cuda": torch.version.cuda,

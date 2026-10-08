@@ -15,6 +15,7 @@ Extends Taiga-S1's vocabulary so it can build real parts like the Victor S 80 pu
 | 6 | **Training options**: size test suites `large` and `large_ext` (goals ×4, up to ~360 mm) and optional size augmentation (`TAIGA_SIZE_AUG`); perturbed DAgger (`DAGGER_PERTURB`) in the training scripts; data and experiment names follow these settings | Patch 0007 + training scripts. All 71 tests pass, including FreeCAD builds of the ×4 goals (DGX, FreeCAD 1.1.3, 2026-10-05) |
 | 7 | **Training coverage found with the S 80**: features on XY datum planes (closed cavities, slots through two sides, plates through the part, foot plates, keyways and webs on turned parts) and features wider than the face they stand on (caps over plugs, cover plates over spigots, flaps, flanges on necks); new suites `datum_z` and `overhang` | Patch 0009. Pure-Python tests pass; FreeCAD tests run during `setup` |
 | 8 | **Toward production goals** (phase 1 of `../docs/README_production_plan.md`): turned hubs with outline features (curved blades, slots) on the end face, polar about the axis; mixed-family goals of 3–11 intents (14 in the `mixed_long` suite); revolve profiles away from the origin; lone expanded bases at level 1; new suites `turned`, `mixed`, `mixed_long` | Patch 0010. All 84 tests pass, including FreeCAD (5060 Ti, FreeCAD 1.1.3, 2026-10-08); teacher check of sampled goals below |
+| 9 | **Long parts and real designs** (phases 2–3 of `../docs/README_production_plan.md`): the model's input limits as options (tree objects, goal intents, ordinal and position tables; keep the newest tree objects); features on the bottom face; training goals from a goals file (verified DeepCAD designs) | Patch 0011. 89 pure-Python tests pass (2026-10-08); FreeCAD tests run during `setup` |
 
 Out of scope for now (Phase 2): sweep, loft, helix, multi-body parts, assemblies.
 
@@ -200,9 +201,17 @@ Unchanged: the original suites, and the suites of patches 0001–0009 except `re
 | `MAX_GOAL` | 24 | Only the first 24 intents of a goal are encoded; the casing's last 28 are never seen |
 | `MAX_ORD` | 32 | Goal intents and tree objects past ordinal 31 share one ordinal |
 
-**Found after patch 0010 was written:** features on a bottom face (`Face-Z`: the holes under the S 80 bearing bracket's foot) occur in no training family, and the model puts them on another face. The next patch adds bottom-face features (holes, pockets, pins, mirrored and in rows) to `side` and `mixed`.
+**Found after patch 0010 was written:** features on a bottom face (`Face-Z`: the holes under the S 80 bearing bracket's foot) occur in no training family, and the model puts them on another face. Patch 0011 adds bottom-face features (holes, pockets, pins, mirrored and in rows) to `side` and `mixed`.
 
-Patch 0010 stays within these (at most 14 intents). Phase 2 needs a patch that raises them as model-config options, so that existing checkpoints keep loading with the old values, and keeps the newest tree objects when the tree is longer than the table.
+Patch 0010 stays within these (at most 14 intents). Patch 0011 makes them model-config options (existing checkpoints keep the old values) and can keep the newest tree objects when the tree is longer than the table.
+
+### Primitive 9: long parts and real designs (patch 0011)
+
+- **Input limits as model options.** `S1Config` gets `max_nodes`, `max_goal`, `max_ord`, `max_pos` and `newest_nodes`, with upstream's values as defaults, so existing checkpoints load and featurize exactly as before. `train_sft` takes `--max-nodes`, `--max-goal`, `--max-ord`, `--max-pos`, `--newest-nodes` (and `--heads` for larger models); the training scripts pass them with `MODEL_ARGS` (`../training/README_training.md`). With `--newest-nodes`, a tree longer than `max_nodes` keeps the Body and the newest objects; ordinals are counted over the whole tree, so they keep matching the goal's intents. For the S 80 casing (52 intents, about 110 tree objects): `--max-nodes 160 --max-goal 64 --max-ord 72 --max-pos 256`.
+- **Bottom-face features** (`Face-Z`: holes, standard holes, pockets, pins, bosses) in `side` (one face choice in five) and `mixed` (one group per goal, alone, in a row or mirrored), for the S 80 bracket's foot holes.
+- **Training goals from a file.** `TAIGA_GOALS_FILE` (one or more goals JSON files, `:`-separated) and `TAIGA_GOALS_FRACTION` (default 0.25) draw that share of the training goals from the files, by length: 1 intent at level 1, 2–3 at level 2, 4 and more at level 3, with no upper limit, so long real designs reach training. Goals matching a held-out composition are dropped; evaluation splits never draw from the file. Meant for DeepCAD's verified train split (`datasets/run_deepcad.sh` with `SUBSET=train`); the test split stays a test set.
+
+Unchanged: every suite and the training goals without `TAIGA_GOALS_FILE`, except `side`, `mixed`, `mixed_long` and `large_ext`, which now include bottom-face features.
 
 ### Training plan
 
@@ -344,4 +353,4 @@ Typical order: S 80 `check → teacher → eval` (vocabulary), then `models → 
 |---|---|
 | `train_expanded.sh` | 2026.10.08.1 |
 | `dev/*.sh` | 2026.10.05.1 (`export_patches.sh` 2026.10.05.2) |
-| `patches/` | 0001 (features on any planar face), 0002 (features on origin planes with an offset), 0003 (curved outlines), 0004 (revolve and groove with a profile), 0005 (patterns and mirrors about any axis, wider goal rows), 0006 (fillets and chamfers on chosen edges, features on a chosen face), 0007 (goals at other sizes), 0008 (enough steps for the target build of long goals), 0009 (XY datum planes and overhanging features in training), 0010 (turned hubs with end-face outlines, mixed-family and longer goals, revolves off the origin), against upstream `4a31bcf` |
+| `patches/` | 0001 (features on any planar face), 0002 (features on origin planes with an offset), 0003 (curved outlines), 0004 (revolve and groove with a profile), 0005 (patterns and mirrors about any axis, wider goal rows), 0006 (fillets and chamfers on chosen edges, features on a chosen face), 0007 (goals at other sizes), 0008 (enough steps for the target build of long goals), 0009 (XY datum planes and overhanging features in training), 0010 (turned hubs with end-face outlines, mixed-family and longer goals, revolves off the origin), 0011 (configurable input limits, bottom-face features, training goals from a goals file), against upstream `4a31bcf` |
