@@ -266,6 +266,19 @@ Each step as a sweep on the same machine (DGX shown), with fixed data (`DATA_SEE
 - **comp fell back to the original model's failure.** At this budget four of five seeds score 0.49 (zero-deviation 0.49 on all five): one of comp's two held-out rules always fails, exactly as the original model does when trained longer. comp2 and comp3 hold (1.00 / 0.98). So the family diversity *delayed* the over-specialization (1.00 at 8 epochs or at 2× data alone) but did not prevent it once both were combined. This is the expanded model's version of the trade-off in `../training/README_training.md`: the more it trains on the same distribution, the more it learns that the held-out pair never occurs.
 - **What that means in practice.** The held-out pairs exist only to measure generalization; nothing stops a production model from training on them. But real designs will contain other unseen combinations, so this suite is the warning that the model's generalization across feature combinations degrades with budget. The fix is the same as before, in the data: make "any feature can be patterned / mirrored" overwhelming in training (more feature kinds per pattern and mirror goal, and patterns of patterns), and check comp at every budget step.
 
+**Training plan step 3: perturbed DAgger** (unpatched `4a31bcf`, `DAGGER_PERTURB=0.2`, 4 epochs, fixed data, 5 seeds; 5060 Ti, 2026-10-08), against the same commit without perturbation (step 1 baseline, Spark2):
+
+| Suite | Without (Spark2) | With `DAGGER_PERTURB=0.2` (5060 Ti) |
+|---|---|---|
+| comp / comp2 / comp3, clean | 0.81 ± 0.22 / 0.99 / 0.96 | 0.76 ± 0.23 / 1.00 / 0.99 |
+| len5, clean | 0.83 ± 0.19 | 0.90 ± 0.18 |
+| len6, clean | 0.41 ± 0.34 | 0.45 ± 0.20 |
+| len6, perturbed evaluation | 0.38 | 0.45 ± 0.10 |
+
+- **No measurable gain.** Every difference is well inside the seed-to-seed spread (and the two runs are on different machines). Recovery under 20 % random actions is about the same as without perturbed training.
+- **More detours.** Clean success on comp2 is 1.00, but only 0.75 without any deviation from the expert's plan: the models wander and recover more often than they go straight.
+- **Decision:** leave `DAGGER_PERTURB` off for now. It may still matter for long goals, where one wrong step costs more; try it again on the long-goal model, and score with the loop guard off, since the spurious-Undo problem (`eval/README.md`) is exactly a recovery behaviour.
+
 Compare with `../training/taiga_aggregate.py` on the run folders (`~/taiga-head/taiga-s1/runs/data2`, `~/taiga-expanded/taiga-s1/runs/data2`, `.../x2_data2`, ...).
 
 ## Workflow
