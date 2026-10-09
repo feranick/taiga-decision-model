@@ -128,6 +128,13 @@ tmux new -s taiga
 # detach: Ctrl-b then d      reattach: tmux attach -t taiga
 ```
 
+**Enable lingering once per machine.** With `Linger=no` (the Ubuntu default on the desktop machines), systemd ends every process of a user, tmux and `nohup` jobs included, when that user's last login session closes, e.g. a logout or a dropped SSH connection. Runs then disappear without an error (`tmux ls`: "no server running"). Check and enable:
+
+```bash
+loginctl show-user $USER -p Linger      # Linger=no: long runs die at logout
+sudo loginctl enable-linger $USER
+```
+
 ### nohup
 ```bash
 # DGX / PowerSpec G467
@@ -346,7 +353,7 @@ Three machines (5060 Ti, Spark1, Quadro), five seeds per setting, fixed and fres
 1. **The machine does not matter.** The same setting gives the same mean and spread on all three machines within their seed-to-seed spread; there is no GPU or platform effect to correct for.
 2. **The seed does not cause the spread; it only picks one of the possible models.** With the same seed and data, GPU nondeterminism alone moves a run as far as a different seed does, and deterministic mode makes runs bit-identical. Picking the best seed would not survive a retrain.
 3. **Most of the spread is under-training.** At the default budget (4 epochs, 2 DAgger rounds) the loss is still falling and long goals swing from 0.16 to 0.92 between seeds. 8 epochs settles the loss and brings len6 to about 0.93 with sd 0.05–0.14 on every machine; 2× data does about the same; 4 DAgger rounds do less.
-4. **Composition goes the other way.** Every larger budget makes held-out compositions fail more consistently (comp-L3 about 0.48 on every seed); the fix is more varied data, not a smaller budget. Even then, enough training on enough of the same data brings the failure back (expanded model, step 3), so composition has to be checked at every budget.
+4. **Composition goes the other way.** Every larger budget makes held-out compositions fail more consistently (comp-L3 about 0.48 on every seed); the fix is more varied data, not a smaller budget. Even then, enough training on enough of the same data brings the failure back (expanded model, step 3), so composition has to be checked at every budget. Per rule (expanded model with patch 0010, 2026-10-09), the failing half is `hole_std` followed by a mirror, and the failure is a loop: the model builds the hole correctly, then undoes and rebuilds it until the step budget runs out. So what longer training strengthens is a reflex to undo a correct step when the next one is unfamiliar, not a rule against the combination (`../taiga-expanded/README.md`, step 4). Whether the original model's comp failures are the same loop has not been checked.
 5. **How to train and report from here:** 8 epochs (or more data) as the budget for length; varied families for composition; `DETERMINISTIC=1` when comparing two settings; five seeds and mean ± sd when stating a result; perturbed DAgger off (no measurable gain at this budget, `../taiga-expanded/README.md`, training plan step 3).
 
 ### Notes

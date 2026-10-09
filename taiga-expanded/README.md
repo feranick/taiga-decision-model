@@ -277,6 +277,25 @@ Each step as a sweep on the same machine (DGX shown), with fixed data (`DATA_SEE
 - **comp fell back to the original model's failure.** At this budget four of five seeds score 0.49 (zero-deviation 0.49 on all five): one of comp's two held-out rules always fails, exactly as the original model does when trained longer. comp2 and comp3 hold (1.00 / 0.98). So the family diversity *delayed* the over-specialization (1.00 at 8 epochs or at 2× data alone) but did not prevent it once both were combined. This is the expanded model's version of the trade-off in `../training/README_training.md`: the more it trains on the same distribution, the more it learns that the held-out pair never occurs.
 - **What that means in practice.** The held-out pairs exist only to measure generalization; nothing stops a production model from training on them. But real designs will contain other unseen combinations, so this suite is the warning that the model's generalization across feature combinations degrades with budget. The fix is the same as before, in the data: make "any feature can be patterned / mirrored" overwhelming in training (more feature kinds per pattern and mirror goal, and patterns of patterns), and check comp at every budget step.
 
+**Step 4: patches 0001–0010** (fixed data, 5 seeds, 2026-10-09): the default budget on the 5060 Ti, and the step-3 budget (2× data, 8 epochs) on the Quadro, so the only change from step 3 is patch 0010's training goals:
+
+| Suite (clean) | Step 1 (0001–0008, default) | **0010, default** | Step 3 (0001–0009, 2× data, 8 ep) | **0010, 2× data, 8 ep** |
+|---|---|---|---|---|
+| comp | 1.00 | **1.00 ± 0.00** | 0.53 ± 0.09 | **0.54 ± 0.09** (four seeds 0.49) |
+| comp2 / comp3 | 1.00 / 1.00 | 1.00 / 1.00 | 1.00 / 0.98 | 1.00 / 1.00 |
+| len5 | 0.68 ± 0.18 | 0.96 ± 0.07 | 0.93 ± 0.11 | 0.91 ± 0.18 |
+| len6 (17 intents) | 0.14 ± 0.03 | **0.73 ± 0.30** | 0.78 ± 0.09 | 0.76 ± 0.24 |
+| `mixed` / `mixed_long` (8–14 intents) | — | **1.00 / 1.00** | — | **1.00 / 1.00** |
+| `turned`, `revolve`, all other suites | — / 1.00 / 1.00 | 1.00 | — / 1.00 / 1.00 | 1.00 |
+| last-epoch NLL drop | — | 16–28 % | −1–5 % | 0–4 % |
+
+- **The new families are learned completely at both budgets,** including `mixed_long`, whose goals are longer than any training goal: 1.00 on every seed. Up to 14 intents, length is solved for these families.
+- **At the default budget, patch 0010 matches the larger budget on length** (len6 0.73 against 0.14 for step 1) and keeps comp at 1.00, but the loss is far from converged and len6 still swings from 0.26 to 1.00 between seeds.
+- **At the larger budget, comp falls back to 0.49 on four seeds, exactly as in step 3, and the cause is the spurious Undo.** Per rule (Quadro, seed 2, `eval.json`): any pattern with `boss_box` succeeds on 98 % of its goals; `hole_std` followed by a mirror on 4 %. Every one of those failures has the same history: the model builds the standard hole correctly, then undoes it, builds it again, undoes it, and so on until the step budget runs out; it never reaches the mirror. This is the behaviour found on the S 80 bearings and impeller: after a correct step whose *next* step is unfamiliar, the model reads its uncertainty as "something went wrong" and undoes. Longer training makes that reflex stronger, which is why comp falls with budget. The evaluation harness has no loop guard, so the loop counts as a failure. Two consequences: comp measures this recovery reflex more than the ability to compose; and the fix belongs in training (DAgger that also labels "continue" in correct but unfamiliar states, or less weight on Undo when the last step matched the plan), with the loop guard as the run-time safety net meanwhile.
+- **len6 (17 intents) stops at about 0.75 at either budget.** `mixed_long` (up to 14) is solved, so the remaining gap is the step beyond the longest training goals (12); patch 0011's real designs and longer goals address it.
+
+Phase-1 targets (`../docs/README_production_plan.md`): comp back to 1.00 at the large budget: **no** (see above); len6 ≥ 0.89: **no** (0.76); bearings and impeller without the guard: pending, S 80 builds with these models.
+
 **Training plan step 3: perturbed DAgger** (unpatched `4a31bcf`, `DAGGER_PERTURB=0.2`, 4 epochs, fixed data, 5 seeds; 5060 Ti, 2026-10-08), against the same commit without perturbation (step 1 baseline, Spark2):
 
 | Suite | Without (Spark2) | With `DAGGER_PERTURB=0.2` (5060 Ti) |
