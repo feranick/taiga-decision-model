@@ -1,6 +1,6 @@
 #!/bin/bash
 # run_s80.sh — S 80 evaluation of taiga-expanded: build the S 80 goals, score them against the reference CAD.
-# Version: 2026.10.06.1
+# Version: 2026.10.10.1
 #
 # Usage:  ./run_s80.sh check             check that every goal can be built (fast, nothing saved)
 #         ./run_s80.sh teacher           build every goal with the scripted teacher   -> $OUT/teacher
@@ -20,6 +20,7 @@ set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
+export PATH="$HOME/.local/bin:$PATH"   # uv, installed there by the training setup (not on PATH in every shell)
 WORK=${WORK:-$HOME/taiga-expanded}
 OUT=${OUT:-$WORK/s80}
 REF=${REF:-$HOME/taiga/taiga-s1/parts/pump_s80}
