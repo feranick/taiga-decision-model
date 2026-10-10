@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.09.1
+Version: 2026.10.10.2
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -40,8 +40,10 @@ the guard stepped in.
 If the FreeCAD worker crashes on a part (e.g. on a degenerate shape the model made), the part
 is reported as CRASH (a failure), the worker is restarted and the remaining goals are built.
 The same happens when the worker's memory passes --max-worker-gb (default: half the machine's
-RAM), so a part whose build runs away (a model looping on the S 80 casing reached 37 GB) ends as
-a CRASH instead of being killed by the system together with the whole run.
+RAM): the worker starts with that address-space limit (so even a single step that runs away
+fails inside the worker), and is also checked after every step. A part whose build runs away (a
+model looping on the S 80 casing reached 37 GB) thus ends as a CRASH instead of the system
+killing processes, sometimes the whole run.
 
 Timing: each part reports how long it took to make, split into model decisions,
 FreeCAD steps and saving/export; a summary table with the totals is printed at the end.
@@ -169,6 +171,27 @@ def tree_rss_gb(pid: int) -> float:
     return total_kb / 1048576
 
 
+def new_env(limit_gb: float) -> FreeCADEnv:
+    """Start a FreeCAD worker whose address space is capped at `limit_gb` (Linux/macOS rlimit,
+    inherited by the child): a runaway part then fails inside the worker (a CRASH for that part)
+    instead of growing until the kernel kills processes. The cap is lifted again for this process."""
+    if limit_gb <= 0:
+        return FreeCADEnv()
+    try:
+        import resource
+    except ImportError:  # Windows: no rlimit
+        return FreeCADEnv()
+    soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+    cap = int(limit_gb * 1024 ** 3)
+    if hard != resource.RLIM_INFINITY:
+        cap = min(cap, hard)
+    resource.setrlimit(resource.RLIMIT_AS, (cap, hard))
+    try:
+        return FreeCADEnv()
+    finally:
+        resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
+
+
 def default_worker_limit_gb() -> float:
     """Half the machine's RAM (Linux), else no limit."""
     try:
@@ -255,7 +278,7 @@ def main() -> None:
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
 
-    env = FreeCADEnv()
+    env = new_env(mem_limit)
     failures = 0
     summary = []  # (name, result, steps, model s, freecad s, save s, total s)
     t_run = time.perf_counter()
@@ -274,7 +297,7 @@ def main() -> None:
                         env.close()
                     except Exception:
                         pass
-                    env = FreeCADEnv()
+                    env = new_env(mem_limit)
                 print(f"\n{name}: INFEASIBLE  {exc}")
                 summary.append((name, "INFEASIBLE", 0, 0.0, 0.0, 0.0, 0.0))
                 continue
@@ -361,6 +384,9 @@ def main() -> None:
                     extra.append(f"STEP export failed: {err}" if err else f"{fcstd.with_suffix('.step').name}")
                 t_save = time.perf_counter() - t_save0
                 t_make = t_built - t0
+                if not 0.0 <= sc["iou"] <= 1.0 + 1e-6:  # malformed solid (e.g. negative volume): not a match
+                    extra.append(f"invalid IoU {sc['iou']:.4g}, malformed solid")
+                    sc = {**sc, "match": False}
                 ok = done and sc["match"]
                 failures += not ok
                 print(f"{name}: {'SUCCESS' if ok else 'FAIL'}  IoU {sc['iou']:.4f}  done {done}  steps {steps}  "
@@ -378,7 +404,7 @@ def main() -> None:
                     env.close()
                 except Exception:
                     pass
-                env = FreeCADEnv()
+                env = new_env(mem_limit)
     finally:
         env.close()
     if summary and not args.check:

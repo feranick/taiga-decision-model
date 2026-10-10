@@ -121,6 +121,20 @@ So the vocabulary expresses the S 80 to within 0.2 % of its volume; anything a m
 - **Without a guard the model loops:** every failure ends out of steps, repeating a dead end (22 steps on a single revolve, the full 540 on the casing). Breaking repeated dead ends is needed.
 - **The two guard variants build exactly the same parts.** Without a limit, failed builds keep more of their correct steps (the bracket complete except the two bottom holes); with the limit, the old teardown comes back after the first redo. `taiga_build_part.py` 2026.10.08.3 therefore sets no limit by default (`--guard-redos -1`; a number limits it).
 - **What is left is training, not the guard:** the bracket's bottom-face holes (next patch), the impeller's blade pattern on two seeds (patch 0010's `turned` family) and the casing's length and input limits (`../README.md`, primitive 8).
+
+**Patch-0010 models** (Quadro, 2× data, 8 epochs, 5 seeds, 2026-10-10). Seeds exact / mean IoU against the reference:
+
+| Part | With guard | Without guard |
+|---|---|---|
+| Six short parts | 5 / 5 | 5 / 5 |
+| Bearings | 5 / 5 | **5 / 5** |
+| Impeller | 5 / 5 | **5 / 5** |
+| Bearing bracket | 0 / 5, 0.99 on four seeds | 0 / 5, 0.99 on three seeds |
+| Casing core / casing | 0 / 5, 0.61 / 0.37 | 0 / 5, 0.49 / 0.49 |
+
+- **The bearings and the impeller now build on every seed without the guard:** patch 0010's off-origin revolves and turned hubs fixed what the guard had been covering. The bracket still lacks its bottom-face holes (patch 0011), and the casing parts still fail on length and the input limits (patch 0011).
+- **The build check was fooled once.** Seed 12's casing was reported `SUCCESS  IoU 46.9705` while it scores 0.0009 against the reference: a malformed solid with a negative volume made upstream's IoU formula exceed 1, and anything above 0.999 counts as a match. Fixed in `../../build/taiga_build_part.py` 2026.10.10.1 (an IoU outside [0, 1] is a failure) and, for the runtime itself (training, evaluation suites), in patch 0012.
+- `eval_s80.py` 2026.10.10.1 also scores builds with no volume (open shells, loose faces) as 0; before, their triangles could still enclose voxels (e.g. IoU 0.28 with "vol 0.0").
 - **The casing parts are unchanged:** they fail on length and on the model's input limits (`../README.md`, primitive 8), not on the guard.
 
 ## Limits of the vocabulary found on the way

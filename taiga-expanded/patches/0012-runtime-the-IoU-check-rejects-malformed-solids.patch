@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Sat, 10 Oct 2026 13:35:13 -0400
+Subject: [PATCH] runtime: the IoU check rejects malformed solids
+
+A malformed solid (self-intersecting, inverted) can report a zero or negative volume; the
+union then becomes tiny and the IoU far above 1, which counted as a match (a wrong S 80 casing
+scored 46.97). Shapes with zero or negative volume, and any IoU outside [0, 1], now score 0.
+This affects the success of model builds, DAgger rollouts and the evaluation suites.
+---
+ freecad_s1/runtime/session.py |  8 +++++++-
+ tests/test_ext_iou.py         | 30 ++++++++++++++++++++++++++++++
+ 2 files changed, 37 insertions(+), 1 deletion(-)
+ create mode 100644 tests/test_ext_iou.py
+
+diff --git a/freecad_s1/runtime/session.py b/freecad_s1/runtime/session.py
+index cf50e57..e460420 100644
+--- a/freecad_s1/runtime/session.py
++++ b/freecad_s1/runtime/session.py
+@@ -173,12 +173,18 @@ def iou(a, b) -> float:
+     """Volumetric IoU of two solids (exact, via OCC booleans)."""
+     if a is None or b is None or a.isNull() or b.isNull() or not a.Solids or not b.Solids:
+         return 0.0
++    # taiga-expanded: a malformed solid (self-intersecting, inverted) can report a zero or negative
++    # volume, which made the union tiny and the "IoU" far above 1 (46.97 on a wrong S 80 casing),
++    # i.e. a match. Such shapes, and any value outside [0, 1], now score 0.
++    if a.Volume <= 1e-9 or b.Volume <= 1e-9:
++        return 0.0
+     try:
+         inter = a.common(b).Volume
+     except Exception:  # boolean failure
+         return 0.0
+     union = a.Volume + b.Volume - inter
+-    return float(inter / union) if union > 1e-9 else 0.0
++    value = float(inter / union) if union > 1e-9 else 0.0
++    return value if 0.0 <= value <= 1.0 + 1e-9 else 0.0
+ 
+ 
+ # ---------------------------------------------------------------------------
+diff --git a/tests/test_ext_iou.py b/tests/test_ext_iou.py
+new file mode 100644
+index 0000000..d6e5a46
+--- /dev/null
++++ b/tests/test_ext_iou.py
+@@ -0,0 +1,30 @@
++"""taiga-expanded: the IoU check rejects malformed solids (patch 0012)."""
++import pytest
++
++pytest.importorskip("FreeCAD")
++from freecad_s1.runtime.session import iou  # noqa: E402
++
++
++class _Shape:
++    """Stand-in for an OCC solid: volume, and a fixed common() volume with any other shape."""
++
++    def __init__(self, volume, common=None):
++        self.Volume, self._common, self.Solids = volume, common, [object()]
++
++    def isNull(self):
++        return False
++
++    def common(self, other):
++        return _Shape(self._common if self._common is not None else min(self.Volume, other.Volume))
++
++
++def test_identical_and_partial_overlap():
++    assert iou(_Shape(100.0), _Shape(100.0)) == 1.0
++    assert abs(iou(_Shape(100.0, common=50.0), _Shape(100.0)) - 50.0 / 150.0) < 1e-12
++
++
++def test_malformed_solids_score_zero():
++    assert iou(_Shape(-80.0, common=60.0), _Shape(100.0)) == 0.0  # negative volume
++    assert iou(_Shape(0.0), _Shape(100.0)) == 0.0                 # no volume
++    assert iou(_Shape(100.0, common=150.0), _Shape(100.0)) == 0.0  # a common larger than both: IoU > 1
++    assert iou(None, _Shape(100.0)) == 0.0
