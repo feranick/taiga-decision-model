@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.08.4
+Version: 2026.10.09.1
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -39,6 +39,9 @@ the guard stepped in.
 
 If the FreeCAD worker crashes on a part (e.g. on a degenerate shape the model made), the part
 is reported as CRASH (a failure), the worker is restarted and the remaining goals are built.
+The same happens when the worker's memory passes --max-worker-gb (default: half the machine's
+RAM), so a part whose build runs away (a model looping on the S 80 casing reached 37 GB) ends as
+a CRASH instead of being killed by the system together with the whole run.
 
 Timing: each part reports how long it took to make, split into model decisions,
 FreeCAD steps and saving/export; a summary table with the totals is printed at the end.
@@ -144,6 +147,38 @@ def export_step(fcstd: Path, step: Path) -> str | None:
     return None if r.returncode == 0 and step.is_file() else (r.stderr.strip().splitlines() or ["failed"])[-1]
 
 
+def tree_rss_gb(pid: int) -> float:
+    """Resident memory (GB) of a process and all its descendants (Linux /proc; 0 elsewhere)."""
+    total_kb, stack, seen = 0, [pid], set()
+    while stack:
+        p = stack.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        try:
+            with open(f"/proc/{p}/status") as fh:
+                for line in fh:
+                    if line.startswith("VmRSS:"):
+                        total_kb += int(line.split()[1])
+                        break
+            for t in os.listdir(f"/proc/{p}/task"):
+                with open(f"/proc/{p}/task/{t}/children") as fh:
+                    stack += [int(c) for c in fh.read().split()]
+        except (OSError, ValueError):
+            continue
+    return total_kb / 1048576
+
+
+def default_worker_limit_gb() -> float:
+    """Half the machine's RAM (Linux), else no limit."""
+    try:
+        with open("/proc/meminfo") as fh:
+            kb = next(int(line.split()[1]) for line in fh if line.startswith("MemTotal:"))
+        return kb / 1048576 / 2
+    except (OSError, StopIteration, ValueError):
+        return 0.0
+
+
 def state_key(state: dict) -> str:
     """The document state without the action history (an Undo returns to the same key)."""
     return json.dumps({k: v for k, v in state.items() if k not in ("recent", "events")}, sort_keys=True)
@@ -196,7 +231,12 @@ def main() -> None:
     ap.add_argument("--guard-redos", type=int, default=-1,
                     help="how often per part the guard may redo a step the model undid; -1 (default): no limit "
                          "(see Loop guard above)")
+    ap.add_argument("--max-worker-gb", type=float, default=None,
+                    help="restart the FreeCAD worker and count the part as CRASH when its memory passes this "
+                         "(default: half the machine's RAM; 0: no limit)")
     args = ap.parse_args()
+    sys.stdout.reconfigure(line_buffering=True)  # result lines reach a log file as they happen
+    mem_limit = default_worker_limit_gb() if args.max_worker_gb is None else args.max_worker_gb
 
     if not (os.environ.get("FREECAD_PYTHON") and os.environ.get("FREECAD_LIB")):
         sys.exit("error: FreeCAD paths not set; run `source ~/taiga/freecad.env` first")
@@ -292,6 +332,10 @@ def main() -> None:
                     t = time.perf_counter()
                     s = env.call({"op": "step", "action": action})
                     t_fc += time.perf_counter() - t
+                    if mem_limit > 0 and tree_rss_gb(env.proc.pid) > mem_limit:  # runaway part: stop it here
+                        env.proc.kill()
+                        env.proc.wait()
+                        raise WorkerError(f"FreeCAD worker over {mem_limit:.0f} GB after step {steps}")
                     if s["info"].get("error") and not args.quiet:
                         print("      error:", s["info"]["error"])
                     if key and s.get("state") is not None:
