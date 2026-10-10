@@ -203,5 +203,5 @@ It saves a screenshot and the `.FCStd` to `runs/gui_demo/`. `--delay` sets the p
 
 | Script | Version |
 |---|---|
-| `taiga_build_part.py` | 2026.10.10.2 |
+| `taiga_build_part.py` | 2026.10.10.3 |
 | `taiga_assemble.py` | 2026.10.05.2 |

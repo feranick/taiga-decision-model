@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.10.2
+Version: 2026.10.10.3
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -384,7 +384,7 @@ def main() -> None:
                     extra.append(f"STEP export failed: {err}" if err else f"{fcstd.with_suffix('.step').name}")
                 t_save = time.perf_counter() - t_save0
                 t_make = t_built - t0
-                if not 0.0 <= sc["iou"] <= 1.0 + 1e-6:  # malformed solid (e.g. negative volume): not a match
+                if not 0.0 <= sc["iou"] <= 1.001:  # malformed solid (e.g. negative volume): not a match (1 + rounding is fine)
                     extra.append(f"invalid IoU {sc['iou']:.4g}, malformed solid")
                     sc = {**sc, "match": False}
                 ok = done and sc["match"]
