@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """eval_s80.py — score Taiga-built S 80 parts against the reference CAD, part by part.
-Version: 2026.10.06.3
+Version: 2026.10.10.1
 
 Runs in FreeCAD's Python (needs numpy):
     source ~/taiga-expanded/freecad.env
@@ -100,6 +100,8 @@ def sampled_iou(a, b, n: int = 20000, seed: int = 0) -> dict:
 def score(shape, ref_tris, ref_volume: float, res: int, ref_shape=None) -> dict:
     if shape is None:
         return {"iou": 0.0, "missing": True}
+    if abs(shape.Volume) < 1e-6 * ref_volume:  # not a solid (open shell, faces): its triangles can still
+        return {"iou": 0.0, "volume_cm3": 0.0, "coverage": 0.0, "excess": 0.0, "h_mm": 0.0, "no_volume": True}
     v = voxel_iou_checked(triangles(shape), ref_tris, shape.Volume, ref_volume, res)
     if not v["converged"] and ref_shape is not None:  # a mesh with holes, or a grid too coarse: classify points
         v = sampled_iou(shape, ref_shape)
