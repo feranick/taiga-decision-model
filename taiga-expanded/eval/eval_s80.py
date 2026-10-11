@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """eval_s80.py — score Taiga-built S 80 parts against the reference CAD, part by part.
-Version: 2026.10.10.1
+Version: 2026.10.11.1
 
 Runs in FreeCAD's Python (needs numpy):
     source ~/taiga-expanded/freecad.env
@@ -77,6 +77,14 @@ def assemble(folder: Path, builds: list[dict]):
     return shapes[0] if len(shapes) == 1 else Part.makeCompound(shapes)
 
 
+def _inside(shape, p) -> bool:
+    """Point classification; a point FreeCAD cannot classify on a degenerate shape counts as outside."""
+    try:
+        return bool(shape.isInside(p, 1e-6, True))
+    except Exception:  # e.g. Part.OCCError "gp_Vec2d::Normalize() - vector has zero norm"
+        return False
+
+
 def sampled_iou(a, b, n: int = 20000, seed: int = 0) -> dict:
     """IoU from random points classified against the solids themselves (no mesh): the fallback
     when a mesh is not watertight (OCC sometimes leaves a face without triangles), which breaks
@@ -89,7 +97,7 @@ def sampled_iou(a, b, n: int = 20000, seed: int = 0) -> dict:
     na = nb = ni = 0
     for _ in range(n):
         p = App.Vector(rng.uniform(bb.XMin, bb.XMax), rng.uniform(bb.YMin, bb.YMax), rng.uniform(bb.ZMin, bb.ZMax))
-        ia, ib = a.isInside(p, 1e-6, True), b.isInside(p, 1e-6, True)
+        ia, ib = _inside(a, p), _inside(b, p)
         na, nb, ni = na + ia, nb + ib, ni + (ia and ib)
     box = bb.XLength * bb.YLength * bb.ZLength / n
     union = na + nb - ni
@@ -98,6 +106,16 @@ def sampled_iou(a, b, n: int = 20000, seed: int = 0) -> dict:
 
 
 def score(shape, ref_tris, ref_volume: float, res: int, ref_shape=None) -> dict:
+    """Score one build; a build FreeCAD cannot measure (degenerate geometry) scores 0 instead of
+    stopping the whole evaluation."""
+    try:
+        return _score(shape, ref_tris, ref_volume, res, ref_shape)
+    except Exception as exc:  # Part.OCCError and the like, on malformed builds
+        return {"iou": 0.0, "volume_cm3": 0.0, "coverage": 0.0, "excess": 0.0, "h_mm": 0.0,
+                "error": str(exc)[:120]}
+
+
+def _score(shape, ref_tris, ref_volume: float, res: int, ref_shape=None) -> dict:
     if shape is None:
         return {"iou": 0.0, "missing": True}
     if abs(shape.Volume) < 1e-6 * ref_volume:  # not a solid (open shell, faces): its triangles can still
@@ -153,6 +171,25 @@ def main() -> None:
 
     results = {"spec": str(Path(args.spec).resolve()), "ref": str(ref_dir), "res": args.res,
                "builds": {label: str(p) for label, p in built}, "parts": {}, "vs_teacher": {}}
+    # checkpoint: long evaluations (thousands of DeepCAD parts) resume where an interrupted run stopped
+    partial = out.with_name(out.stem + ".partial.json")
+    done_parts, done_goals = {}, {}
+    if partial.is_file():
+        try:
+            prior = json.loads(partial.read_text())
+            if prior.get("builds") == results["builds"] and prior.get("res") == args.res:
+                done_parts, done_goals = prior.get("parts", {}), prior.get("vs_teacher", {})
+                print(f"resuming from {partial}: {len(done_parts)} parts, {len(done_goals)} goals already scored",
+                      flush=True)
+        except ValueError:
+            pass
+    n_new = 0
+
+    def checkpoint(force: bool = False) -> None:
+        nonlocal n_new
+        n_new += 1
+        if force or n_new % 25 == 0:
+            partial.write_text(json.dumps(results))
     refs = {}
     for part, alt, builds in rows:
         if part not in refs:
@@ -172,6 +209,9 @@ def main() -> None:
             continue
         ref, ref_tris = refs[part]
         key = part if alt is None else f"{part} [{alt}]"
+        if key in done_parts and all(label in done_parts[key] for label, _ in built):
+            results["parts"][key] = done_parts[key]
+            continue
         results["parts"][key] = {"ref_volume_cm3": round(ref.Volume / 1000, 2)}
         for label, folder in built:
             r = score(assemble(folder, builds), ref_tris, ref.Volume, args.res, ref)
@@ -179,11 +219,15 @@ def main() -> None:
             print(f"{key:36s} {label:12s} " + ("missing" if r.get("missing") else
                   f"IoU {r['iou']:.4f}  coverage {r['coverage']:.4f}  excess {r['excess']:.4f}  "
                   f"vol {r['volume_cm3']:.1f} / {ref.Volume / 1000:.1f} cm3"), flush=True)
+        checkpoint()
 
     # each goal against the teacher's build (goal frame, no placement)
     if teacher is not None and any(p != teacher for _, p in built):
         goals = sorted({b["goal"] for _, _, bs in rows for b in bs})
         for goal in goals:
+            if goal in done_goals:
+                results["vs_teacher"][goal] = done_goals[goal]
+                continue
             t_shape, _ = load_shape(teacher, goal)
             if t_shape is None:
                 continue
@@ -197,6 +241,7 @@ def main() -> None:
                 results["vs_teacher"][goal][label] = r
                 print(f"{goal:36s} {label:12s} vs teacher " + ("missing" if r.get("missing") else f"IoU {r['iou']:.4f}"),
                       flush=True)
+            checkpoint()
 
     # summary: mean and sd over the model builds (everything except the teacher folder)
     models = [label for label, p in built if p != teacher]
@@ -244,6 +289,7 @@ def main() -> None:
 
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(results, indent=1) + "\n")
+    partial.unlink(missing_ok=True)
     print(f"\nwrote {out}")
 
     if args.overlay:
