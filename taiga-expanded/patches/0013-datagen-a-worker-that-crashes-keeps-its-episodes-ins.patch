@@ -1,0 +1,103 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Sat, 10 Oct 2026 22:21:39 -0400
+Subject: [PATCH] datagen: a worker that crashes keeps its episodes instead of
+ failing the data set
+
+A FreeCAD worker can die on one rare goal (a hard crash inside FreeCAD, no Python error), e.g.
+in the test data with patch 0011's goal sequence. Upstream then failed the whole data set. Now
+the shard it wrote is cut back to its complete records and rewritten as a valid gzip file, the
+other workers' shards are kept, and generation fails only if every worker fails.
+---
+ freecad_s1/datagen.py     | 43 +++++++++++++++++++++++++++++++++++----
+ tests/test_ext_datagen.py | 25 +++++++++++++++++++++++
+ 2 files changed, 64 insertions(+), 4 deletions(-)
+ create mode 100644 tests/test_ext_datagen.py
+
+diff --git a/freecad_s1/datagen.py b/freecad_s1/datagen.py
+index 1e5bde1..b53edd7 100644
+--- a/freecad_s1/datagen.py
++++ b/freecad_s1/datagen.py
+@@ -108,12 +108,47 @@ def launch(args) -> None:
+         cmd = [py, "-m", "freecad_s1.datagen", "--shard", str(w), "--out", str(out), "--seed", str(args.seed),
+                "--episodes", *map(str, per_worker[w])]
+         procs.append(subprocess.Popen(cmd, env=freecad_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True))
+-    for p in procs:
++    failed = 0
++    for w, p in enumerate(procs):
+         stdout, _ = p.communicate()
+         lines = [ln for ln in stdout.splitlines() if ln.startswith("{")]
+-        print(lines[-1] if lines else f"shard failed (exit {p.returncode})")
+-        if p.returncode:
+-            sys.exit(p.returncode)
++        if p.returncode == 0:
++            print(lines[-1] if lines else f"shard {w}: no summary")
++            continue
++        # taiga-expanded: a worker can die inside FreeCAD (a hard crash on one rare goal); keep the
++        # episodes it wrote before the crash instead of failing the whole data set
++        failed += 1
++        kept = repair_shard(out / f"shard{w:03d}.jsonl.gz")
++        print(f"shard {w}: worker stopped (exit {p.returncode}); kept the {kept} records written before")
++    if failed == len(procs):
++        sys.exit(1)
++
++
++def repair_shard(path: Path) -> int:
++    """Rewrite a shard cut off by a crashed worker as a complete gzip file holding the complete
++    records written before the cut. Returns the number of records kept."""
++    import zlib
++
++    good: list[str] = []
++    try:
++        with gzip.open(path, "rt") as fh:
++            for line in fh:
++                if not line.endswith("\n"):
++                    break
++                try:
++                    json.loads(line)
++                except ValueError:
++                    break
++                good.append(line)
++    except FileNotFoundError:
++        return 0
++    except (EOFError, OSError, zlib.error):  # the cut: keep what came before
++        pass
++    tmp = path.with_suffix(".tmp")
++    with gzip.open(tmp, "wt") as fh:
++        fh.writelines(good)
++    os.replace(tmp, path)
++    return sum('"state"' in line for line in good)
+ 
+ 
+ def main() -> None:
+diff --git a/tests/test_ext_datagen.py b/tests/test_ext_datagen.py
+new file mode 100644
+index 0000000..62e170c
+--- /dev/null
++++ b/tests/test_ext_datagen.py
+@@ -0,0 +1,25 @@
++"""taiga-expanded: a shard cut off by a crashed worker is repaired, not fatal (patch 0013)."""
++import gzip
++import json
++
++from freecad_s1.datagen import repair_shard
++
++
++def test_a_cut_shard_keeps_its_complete_records(tmp_path):
++    path = tmp_path / "shard000.jsonl.gz"
++    recs = [{"ep": "e1", "goal": {}}] + [{"ep": "e1", "state": {"i": i}} for i in range(200)]
++    with gzip.open(path, "wt") as fh:
++        for r in recs:
++            fh.write(json.dumps(r) + "\n")
++            fh.flush()
++    data = path.read_bytes()
++    path.write_bytes(data[: len(data) - 40])  # a crash: the stream stops without its end
++    kept = repair_shard(path)
++    assert 0 < kept <= 200
++    with gzip.open(path, "rt") as fh:  # complete gzip again, every line valid JSON
++        lines = fh.read().splitlines()
++    assert len(lines) == kept + 1 and all(json.loads(x) for x in lines)
++
++
++def test_a_missing_shard_keeps_nothing(tmp_path):
++    assert repair_shard(tmp_path / "shard009.jsonl.gz") == 0

@@ -132,6 +132,9 @@ So the vocabulary expresses the S 80 to within 0.2 % of its volume; anything a m
 | Bearing bracket | 0 / 5, 0.99 on four seeds | 0 / 5, 0.99 on three seeds |
 | Casing core / casing | 0 / 5, 0.61 / 0.37 | 0 / 5, 0.49 / 0.49 |
 
+The default-budget models (5060 Ti, 1× data, 4 epochs, 2026-10-10) give the same picture: six short parts, bearings and impeller exact on 5 / 5 with and without the guard; bracket 0.99 on every seed (one no-guard build missing); casing 0.72 ± 0.14 with the guard, 0.78 ± 0.03 without; whole pump 0.85 on three seeds either way.
+
+- **The casing stops at the same point on most seeds and both budgets:** IoU 0.7969, coverage 0.8248 on eight of the ten guarded and unguarded 5060 Ti builds and on several Quadro builds. Identical results from different models suggest a hard limit rather than a learned mistake, most likely the 40 tree objects the model can see (about 19 sketch-based features; the casing has 52). Patch 0011's larger input limits are the test (Quadro run `s0012`).
 - **The bearings and the impeller now build on every seed without the guard:** patch 0010's off-origin revolves and turned hubs fixed what the guard had been covering. The bracket still lacks its bottom-face holes (patch 0011), and the casing parts still fail on length and the input limits (patch 0011).
 - **The build check was fooled once.** Seed 12's casing was reported `SUCCESS  IoU 46.9705` while it scores 0.0009 against the reference: a malformed solid with a negative volume made upstream's IoU formula exceed 1, and anything above 0.999 counts as a match. Fixed in `../../build/taiga_build_part.py` 2026.10.10.1 (an IoU outside [0, 1] is a failure) and, for the runtime itself (training, evaluation suites), in patch 0012.
 - `eval_s80.py` 2026.10.10.1 also scores builds with no volume (open shells, loose faces) as 0; before, their triangles could still enclose voxels (e.g. IoU 0.28 with "vol 0.0").
