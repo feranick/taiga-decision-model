@@ -489,9 +489,9 @@ Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header 
 
 | Script | Version |
 |---|---|
-| `taiga_repro_DGX.sh` | 2026.10.08.1 |
-| `taiga_repro_5060ti.sh` | 2026.10.08.1 |
-| `taiga_repro_Quadro6000.sh` | 2026.10.08.1 |
+| `taiga_repro_DGX.sh` | 2026.10.11.1 |
+| `taiga_repro_5060ti.sh` | 2026.10.11.1 |
+| `taiga_repro_Quadro6000.sh` | 2026.10.11.1 |
 | `taiga_aggregate.py` | 2026.10.04.3 |
 | `taiga_bench_size.py` | 2026.10.06.1 |
 | `taiga_run.py` | 2026.10.04.1 |

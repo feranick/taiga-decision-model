@@ -2,7 +2,7 @@
 # =============================================================================
 # taiga_repro_DGX.sh — reproduce Taiga-S1 from scratch on an NVIDIA DGX Spark
 # (DGX OS / Ubuntu 24.04 noble), with FreeCAD 1.1.x from ppa:bleedingedge/noble-spark-bleed (Qt5 build)
-# Version: 2026.10.08.1
+# Version: 2026.10.11.1
 #
 # Pipeline (mirrors upstream scripts/train_final.sh + final_eval.sh):
 #   setup   : uv + Python 3.11 venv, PyTorch (CUDA 13, aarch64), FreeCAD from
@@ -129,6 +129,11 @@ AGG=$(dirname "$SELF")/taiga_aggregate.py
 RUNNER=$(dirname "$SELF")/taiga_run.py
 LOGDIR=$WORK/logs
 ENVFILE=$WORK/freecad.env
+# A FREECAD_PYTHON inherited from another work folder (a shell that sourced its freecad.env) or
+# pointing nowhere is ignored, so setup and runs always use this WORK's own FreeCAD wrapper.
+if [[ -n ${FREECAD_PYTHON:-} && ( ! -x $FREECAD_PYTHON || ( $FREECAD_PYTHON == */bin/freecad-python && $FREECAD_PYTHON != "$FCWRAP" ) ) ]]; then
+  unset FREECAD_PYTHON FREECAD_LIB
+fi
 MARKER=$WORK/.installed_by_taiga
 
 [[ " $* " == *" uninstall "* ]] || mkdir -p "$WORK/bin" "$LOGDIR"
@@ -550,7 +555,7 @@ def sh(c):
     try: return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
     except Exception: return None
 json.dump({
-  "script_version": "2026.10.08.1", "script": "taiga_repro_DGX.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
+  "script_version": "2026.10.11.1", "script": "taiga_repro_DGX.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
   "dagger_rounds": $DAGGER_ROUNDS, "dagger_episodes": $DAGGER_EPISODES, "dagger_epochs": $DAGGER_EPOCHS, "deterministic": "$DETERMINISTIC",
   "dagger_perturb": $DAGGER_PERTURB, "dagger_perturb_frac": $DAGGER_PERTURB_FRAC,
   "taiga_env": {k: v for k, v in sorted(os.environ.items()) if k.startswith("TAIGA_")}, "model_args": "${MODEL_ARGS:-}",
