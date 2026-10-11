@@ -96,6 +96,14 @@ The converter writes every DeepCAD extrude after the first as a feature on a dat
 
 Fix: `taiga_build_part.py` 2026.10.07.1 reports a crashed part as CRASH (a failure), restarts the worker and goes on, so every goal gets a result.
 
+**Train split** (Spark2, `SUBSET=train LIMIT=0`, FreeCAD 1.1.3, patches 0001–0009, 2026-10-08 to 2026-10-11): 117,855 designs converted, 117,550 built by the teacher, **116,688 match their original** (IoU ≥ 0.99; 99.0 % of the converted designs). Verified goals by number of features:
+
+| Features | 1 | 2 | 3 | 4 | 5 | 6–10 | 11–15 | 16–21 |
+|---|---|---|---|---|---|---|---|---|
+| Designs | 54,776 | 25,688 | 12,299 | 7,783 | 6,067 | 9,477 | 540 | 58 |
+
+As training goals (patch 0011, `TAIGA_GOALS_FILE`) they fall into level 1 (54,776), level 2 (37,987) and level 3 (23,925, of which 10,075 have 6 or more features). `goals_train_verified.json` (73 MB) is in `~/taiga-expanded-0009/deepcad_train/` on Spark2; the test split stays the test set.
+
 ## Next
 
 1. Rerun `models` and `eval` with `taiga_build_part.py` 2026.10.07.1 (a clean baseline, and the crash count).

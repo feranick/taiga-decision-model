@@ -15,7 +15,7 @@ Extends Taiga-S1's vocabulary so it can build real parts like the Victor S 80 pu
 | 6 | **Training options**: size test suites `large` and `large_ext` (goals ×4, up to ~360 mm) and optional size augmentation (`TAIGA_SIZE_AUG`); perturbed DAgger (`DAGGER_PERTURB`) in the training scripts; data and experiment names follow these settings | Patch 0007 + training scripts. All 71 tests pass, including FreeCAD builds of the ×4 goals (DGX, FreeCAD 1.1.3, 2026-10-05) |
 | 7 | **Training coverage found with the S 80**: features on XY datum planes (closed cavities, slots through two sides, plates through the part, foot plates, keyways and webs on turned parts) and features wider than the face they stand on (caps over plugs, cover plates over spigots, flaps, flanges on necks); new suites `datum_z` and `overhang` | Patch 0009. Pure-Python tests pass; FreeCAD tests run during `setup` |
 | 8 | **Toward production goals** (phase 1 of `../docs/README_production_plan.md`): turned hubs with outline features (curved blades, slots) on the end face, polar about the axis; mixed-family goals of 3–11 intents (14 in the `mixed_long` suite); revolve profiles away from the origin; lone expanded bases at level 1; new suites `turned`, `mixed`, `mixed_long` | Patch 0010. All 84 tests pass, including FreeCAD (5060 Ti, FreeCAD 1.1.3, 2026-10-08); teacher check of sampled goals below |
-| 9 | **Long parts and real designs** (phases 2–3 of `../docs/README_production_plan.md`): the model's input limits as options (tree objects, goal intents, ordinal and position tables; keep the newest tree objects); features on the bottom face; training goals from a goals file (verified DeepCAD designs) | Patch 0011. 89 pure-Python tests pass (2026-10-08); FreeCAD tests run during `setup` |
+| 9 | **Long parts and real designs** (phases 2–3 of `../docs/README_production_plan.md`): the model's input limits as options (tree objects, goal intents, ordinal and position tables; keep the newest tree objects); features on the bottom face; training goals from a goals file (verified DeepCAD designs) | Patch 0011. With 0012–0013: all 94 tests pass, including FreeCAD (Quadro, FreeCAD 1.1.3, 2026-10-11) |
 | 10 | **Checker fix**: the runtime's IoU check scores 0 for shapes with zero or negative volume and for any value outside [0, 1]; a malformed solid had scored 46.97 against the S 80 casing target and counted as a match | Patch 0012 (2026-10-10). Affects model builds, DAgger rollouts and the evaluation suites; results before it may contain rare false successes |
 | 11 | **Data generation survives a FreeCAD crash**: a worker that dies inside FreeCAD keeps the episodes it wrote (its shard is cut back to complete records); generation fails only if every worker fails | Patch 0013 (2026-10-11). Found when the test-data generation of 0011/0012 failed on one rare upstream goal |
 
@@ -296,7 +296,22 @@ Each step as a sweep on the same machine (DGX shown), with fixed data (`DATA_SEE
 - **At the larger budget, comp falls back to 0.49 on four seeds, exactly as in step 3, and the cause is the spurious Undo.** Per rule (Quadro, seed 2, `eval.json`): any pattern with `boss_box` succeeds on 98 % of its goals; `hole_std` followed by a mirror on 4 %. Every one of those failures has the same history: the model builds the standard hole correctly, then undoes it, builds it again, undoes it, and so on until the step budget runs out; it never reaches the mirror. This is the behaviour found on the S 80 bearings and impeller: after a correct step whose *next* step is unfamiliar, the model reads its uncertainty as "something went wrong" and undoes. Longer training makes that reflex stronger, which is why comp falls with budget. The evaluation harness has no loop guard, so the loop counts as a failure. Two consequences: comp measures this recovery reflex more than the ability to compose; and the fix belongs in training (DAgger that also labels "continue" in correct but unfamiliar states, or less weight on Undo when the last step matched the plan), with the loop guard as the run-time safety net meanwhile.
 - **len6 (17 intents) stops at about 0.75 at either budget.** `mixed_long` (up to 14) is solved, so the remaining gap is the step beyond the longest training goals (12); patch 0011's real designs and longer goals address it.
 
-Phase-1 targets (`../docs/README_production_plan.md`): comp back to 1.00 at the large budget: **no** (see above); len6 ≥ 0.89: **no** (0.76); bearings and impeller without the guard: **yes** (large-budget models, all five seeds, `eval/README.md`).
+Phase-1 targets (`../docs/README_production_plan.md`): comp back to 1.00 at the large budget: **no** (see above); len6 ≥ 0.89: **no** (0.76), but **yes** with patches 0011–0013 (step 5); bearings and impeller without the guard: **yes** (large-budget models, all five seeds, `eval/README.md`).
+
+**Step 5: patches 0001–0013, 2× data, 8 epochs, upstream input limits** (5060 Ti, fixed data, 5 seeds, 2026-10-11), against step 4 (patch 0010) at the same budget:
+
+| Suite (clean) | 0010 (Quadro) | **0001–0013, no `MODEL_ARGS` (5060 Ti)** |
+|---|---|---|
+| len5 (15 intents) | 0.91 ± 0.18 | **1.00 ± 0.00** |
+| len6 (17 intents) | 0.76 ± 0.24 | **0.99 ± 0.01** |
+| len6, 20 % random actions | 0.66 ± 0.20 | **0.86 ± 0.03** |
+| `mixed_long` / `mixed` / `turned` / `datum_z` | 1.00 | 1.00 |
+| comp / comp2 / comp3 | 0.54 / 1.00 / 1.00 | 0.56 / 1.00 / 0.94 |
+| last-epoch NLL drop | 0–4 % | 0–3 % |
+
+- **Length is solved at this budget, on every seed:** len6 (17 intents, 1.4 × the longest training goal) from 0.76 with a wide spread to 0.99 ± 0.01, also far better under random actions. The model's input limits were not raised here (no `MODEL_ARGS`), so this comes from the training goals of patch 0011: mixed goals with a bottom-face group are more varied and somewhat longer. The variance-study lesson holds again: the spread closes when the data stops leaving a gap.
+- **comp is unchanged** (four seeds at 0.49): the spurious-Undo loop on `hole_std` → mirror (step 4), which these goals do not address.
+- The Quadro run with the raised limits (`MODEL_ARGS`) shows whether the limits add anything on top, mainly for the S 80 casing (52 intents, beyond the 40 tree objects the default limits encode).
 
 **Training plan step 3: perturbed DAgger** (unpatched `4a31bcf`, `DAGGER_PERTURB=0.2`, 4 epochs, fixed data, 5 seeds; 5060 Ti, 2026-10-08), against the same commit without perturbation (step 1 baseline, Spark2):
 
