@@ -126,5 +126,5 @@ As training goals (patch 0011, `TAIGA_GOALS_FILE`) they fall into level 1 (54,77
 | File | Version |
 |---|---|
 | `convert_deepcad.py` | 2026.10.06.10 |
-| `run_deepcad.sh` | 2026.10.06.5 |
+| `run_deepcad.sh` | 2026.10.12.1 |
 | `diagnose_goals.py` | 2026.10.06.2 |

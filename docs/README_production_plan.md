@@ -136,7 +136,31 @@ Fixed before the production training starts:
   - score with and without the loop guard.
 - **Pinned platform:** one FreeCAD version and OS for production; retrain and re-run the gates whenever FreeCAD changes (`../training/README_training.md`: each platform gets its own model).
 
-## 7. Phases
+## 7. Before the production run (checklist, 2026-10-12)
+
+**Results to finish** (runs in progress):
+
+1. **Input limits with matched tables** (Quadro `s0014`): does `--ord-table 28 --pos-table 96` bring length back to 0.99 with the raised limits, and does the casing gain? Decides the production limits.
+2. **DeepCAD goals at 1.2M** (Spark1 `dc1`) against `s0014` and **at 7M** (Spark2 `long2`): what the real designs add, and what the larger model adds. Decides the data mix and whether the long-goal model needs to be larger.
+3. **DeepCAD test split with the patch-0013 models** (5060 Ti): the first full real-design score of a current model, and the reference for the gates.
+4. **Why the casing stalls at 0.81** (one verbose build): if it is the held-out `boss_box` + pattern pair, item 5 fixes it.
+
+**Code to add:**
+
+5. ~~**`TAIGA_KEEP_HELDOUT=1`**~~ **done** (patch 0015): production trains on every feature combination; the held-out pairs exist only to measure generalization.
+6. ~~**Pooled data generation**~~ **done** (`taiga_pool_data.sh`, `TRAIN_DATA_DIR`): each machine generates shards with its own `DATA_SEED` (`./train_expanded.sh <machine> data`), the helper checks and combines them into one training folder.
+7. ~~**DeepCAD scoring without the second phase**~~ **done** (`run_deepcad.sh` 2026.10.12.1: off unless `VS_TEACHER=1`), which roughly halves the gate's time.
+8. Only if item 4 shows the casing fails on length beyond 21 intents: longer mixed goals (curriculum to ~40 intents) or mid-part start states (section 4.1).
+
+**Decisions:**
+
+9. **Model sizes:** several production models of different sizes (section 2's registry and router pick one per design), e.g. 1.2M for short parts and one or two larger long-goal models; the sizes come from a short data-scaling run (the same configuration at 1× / 2× / 4× data) once items 1–2 are in.
+10. **Pass criteria** per test set and length bucket (section 6), fixed before the run.
+11. **Pinned platform:** FreeCAD 1.1.3–1.1.4 (decided 2026-10-12), and which machines generate data and which train.
+
+The spurious Undo after a correct but unfamiliar step is a training issue that the loop guard covers at run time; with item 5 and the real designs (comp recovered in `long1`) it may not need its own fix, so it waits for the results above.
+
+## 8. Phases
 
 | Phase | Content | Done when |
 |---|---|---|

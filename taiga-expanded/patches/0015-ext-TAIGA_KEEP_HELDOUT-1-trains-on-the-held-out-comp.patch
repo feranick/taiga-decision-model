@@ -1,0 +1,306 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Mon, 12 Oct 2026 16:26:36 -0400
+Subject: [PATCH] ext: TAIGA_KEEP_HELDOUT=1 trains on the held-out compositions
+
+Upstream holds two compositions out of training (any pattern with boss_box, hole_std followed
+by a mirror) so the comp suites can measure generalization. A production model should train on
+them: the S 80 casing's feet are boss_box blocks repeated by a linear pattern. With
+TAIGA_KEEP_HELDOUT=1 training goals (upstream, expanded and goals-file goals) may contain them,
+and mixed training goals also use boss_box (on top, on side faces, as cross blocks through the
+part repeated up the height, patterned and mirrored) and mirror hole_std. Evaluation suites
+are unchanged, so for such a run comp measures pairs it has seen.
+---
+ freecad_s1/ext/goalsfile.py    |  7 ++--
+ freecad_s1/ext/mixed.py        | 53 +++++++++++++++++++++--------
+ freecad_s1/ext/sampler.py      | 11 ++++--
+ freecad_s1/goals.py            | 13 +++++++-
+ tests/test_ext_keep_heldout.py | 61 ++++++++++++++++++++++++++++++++++
+ 5 files changed, 124 insertions(+), 21 deletions(-)
+ create mode 100644 tests/test_ext_keep_heldout.py
+
+diff --git a/freecad_s1/ext/goalsfile.py b/freecad_s1/ext/goalsfile.py
+index ae0260e..f92c95c 100644
+--- a/freecad_s1/ext/goalsfile.py
++++ b/freecad_s1/ext/goalsfile.py
+@@ -56,9 +56,10 @@ def goal_scale(features: list[GoalFeature]) -> float:
+ 
+ 
+ def load(paths: list[str]) -> dict[int, list[Goal]]:
+-    from ..goals import heldout_composition
++    from ..goals import heldout_composition, keep_heldout
+ 
+-    key = ":".join(paths)
++    keep = keep_heldout()
++    key = ":".join(paths) + f"|keep={keep}"
+     if key not in _CACHE:
+         by_level: dict[int, list[Goal]] = {1: [], 2: [], 3: []}
+         for path in paths:
+@@ -70,7 +71,7 @@ def load(paths: list[str]) -> dict[int, list[Goal]]:
+                     continue
+                 lv = level_of(len(feats))
+                 g = Goal(feats, level=lv, scale=float(spec.get("scale") or goal_scale(feats)))
+-                if heldout_composition(g) is None:
++                if keep or heldout_composition(g) is None:
+                     by_level[lv].append(g)
+         _CACHE[key] = by_level
+     return _CACHE[key]
+diff --git a/freecad_s1/ext/mixed.py b/freecad_s1/ext/mixed.py
+index ba0bae7..2472c37 100644
+--- a/freecad_s1/ext/mixed.py
++++ b/freecad_s1/ext/mixed.py
+@@ -175,12 +175,21 @@ def sample_turned_goal(level: int, rng: random.Random) -> Goal:
+ 
+ # ----------------------------------------------------------------------------- mixed
+ 
++# patch 0015: with TAIGA_KEEP_HELDOUT=1, training mixed goals also use boss_box (patterned and
++# mirrored) and mirror hole_std; set by sample_mixed_goal(allow_heldout=True) for one goal.
++_HELD = False
++
++
++def _kinds(kinds: list[str], *held: str) -> list[str]:
++    return kinds + list(held) if _HELD else kinds
++
++
+ def _top_single(rng, base, xr, yr):
+-    """One top-face feature inside x in xr, y in yr (no boss_box)."""
++    """One top-face feature inside x in xr, y in yr (boss_box only when held-out pairs are kept)."""
+     from .sampler import _shape, _outline_feature
+ 
+     h = base.params["h"]
+-    kind = rng.choice(["hole", "hole_std", "boss_cyl", "pocket_rect", "outline"])
++    kind = rng.choice(_kinds(["hole", "hole_std", "boss_cyl", "pocket_rect", "outline"], "boss_box"))
+     span = min(xr[1] - xr[0], yr[1] - yr[0])
+     cx, cy = (xr[0] + xr[1]) / 2, (yr[0] + yr[1]) / 2
+     if kind in ("hole", "hole_std", "boss_cyl"):
+@@ -190,10 +199,10 @@ def _top_single(rng, base, xr, yr):
+         if kind == "boss_cyl":
+             p["h"] = _u(rng, 2, 15)
+         return [GoalFeature(kind, p)]
+-    if kind == "pocket_rect":
++    if kind in ("pocket_rect", "boss_box"):
+         w, d = _u(rng, 2, max(2.1, (xr[1] - xr[0]) * 0.5)), _u(rng, 2, max(2.1, (yr[1] - yr[0]) * 0.5))
+-        return [GoalFeature("pocket_rect", {"w": w, "d": d, "x": round(cx, 1), "y": round(cy, 1),
+-                                            "depth": _u(rng, 1, h * 0.6)})]
++        extra = {"depth": _u(rng, 1, h * 0.6)} if kind == "pocket_rect" else {"h": _u(rng, 2, 15)}
++        return [GoalFeature(kind, {"w": w, "d": d, "x": round(cx, 1), "y": round(cy, 1), **extra})]
+     half = max(1.5, span * 0.3)
+     outline = _shape(rng, cx, cy, half, half)
+     if rng.random() < 0.5:
+@@ -207,7 +216,7 @@ def _top_row(rng, base, xr, yr):
+     from .sampler import _span, _top_feature, _shape, _outline_feature
+ 
+     h = base.params["h"]
+-    kind = rng.choice(["hole", "hole_std", "boss_cyl", "slot_pocket", "outline"])
++    kind = rng.choice(_kinds(["hole", "hole_std", "boss_cyl", "slot_pocket", "outline"], "boss_box"))
+     r = _u(rng, 1.5, max(1.6, (xr[1] - xr[0]) * 0.2))
+     sp = _span(rng, yr[0] + r + 1.5, yr[1] - r - 1.5, 2 * r)
+     if sp is None:
+@@ -217,6 +226,8 @@ def _top_row(rng, base, xr, yr):
+     if kind == "outline":
+         f = _outline_feature(rng.choice(["profile_pocket", "profile_boss"]), _shape(rng, x, first, r, r))
+         f.params.update({"h": _u(rng, 2, 10)} if f.kind == "profile_boss" else {"depth": _u(rng, 1, h * 0.6)})
++    elif kind == "boss_box":
++        f = GoalFeature("boss_box", {"w": round(2 * r, 1), "d": round(2 * r, 1), "x": x, "y": first, "h": _u(rng, 2, 12)})
+     else:
+         f = _top_feature(rng, kind, x, first, r, h)
+     return [f, GoalFeature("linear_pattern", pt.pattern_params("linear_pattern", 1, sign, n=float(n), length=length))]
+@@ -229,12 +240,14 @@ def _top_mirror(rng, base, xr, yr):
+ 
+     h = base.params["h"]
+     y_lo = max(yr[0], 0.0)
+-    kind = rng.choice(["hole", "boss_cyl", "pocket_rect", "outline"])
++    kind = rng.choice(_kinds(["hole", "boss_cyl", "pocket_rect", "outline"], "hole_std", "boss_box"))
+     r = _u(rng, 1.5, max(1.6, min(xr[1] - xr[0], yr[1] - y_lo) * 0.2))
+     x = round((xr[0] + xr[1]) / 2, 1)
+     y = _u(rng, y_lo + r + 1, max(y_lo + r + 1.1, yr[1] - r - 1))
+     if kind == "pocket_rect":
+         f = GoalFeature("pocket_rect", {"w": round(2 * r, 1), "d": round(r, 1), "x": x, "y": y, "depth": _u(rng, 1, h * 0.6)})
++    elif kind == "boss_box":
++        f = GoalFeature("boss_box", {"w": round(2 * r, 1), "d": round(r, 1), "x": x, "y": y, "h": _u(rng, 2, 12)})
+     elif kind == "outline":
+         f = _outline_feature(rng.choice(["profile_pocket", "profile_boss"]), _shape(rng, x, y, r, r))
+         f.params.update({"h": _u(rng, 2, 10)} if f.kind == "profile_boss" else {"depth": _u(rng, 1, h * 0.6)})
+@@ -270,8 +283,8 @@ def _side_group(rng, base, face, faces_free):
+         kind = rng.choice(["profile_pocket", "profile_boss"])
+         params.update({"h": _u(rng, 2, 10)} if kind == "profile_boss" else {"depth": _u(rng, 1, (w if axis == "X" else d) * 0.3)})
+         return [_outline_feature(kind, _shape(rng, cu, cv, ru, rv), **params)], []
+-    kinds = ["hole", "hole_std", "boss_cyl", "pocket_rect"] if what == "single" else (
+-        ["hole", "hole_std", "boss_cyl"] if what == "row" else ["hole", "boss_cyl", "pocket_rect"])
++    kinds = _kinds(["hole", "hole_std", "boss_cyl", "pocket_rect"], "boss_box") if what == "single" else (
++        ["hole", "hole_std", "boss_cyl"] if what == "row" else _kinds(["hole", "boss_cyl", "pocket_rect"], "hole_std", "boss_box"))
+     f = side_feature(rng, rng.choice(kinds), base, face)
+     if f is None:
+         return None
+@@ -291,15 +304,18 @@ def _side_group(rng, base, face, faces_free):
+ 
+ 
+ def _cross_group(rng, base):
+-    """A cross bore through the part (datum plane), optionally repeated up the height."""
++    """A cross bore through the part (datum plane), optionally repeated up the height. With
++    held-out pairs kept: also cross blocks (boss_box) and pins through the part, repeated up the
++    height, e.g. a pump casing's feet."""
+     from . import patterns as pt
+     from .sampler import datum_feature, _span
+ 
+-    f = datum_feature(rng, "hole", base, rng.choice([0, 1]))
++    kind = rng.choice(["hole", "boss_box", "boss_cyl"]) if _HELD else "hole"
++    f = datum_feature(rng, kind, base, rng.choice([0, 1]))
+     if f is None:
+         return None
+-    if rng.random() < 0.4:
+-        r, h = f.params["r"], base.params["h"]
++    if rng.random() < (0.6 if kind == "boss_box" else 0.4):
++        r, h = (f.params["d"] / 2 if kind == "boss_box" else f.params["r"]), base.params["h"]
+         sp = _span(rng, r + 2, h - r - 2, 2 * r)
+         if sp is not None:
+             first, length, n, sign = sp
+@@ -308,7 +324,16 @@ def _cross_group(rng, base):
+     return [f]
+ 
+ 
+-def sample_mixed_goal(level: int, rng: random.Random) -> Goal:
++def sample_mixed_goal(level: int, rng: random.Random, allow_heldout: bool = False) -> Goal:
++    global _HELD
++    _HELD = allow_heldout
++    try:
++        return _sample_mixed_goal(level, rng)
++    finally:
++        _HELD = False
++
++
++def _sample_mixed_goal(level: int, rng: random.Random) -> Goal:
+     for _ in range(200):
+         base = GoalFeature("base_box", {"w": _u(rng, 40, 95), "d": _u(rng, 30, 80), "h": _u(rng, 16, 45)})
+         w, d, h = base.params["w"], base.params["d"], base.params["h"]
+diff --git a/freecad_s1/ext/sampler.py b/freecad_s1/ext/sampler.py
+index ed2ee73..aec53d8 100644
+--- a/freecad_s1/ext/sampler.py
++++ b/freecad_s1/ext/sampler.py
+@@ -1006,10 +1006,10 @@ def _turned(level: int, rng: random.Random) -> Goal:
+     return sample_turned_goal(level, rng)
+ 
+ 
+-def _mixed(level: int, rng: random.Random) -> Goal:
++def _mixed(level: int, rng: random.Random, allow_heldout: bool = False) -> Goal:
+     from .mixed import sample_mixed_goal
+ 
+-    return sample_mixed_goal(level, rng)
++    return sample_mixed_goal(level, rng, allow_heldout=allow_heldout)
+ 
+ 
+ SAMPLERS = {"side": sample_side_goal, "plane": sample_plane_goal, "outline": _outline_split,
+@@ -1040,4 +1040,9 @@ def sample_train(level: int, rng: random.Random) -> Goal:
+         g = SAMPLERS[split](2, rng)
+         return Goal(g.features[:1], level=1, scale=g.scale)
+     weights = [TRAIN_WEIGHTS.get(s, 1.0) for s in SPLITS]
+-    return SAMPLERS[rng.choices(SPLITS, weights)[0]](level, rng)
++    split = rng.choices(SPLITS, weights)[0]
++    from ..goals import keep_heldout
++
++    if split == "mixed" and keep_heldout():  # patch 0015: mixed training goals also use boss_box
++        return _mixed(level, rng, allow_heldout=True)
++    return SAMPLERS[split](level, rng)
+diff --git a/freecad_s1/goals.py b/freecad_s1/goals.py
+index 3cbe4ac..41c9d80 100644
+--- a/freecad_s1/goals.py
++++ b/freecad_s1/goals.py
+@@ -263,11 +263,22 @@ def heldout_composition(goal: Goal) -> str | None:
+ SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext", "datum_z", "overhang", "turned", "mixed")  # side .. mixed: taiga-expanded
+ 
+ 
++def keep_heldout() -> bool:
++    """taiga-expanded (patch 0015): TAIGA_KEEP_HELDOUT=1 trains on the held-out compositions too
++    (production: nothing needs to stay unseen). Evaluation suites are unchanged, so comp then
++    measures seen pairs for that run."""
++    import os
++
++    return os.environ.get("TAIGA_KEEP_HELDOUT", "0") == "1"
++
++
+ def goal_in_split(goal: Goal, split: str) -> bool:
+     """train/iid: levels 1-3 without held-out compositions; comp: level-3
+     goals matching a held-out rule; len: level-4 (6-7 features) goals without
+     held-out compositions."""
+     rule = heldout_composition(goal)
++    if split == "train" and keep_heldout():
++        return goal.level <= 3
+     if split in ("train", "iid"):
+         return goal.level <= 3 and rule is None
+     if split == "comp":
+@@ -328,7 +339,7 @@ def sample_split_goal(split: str, level: int, rng: random.Random, tries: int = 2
+     if split in ext.SPLITS or (split == "train" and ext.use_expanded_for_train(rng, level)):
+         for _ in range(tries):  # never a composition upstream holds out for its comp suites
+             goal = ext.sample_split(split, level, rng) if split in ext.SPLITS else ext.sample_train(level, rng)
+-            if heldout_composition(goal) is None:
++            if heldout_composition(goal) is None or (split == "train" and keep_heldout()):
+                 return goal
+         raise ValueError(f"could not sample a {split} goal at level {level}")
+     if split == "comp2":
+diff --git a/tests/test_ext_keep_heldout.py b/tests/test_ext_keep_heldout.py
+new file mode 100644
+index 0000000..be58e31
+--- /dev/null
++++ b/tests/test_ext_keep_heldout.py
+@@ -0,0 +1,61 @@
++"""taiga-expanded: TAIGA_KEEP_HELDOUT=1 trains on the held-out compositions (patch 0015)."""
++import json
++import random
++
++from freecad_s1.ext import goalsfile, mixed
++from freecad_s1.goals import heldout_composition, sample_split_goal
++
++PATTERNS = ("linear_pattern", "polar_pattern", "mirror")
++
++
++def _train_goals(n, seed, level=3):
++    rng = random.Random(seed)
++    return [sample_split_goal("train", level, rng) for _ in range(n)]
++
++
++def test_default_training_never_sees_held_out_pairs(monkeypatch):
++    monkeypatch.delenv("TAIGA_KEEP_HELDOUT", raising=False)
++    assert all(heldout_composition(g) is None for g in _train_goals(1500, 1))
++
++
++def test_keep_heldout_puts_held_out_pairs_into_training(monkeypatch):
++    monkeypatch.setenv("TAIGA_KEEP_HELDOUT", "1")
++    rules = [heldout_composition(g) for g in _train_goals(3000, 2)]
++    assert rules.count("pattern+boss_box") > 30 and rules.count("mirrored_hole_std") > 10
++
++
++def test_keep_heldout_leaves_evaluation_suites_unchanged(monkeypatch):
++    monkeypatch.delenv("TAIGA_KEEP_HELDOUT", raising=False)
++    plain = {s: [sample_split_goal(s, 3, random.Random(4)).to_json() for _ in range(3)] for s in ("iid", "comp", "mixed")}
++    monkeypatch.setenv("TAIGA_KEEP_HELDOUT", "1")
++    kept = {s: [sample_split_goal(s, 3, random.Random(4)).to_json() for _ in range(3)] for s in ("iid", "comp", "mixed")}
++    assert plain == kept
++
++
++def test_mixed_training_goals_pattern_boss_box_when_kept():
++    rng = random.Random(5)
++    n_pat_box = n_cross_box = 0
++    for _ in range(600):
++        g = mixed.sample_mixed_goal(3, rng, allow_heldout=True)
++        kinds = [f.kind for f in g.features]
++        for a, b in zip(g.features, g.features[1:]):
++            if a.kind == "boss_box" and b.kind in PATTERNS:
++                n_pat_box += 1
++                n_cross_box += "off" in a.params and b.kind == "linear_pattern"
++        assert kinds[0] == "base_box"
++    assert n_pat_box > 40 and n_cross_box > 5  # incl. cross blocks repeated up the height (casing feet)
++    assert mixed._HELD is False  # reset after the goal
++
++
++def test_goals_file_keeps_held_out_goals_when_kept(tmp_path, monkeypatch):
++    base = {"kind": "base_box", "params": {"w": 40, "d": 30, "h": 10}}
++    box = {"kind": "boss_box", "params": {"w": 4, "d": 4, "x": 5, "y": 0, "h": 3}}
++    pat = {"kind": "polar_pattern", "params": {"n": 4.0}}
++    path = tmp_path / "g.json"
++    path.write_text(json.dumps({"a": {"features": [base, box, pat]}, "b": {"features": [base, box]}}))
++    monkeypatch.setenv("TAIGA_GOALS_FILE", str(path))
++    goalsfile._CACHE.clear()
++    monkeypatch.delenv("TAIGA_KEEP_HELDOUT", raising=False)
++    assert sum(len(v) for v in goalsfile.load(goalsfile.files()).values()) == 1
++    monkeypatch.setenv("TAIGA_KEEP_HELDOUT", "1")
++    assert sum(len(v) for v in goalsfile.load(goalsfile.files()).values()) == 2

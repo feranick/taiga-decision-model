@@ -1,6 +1,6 @@
 #!/bin/bash
 # run_deepcad.sh — DeepCAD build histories as Taiga goals: download, convert, verify, score models.
-# Version: 2026.10.06.5
+# Version: 2026.10.12.1
 #
 # Usage:  ./run_deepcad.sh download          DeepCAD's data (cad_json + split) into $DATA
 #         ./run_deepcad.sh convert           JSON -> goals + reference STEP files        -> $OUT
@@ -12,7 +12,8 @@
 #         ./run_deepcad.sh eval              score teacher and model builds (verified goals only)
 # Env:    WORK (~/taiga-expanded), DATA (~/deepcad), SUBSET (test), LIMIT (300 models; 0 = all),
 #         MAX_FEATURES (60), MIN_IOU (0.99), OUT ($WORK/deepcad_$SUBSET), REF_PY (Python with OCP 7.9:
-#         $WORK/ocp-venv/bin/python, as created by ../eval/run_s80.sh), BUILD_ARGS (extra options for
+#         $WORK/ocp-venv/bin/python, as created by ../eval/run_s80.sh), VS_TEACHER=1 (eval also scores
+#         every model build against the teacher's, a second pass as long as the first), BUILD_ARGS (extra options for
 #         taiga_build_part.py in "models", e.g. --no-loop-guard)
 # License: DeepCAD's models come from public Onshape documents (see README.md); check before use
 #         beyond research.
@@ -144,9 +145,12 @@ stage_eval() {
   need_work
   local built=("teacher=$OUT/teacher")
   for d in "$OUT"/seed*/; do [[ -d $d ]] && built+=("$(basename "$d")=${d%/}"); done
-  log "eval: ${built[*]}"
+  # the teacher's builds match the originals (verify), so scoring each model build against the
+  # teacher's too (a second pass as long as the first) is optional: VS_TEACHER=1
+  local vs=(); [[ ${VS_TEACHER:-0} == 1 ]] && vs=(--teacher "$OUT/teacher")
+  log "eval: ${built[*]}${vs:+ (and against the teacher)}"
   "$FREECAD_PYTHON" "$REPO/taiga-expanded/eval/eval_s80.py" --spec "$OUT/eval_${SUBSET}_verified.json" --ref "$OUT/refs" \
-    --built "${built[@]}" --teacher "$OUT/teacher" --out "$OUT/eval_${SUBSET}_models.json" 2>&1 | clean > "$OUT/eval.log" \
+    --built "${built[@]}" "${vs[@]}" --out "$OUT/eval_${SUBSET}_models.json" 2>&1 | clean > "$OUT/eval.log" \
     || die "eval_s80.py failed, see $OUT/eval.log"
   "$PY" - "$OUT/eval_${SUBSET}_models.json" "$OUT/goals_${SUBSET}_verified.json" "$MIN_IOU" <<'PYEOF'
 import json, math, sys

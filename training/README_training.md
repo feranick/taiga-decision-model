@@ -91,6 +91,8 @@ Run them one at a time or several in sequence, for example `./script.sh train ex
 | `DAGGER_PERTURB`, `DAGGER_PERTURB_FRAC` | `0`, `0.5` | `> 0`: perturbed DAgger. In that fraction of the rollout batches, each step takes a random off-plan command with this probability, so the model learns to notice and repair mistakes (upstream `--dagger-perturb`; upstream's Mesa-S1 uses `0.2`). Needs a `REPO_REF` that has it, e.g. `4a31bcf`; the pinned `a6e81d3` does not. |
 | `TAIGA_EXT_FRACTION`, `TAIGA_SIZE_AUG`, `TAIGA_SIZE_MAX` | unset | `taiga-expanded` only: share of expanded training goals (0.35), share of training goals scaled up (0), largest scale factor (5). See `../taiga-expanded/README.md`. Recorded in `manifest.json` and added to the data and experiment names. |
 | `TAIGA_GOALS_FILE`, `TAIGA_GOALS_FRACTION` | unset, `0.25` | `taiga-expanded` (patch 0011): training goals read from goals files (`:`-separated), e.g. verified DeepCAD designs (`goals_train_verified.json`), for this share of the training goals at every level. The data name gets `_g<folder of the first file>f<fraction>`. |
+| `TAIGA_KEEP_HELDOUT` | unset | `1` (`taiga-expanded` patch 0015): train on upstream's held-out compositions too, for production models; the data and experiment names get `_kh` |
+| `TRAIN_DATA_DIR` | unset | Train on this folder of shards instead of generating data, e.g. data pooled from several machines with `taiga_pool_data.sh`; checked, never regenerated; the experiment name gets `d<folder>` |
 | `MODEL_ARGS` | unset | Extra `train_sft` flags for the model's size and input limits, e.g. `"--width 256 --ff 768 --enc-layers 4 --max-nodes 160 --max-goal 64 --max-ord 72 --max-pos 256 --newest-nodes"` (`--heads`, `--max-*` and `--newest-nodes` need `taiga-expanded` patch 0011). The experiment name gets `m<hash of the flags>`; `manifest.json` records them. |
 | `DETERMINISTIC` | `0` | `1`: deterministic PyTorch (stops on a non-deterministic operation); `warn`: only warns. Pins DAgger workers to `DAGGER_WORKERS` (8). |
 | `EXP` | derived | Experiment name; runs go to `runs/<EXP>/seed<N>`. Derived from the settings that differ from the defaults (e.g. `e8_x2_data2`); empty for the defaults, so plain runs stay in `runs/seed<N>`. |
@@ -147,6 +149,20 @@ nohup ./taiga_repro_Quadro6000.sh pair > ~/taiga/logs/pair.log 2>&1 &
 # Dell Precision 7920: one seed on one GPU
 GPU=1 SEED=12 nohup ./taiga_repro_Quadro6000.sh data train export eval calib > ~/taiga/logs/run_seed12.log 2>&1 &
 ```
+
+### Pooling data from several machines
+
+Data generation is CPU-bound and splits cleanly: each machine generates its part with its own seed (same patches and `TAIGA_*` settings), the folders are copied to the training machine and combined:
+
+```bash
+# on each machine (seeds 21, 22, ...):
+DATA_SEED=21 DATA_SCALE=4 TAIGA_KEEP_HELDOUT=1 TAIGA_GOALS_FILE=... ./train_expanded.sh <machine> data
+# on the training machine, after copying the folders:
+taiga_pool_data.sh ~/pool/prod1 <data folder 1> <data folder 2> ...
+TRAIN_DATA_DIR=~/pool/prod1 ... ./train_expanded.sh <machine> sweep
+```
+
+`taiga_pool_data.sh` checks every shard (`gzip -t`), refuses folders marked incomplete, links or copies the shards under unique names and writes `pool.json` (sources, shard and state counts).
 
 ### Monitoring
 
@@ -495,10 +511,11 @@ Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header 
 
 | Script | Version |
 |---|---|
-| `taiga_repro_DGX.sh` | 2026.10.11.1 |
-| `taiga_repro_5060ti.sh` | 2026.10.11.1 |
-| `taiga_repro_Quadro6000.sh` | 2026.10.11.1 |
+| `taiga_repro_DGX.sh` | 2026.10.12.1 |
+| `taiga_repro_5060ti.sh` | 2026.10.12.1 |
+| `taiga_repro_Quadro6000.sh` | 2026.10.12.1 |
 | `taiga_aggregate.py` | 2026.10.04.3 |
 | `taiga_bench_size.py` | 2026.10.06.1 |
+| `taiga_pool_data.sh` | 2026.10.12.1 |
 | `taiga_status.sh` | 2026.10.12.7 |
 | `taiga_run.py` | 2026.10.04.1 |

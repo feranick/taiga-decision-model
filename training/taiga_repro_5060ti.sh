@@ -2,7 +2,7 @@
 # =============================================================================
 # taiga_repro_5060ti.sh — reproduce Taiga-S1 from scratch on Ubuntu 26.04
 # (resolute), host "mochi", with FreeCAD 1.1.x from ppa:bleedingedge/resolute-bleed
-# Version: 2026.10.11.1
+# Version: 2026.10.12.1
 #
 # Same pipeline as taiga_repro_DGX.sh (DGX Spark); only setup differs:
 #   - FreeCAD from your PPA via apt (system Python), no conda
@@ -40,8 +40,10 @@
 #                "--width 256 --ff 768 --enc-layers 4 --max-nodes 160 --max-goal 64 --max-ord 72
 #                --max-pos 256 --newest-nodes" (taiga-expanded patch 0011); the experiment name
 #                gets m<hash>, and manifest.json records the flags
+#   TRAIN_DATA_DIR=  train on this folder of shards instead of generating data (e.g. pooled from
+#                several machines with taiga_pool_data.sh); the experiment name gets d<folder>
 #   TAIGA_*      taiga-expanded settings (TAIGA_EXT_FRACTION, TAIGA_SIZE_AUG, TAIGA_SIZE_MAX,
-#                TAIGA_GOALS_FILE, TAIGA_GOALS_FRACTION):
+#                TAIGA_GOALS_FILE, TAIGA_GOALS_FRACTION, TAIGA_KEEP_HELDOUT):
 #                recorded in manifest.json and in the data and experiment names
 #   DETERMINISTIC=0  1: deterministic PyTorch (fails on non-deterministic ops),
 #                    warn: only warn; DAgger workers pinned to DAGGER_WORKERS=8
@@ -85,6 +87,7 @@ data_tag() {  # taiga-expanded settings that change the training data
   [[ ${TAIGA_SIZE_AUG:-0} != 0 ]] && t+="_size$TAIGA_SIZE_AUG${TAIGA_SIZE_MAX:+x$TAIGA_SIZE_MAX}"
   # goals file (patch 0011): named after the folder of the first file, plus the fraction
   [[ -n ${TAIGA_GOALS_FILE:-} ]] && t+="_g$(basename "$(dirname "${TAIGA_GOALS_FILE%%:*}")")f${TAIGA_GOALS_FRACTION:-0.25}"
+  [[ ${TAIGA_KEEP_HELDOUT:-0} == 1 ]] && t+="_kh"   # held-out compositions in training (patch 0015)
   echo "$t"
 }
 exp_tag() {  # experiment name from non-default settings; empty for the defaults
@@ -95,6 +98,7 @@ exp_tag() {  # experiment name from non-default settings; empty for the defaults
   [[ "$DAGGER_ROUNDS/$DAGGER_EPISODES/$DAGGER_EPOCHS" != 2/400/2 ]] && t+=("dg${DAGGER_ROUNDS}x${DAGGER_EPISODES}x${DAGGER_EPOCHS}")
   [[ $DATA_SCALE != 1 ]] && t+=("x$DATA_SCALE")
   [[ -n ${MODEL_ARGS:-} ]] && t+=("m$(printf '%s' "$MODEL_ARGS" | md5sum | cut -c1-6)")  # model size / input limits
+  [[ -n ${TRAIN_DATA_DIR:-} ]] && t+=("d$(basename "$TRAIN_DATA_DIR")")   # pooled training data
   [[ -n $DATA_SEED ]] && t+=("data$DATA_SEED")
   [[ $DETERMINISTIC != 0 ]] && t+=("det")
   local IFS=_; echo "${t[*]}"
@@ -104,6 +108,7 @@ GROUP=$REPO/runs${EXP:+/$EXP}
 RUN=$GROUP/seed${SEED}
 TRAIN_DATA=data/gen_train_seed${DATA_SEED:-$SEED}; [[ $DATA_SCALE == 1 ]] || TRAIN_DATA+=_x$DATA_SCALE
 TRAIN_DATA+=$(data_tag)
+[[ -n ${TRAIN_DATA_DIR:-} ]] && TRAIN_DATA=$(realpath -m "$TRAIN_DATA_DIR")   # pooled data (taiga_pool_data.sh)
 LOGTAG=${EXP:+${EXP}_}seed${SEED}
 SELF=$(realpath "$0")
 AGG=$(dirname "$SELF")/taiga_aggregate.py
@@ -323,7 +328,10 @@ stage_data() {
   eps=$(awk -v s="$DATA_SCALE" 'BEGIN { printf "%d %d %d", 4000*s+0.5, 8000*s+0.5, 12000*s+0.5 }')
   mkdir -p data
   exec 7>"data/.$(basename "$train").lock"; flock 7   # runs sharing DATA_SEED generate it once
-  if [[ ! -f $train/.incomplete ]] && shards_ok "$train"; then
+  if [[ -n ${TRAIN_DATA_DIR:-} ]]; then   # pooled data is used as is, never regenerated here
+    shards_ok "$train" || die "pooled training data in $train is missing or damaged (taiga_pool_data.sh)"
+    log "Pooled training data in $train"
+  elif [[ ! -f $train/.incomplete ]] && shards_ok "$train"; then
     log "Training data exists in $train — skipping (delete it to regenerate)"
   else
     rm -rf "$train"; mkdir -p "$train"; touch "$train/.incomplete"
@@ -538,7 +546,7 @@ def sh(c):
     try: return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
     except Exception: return None
 json.dump({
-  "script_version": "2026.10.11.1", "script": "taiga_repro_5060ti.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
+  "script_version": "2026.10.12.1", "script": "taiga_repro_5060ti.sh", "seed": $SEED, "exp": "$EXP", "data_seed": ${DATA_SEED:-$SEED}, "data_scale": $DATA_SCALE, "epochs": $EPOCHS,
   "dagger_rounds": $DAGGER_ROUNDS, "dagger_episodes": $DAGGER_EPISODES, "dagger_epochs": $DAGGER_EPOCHS, "deterministic": "$DETERMINISTIC",
   "dagger_perturb": $DAGGER_PERTURB, "dagger_perturb_frac": $DAGGER_PERTURB_FRAC,
   "taiga_env": {k: v for k, v in sorted(os.environ.items()) if k.startswith("TAIGA_")}, "model_args": "${MODEL_ARGS:-}",
