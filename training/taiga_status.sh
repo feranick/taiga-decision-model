@@ -1,6 +1,6 @@
 #!/bin/bash
 # taiga_status.sh — what is running and how far it is, on this machine (read-only).
-# Version: 2026.10.12.1
+# Version: 2026.10.12.3
 #
 # Usage: ~/Software/taiga-decision-model/training/taiga_status.sh
 # Looks at every ~/taiga-expanded* work folder: setup tests, sweeps (seeds finished, current
@@ -8,7 +8,8 @@
 shopt -s nullglob
 
 say() { printf '%s\n' "$*"; }
-count_lines() { grep -cE "$1" "$2" 2>/dev/null || echo 0; }
+newest() { local f best=""; for f in "$@"; do [[ -z $best || $f -nt $best ]] && best=$f; done; printf '%s' "$best"; }
+count_lines() { local c; c=$(grep -cE "$1" "$2" 2>/dev/null); echo "${c:-0}"; }   # grep -c prints 0 itself (exit 1)
 
 say "== $(hostname)  $(date '+%Y-%m-%d %H:%M')"
 say "tmux: $(tmux ls 2>/dev/null | cut -d: -f1 | tr '\n' ' ' || true)"
@@ -19,17 +20,19 @@ for W in "$HOME"/taiga-expanded*; do
   say ""
   say "-- $W"
   # setup tests
-  t=$(ls -t "$W"/logs/tests_*.log 2>/dev/null | head -n 1)
-  [[ -n $t ]] && say "   setup tests: $(grep -E '[0-9]+ (passed|failed)' "$t" | tail -n 1)"
+  t=$(newest "$W"/logs/tests_*.log)
+  if [[ -n $t ]]; then
+    r=$(grep -E '[0-9]+ (passed|failed)' "$t" | tail -n 1)
+    say "   setup tests: ${r:-running}"
+  fi
   # sweeps: one line per experiment folder
   for G in "$W"/taiga-s1/runs/*/; do
     G=${G%/}; exp=$(basename "$G")
     [[ $exp == reference_hf || $exp == seed* ]] && continue
-    n_done=$(ls "$G"/seed*/eval_perturb.json 2>/dev/null | wc -l)
-    n_seed=$(ls -d "$G"/seed*/ 2>/dev/null | wc -l)
+    done_files=("$G"/seed*/eval_perturb.json); n_done=${#done_files[@]}
     line="   sweep $exp: $n_done/5 seeds finished"
     if (( n_done < 5 )); then
-      last=$(ls -t "$W"/logs/sweep_"${exp}"_seed*.log 2>/dev/null | head -n 1)
+      last=$(newest "$W"/logs/sweep_"${exp}"_seed*.log)
       [[ -n $last ]] && line+=" | now: $(grep -a -E '^\[[0-9:]+\]|^\[(sft|dagger)' "$last" | tail -n 1 | cut -c1-80)"
     fi
     say "$line"
