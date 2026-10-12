@@ -1,6 +1,6 @@
 #!/bin/bash
 # taiga_status.sh — what is running and how far it is, on this machine (read-only).
-# Version: 2026.10.12.3
+# Version: 2026.10.12.4
 #
 # Usage: ~/Software/taiga-decision-model/training/taiga_status.sh
 # Looks at every ~/taiga-expanded* work folder: setup tests, sweeps (seeds finished, current
@@ -37,6 +37,16 @@ for W in "$HOME"/taiga-expanded*; do
     fi
     say "$line"
   done
+  # sweeps still generating data (no run folder yet)
+  declare -A seen=()
+  for L in "$W"/logs/sweep_*_seed*.log; do
+    exp=$(basename "$L"); exp=${exp#sweep_}; exp=${exp%_seed*.log}
+    [[ -n ${seen[$exp]:-} || -d $W/taiga-s1/runs/$exp ]] && continue
+    seen[$exp]=1
+    now=$(grep -a -E '^\[[0-9:]+\]' "$(newest "$W"/logs/sweep_"${exp}"_seed*.log)" | tail -n 1 | cut -c1-80)
+    say "   sweep $exp: starting | now: ${now:-?}"
+  done
+  unset seen
   # S 80
   for S in "$W"/s80*/; do
     S=${S%/}
