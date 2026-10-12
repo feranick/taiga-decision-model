@@ -122,6 +122,19 @@ So the vocabulary expresses the S 80 to within 0.2 % of its volume; anything a m
 - **The two guard variants build exactly the same parts.** Without a limit, failed builds keep more of their correct steps (the bracket complete except the two bottom holes); with the limit, the old teardown comes back after the first redo. `taiga_build_part.py` 2026.10.08.3 therefore sets no limit by default (`--guard-redos -1`; a number limits it).
 - **What is left is training, not the guard:** the bracket's bottom-face holes (next patch), the impeller's blade pattern on two seeds (patch 0010's `turned` family) and the casing's length and input limits (`../README.md`, primitive 8).
 
+**Patch-0013 models, upstream input limits** (5060 Ti, 2× data, 8 epochs, 5 seeds, loop guard on, 2026-10-11). Seeds exact / mean IoU against the reference:
+
+| Part | 0013 | 0010, same budget (Quadro) |
+|---|---|---|
+| Six short parts, bearings, impeller | 5 / 5 | 5 / 5 |
+| Bearing bracket | **4 / 5** (IoU 1.0000), 0.93 | 0 / 5, 0.99 on four seeds |
+| Casing | 0 / 5, **0.81 ± 0.15** (0.83–0.90 on four seeds) | 0 / 5, 0.37 |
+| Casing core | 0 / 5, 0.60 ± 0.31 | 0 / 5, 0.61 |
+| Whole pump (volume-weighted) | **0.87–0.92 on four seeds** | 0.19–0.84 |
+
+- **The bracket builds exactly** on four seeds: patch 0011's bottom-face features were the missing piece.
+- **The casing gets further** (0.83–0.90 on four seeds against the earlier ceiling of 0.80) even with the 40-object input limit; it still fails, and the casing core (24 intents) is erratic. Whether the raised limits help is the Quadro run's question.
+
 **Patch-0010 models** (Quadro, 2× data, 8 epochs, 5 seeds, 2026-10-10). Seeds exact / mean IoU against the reference:
 
 | Part | With guard | Without guard |

@@ -96,6 +96,17 @@ The converter writes every DeepCAD extrude after the first as a feature on a dat
 
 Fix: `taiga_build_part.py` 2026.10.07.1 reports a crashed part as CRASH (a failure), restarts the worker and goes on, so every goal gets a result.
 
+**Step-1 baseline, complete** (Spark1, same models, every goal built; 10–28 FreeCAD crashes per model, counted as failures; 2026-10-12). Share of the 6,762 verified test designs built to IoU ≥ 0.99 against the original:
+
+| Features | Goals | seed 2 | seed 12 | seed 22 | seed 32 | seed 42 | mean ± sd |
+|---|---|---|---|---|---|---|---|
+| 1–5 | 6,187 | 0.544 | 0.548 | 0.565 | 0.594 | 0.563 | 0.563 ± 0.020 |
+| 6–10 | 544 | 0.048 | 0.053 | 0.044 | 0.064 | 0.055 | 0.053 ± 0.008 |
+| 11–20 | 31 | 0.000 | 0.032 | 0.000 | 0.000 | 0.000 | 0.006 ± 0.014 |
+| all | 6,762 | 0.502 | 0.505 | 0.520 | 0.549 | 0.520 | **0.519 ± 0.018** |
+
+As in the first pass: single extrudes build, almost anything with an XY datum-plane feature does not, and length makes it worse. This is the reference point for every later model on this test set.
+
 **Train split** (Spark2, `SUBSET=train LIMIT=0`, FreeCAD 1.1.3, patches 0001–0009, 2026-10-08 to 2026-10-11): 117,855 designs converted, 117,550 built by the teacher, **116,688 match their original** (IoU ≥ 0.99; 99.0 % of the converted designs). Verified goals by number of features:
 
 | Features | 1 | 2 | 3 | 4 | 5 | 6–10 | 11–15 | 16–21 |

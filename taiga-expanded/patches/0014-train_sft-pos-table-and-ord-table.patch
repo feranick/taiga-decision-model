@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Mon, 12 Oct 2026 10:58:57 -0400
+Subject: [PATCH] train_sft: --pos-table and --ord-table
+
+Raising --max-ord / --max-pos (patch 0011) without raising the ranges simulated in training
+spreads the same 12 ordinals and 48 positions per example over a larger table, so each slot is
+trained less (len6 0.99 -> 0.67 on the Quadro), and goals with more than 12 intents collapse
+their later ordinals into one. The two ranges are now flags; keep them in proportion to the
+tables (upstream 12/32 and 48/128), e.g. --ord-table 28 for --max-ord 72, --pos-table 96 for
+--max-pos 256.
+---
+ freecad_s1/train_sft.py | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/freecad_s1/train_sft.py b/freecad_s1/train_sft.py
+index 2303755..5e23de8 100644
+--- a/freecad_s1/train_sft.py
++++ b/freecad_s1/train_sft.py
+@@ -94,6 +94,11 @@ def main() -> None:
+     ap.add_argument("--max-goal", type=int, default=24, help="goal intents encoded (upstream: 24)")
+     ap.add_argument("--max-ord", type=int, default=32, help="ordinal table size (upstream: 32)")
+     ap.add_argument("--max-pos", type=int, default=128, help="position table size (upstream: 128)")
++    ap.add_argument("--pos-table", type=int, default=48,
++                    help="positions simulated per training sequence (upstream 48; raise with --max-pos, e.g. 96 for 256)")
++    ap.add_argument("--ord-table", type=int, default=12,
++                    help="ordinals simulated per training sequence (upstream 12; raise with --max-ord, e.g. 28 for 72); "
++                         "goals with more intents than this collapse their later ordinals in training")
+     ap.add_argument("--newest-nodes", action="store_true",
+                     help="trees longer than --max-nodes keep the Body and the newest objects (default: the oldest)")
+     ap.add_argument("--pos-mode", choices=["abs", "rand"], default="abs")
+@@ -164,7 +169,8 @@ def main() -> None:
+                    invariant_numerics=args.invariant_numerics, modular=args.modular, pointer=args.pointer,
+                    index_eval=args.index_eval, type_dropout=args.type_dropout, ui=args.ui,
+                    ui_recent_fields=args.ui_recent_fields, ui_pending_feature=args.ui_pending_feature,
+-                      ui_param_match=args.ui_param_match, heads=args.heads, **limits)
++                      ui_param_match=args.ui_param_match, heads=args.heads, pos_table=args.pos_table,
++                      ord_table=args.ord_table, **limits)
+     model = S1Model(cfg)
+     if args.init:
+         state = torch.load(args.init, map_location="cpu", weights_only=True)["state_dict"]

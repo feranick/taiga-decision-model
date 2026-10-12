@@ -18,6 +18,7 @@ Extends Taiga-S1's vocabulary so it can build real parts like the Victor S 80 pu
 | 9 | **Long parts and real designs** (phases 2–3 of `../docs/README_production_plan.md`): the model's input limits as options (tree objects, goal intents, ordinal and position tables; keep the newest tree objects); features on the bottom face; training goals from a goals file (verified DeepCAD designs) | Patch 0011. With 0012–0013: all 94 tests pass, including FreeCAD (Quadro, FreeCAD 1.1.3, 2026-10-11) |
 | 10 | **Checker fix**: the runtime's IoU check scores 0 for shapes with zero or negative volume and for any value outside [0, 1]; a malformed solid had scored 46.97 against the S 80 casing target and counted as a match | Patch 0012 (2026-10-10). Affects model builds, DAgger rollouts and the evaluation suites; results before it may contain rare false successes |
 | 11 | **Data generation survives a FreeCAD crash**: a worker that dies inside FreeCAD keeps the episodes it wrote (its shard is cut back to complete records); generation fails only if every worker fails | Patch 0013 (2026-10-11). Found when the test-data generation of 0011/0012 failed on one rare upstream goal |
+| 12 | **`--pos-table`, `--ord-table`** in `train_sft`: the position and ordinal ranges simulated in training, to raise together with `--max-pos`, `--max-ord` | Patch 0014 (2026-10-12). Raising the tables alone made length worse (step 6) |
 
 Out of scope for now (Phase 2): sweep, loft, helix, multi-body parts, assemblies.
 
@@ -313,6 +314,19 @@ Phase-1 targets (`../docs/README_production_plan.md`): comp back to 1.00 at the 
 - **comp is unchanged** (four seeds at 0.49): the spurious-Undo loop on `hole_std` → mirror (step 4), which these goals do not address.
 - The Quadro run with the raised limits (`MODEL_ARGS`) shows whether the limits add anything on top, mainly for the S 80 casing (52 intents, beyond the 40 tree objects the default limits encode).
 
+**Step 6: the same with raised input limits** (Quadro, `MODEL_ARGS="--max-nodes 160 --max-goal 64 --max-ord 72 --max-pos 256 --newest-nodes"`, otherwise as step 5, 2026-10-12):
+
+| Clean | Step 5, upstream limits (5060 Ti) | **Step 6, raised limits (Quadro)** |
+|---|---|---|
+| len5 / len6 | 1.00 / 0.99 ± 0.01 | 0.82 ± 0.37 / **0.67 ± 0.35** (seed 42: 0.15 / 0.13) |
+| `mixed_long` | 1.00 | 0.94 ± 0.14 |
+| comp / comp3 | 0.56 / 0.94 | 0.52 / 0.98 |
+| S 80 bracket / casing / whole pump | 4 / 5 exact, 0.81, 0.63–0.92 | **5 / 5 exact**, 0.84 ± 0.08, 0.79–0.94 |
+
+- **The raised limits made length worse, not better.** Seed 42 diverged late (its loss rose 25 % in the last epoch), but without it len6 is still about 0.80 against 0.99.
+- **Cause:** the model learns its position and ordinal embeddings by drawing, per training example, `pos_table` = 48 positions and `ord_table` = 12 ordinals from the tables. With tables of 256 and 72 but the same 48 and 12, each slot is trained much less often, and any training goal with more than 12 intents collapses its later ordinals into one. `train_sft` had no flags for the two ranges; patch 0014 adds `--pos-table` and `--ord-table`. Keep them in upstream's proportion (12 of 32, 48 of 128): `--ord-table 28` with `--max-ord 72`, `--pos-table 96` with `--max-pos 256`.
+- The S 80 still gains a little (bracket 5 / 5, casing up to 0.93 on one seed), but the casing never finishes with either setting: 52 intents is far beyond the longest training goals (12 synthetic, 21 DeepCAD).
+
 **Training plan step 3: perturbed DAgger** (unpatched `4a31bcf`, `DAGGER_PERTURB=0.2`, 4 epochs, fixed data, 5 seeds; 5060 Ti, 2026-10-08), against the same commit without perturbation (step 1 baseline, Spark2):
 
 | Suite | Without (Spark2) | With `DAGGER_PERTURB=0.2` (5060 Ti) |
@@ -389,4 +403,4 @@ Typical order: S 80 `check → teacher → eval` (vocabulary), then `models → 
 |---|---|
 | `train_expanded.sh` | 2026.10.08.1 |
 | `dev/*.sh` | 2026.10.05.1 (`export_patches.sh` 2026.10.05.2) |
-| `patches/` | 0001 (features on any planar face), 0002 (features on origin planes with an offset), 0003 (curved outlines), 0004 (revolve and groove with a profile), 0005 (patterns and mirrors about any axis, wider goal rows), 0006 (fillets and chamfers on chosen edges, features on a chosen face), 0007 (goals at other sizes), 0008 (enough steps for the target build of long goals), 0009 (XY datum planes and overhanging features in training), 0010 (turned hubs with end-face outlines, mixed-family and longer goals, revolves off the origin), 0011 (configurable input limits, bottom-face features, training goals from a goals file), 0012 (the IoU check rejects malformed solids), 0013 (data generation survives a FreeCAD crash), against upstream `4a31bcf` |
+| `patches/` | 0001 (features on any planar face), 0002 (features on origin planes with an offset), 0003 (curved outlines), 0004 (revolve and groove with a profile), 0005 (patterns and mirrors about any axis, wider goal rows), 0006 (fillets and chamfers on chosen edges, features on a chosen face), 0007 (goals at other sizes), 0008 (enough steps for the target build of long goals), 0009 (XY datum planes and overhanging features in training), 0010 (turned hubs with end-face outlines, mixed-family and longer goals, revolves off the origin), 0011 (configurable input limits, bottom-face features, training goals from a goals file), 0012 (the IoU check rejects malformed solids), 0013 (data generation survives a FreeCAD crash), 0014 (`--pos-table`, `--ord-table`), against upstream `4a31bcf` |
