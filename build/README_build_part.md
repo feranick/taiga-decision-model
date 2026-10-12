@@ -48,6 +48,7 @@ Relative `--model` and `--goals` paths are looked up in the current directory fi
 | `--check` | off | Only check that each goal can be built (the teacher builds the target); no model needed, no files written |
 | `--no-loop-guard` | guard on | Turn off the loop guard. With the guard, when the model is back in a state it already acted from (e.g. Pad, invalid, Undo) and picks the same action again, its most likely untried action is taken instead; the result line says how often that happened |
 | `--teacher` | off | Build with the scripted teacher (the expert that labels the training data) instead of a model, and save the parts as usual: what the goal itself produces, independent of any model |
+| `--canon-top` | off | Drop the explicit `+Z` normal (`nz: 1`, `z`) from top-face features that are not on a datum plane (no `off`). The part is the same; models trained before patch 0016 read `nz: 1` as a datum plane and need this |
 | `--no-step`, `--no-gui-data` | off | Skip the STEP export / the added view data |
 
 The exit code is `0` if every part succeeded and `1` otherwise, so the script can be used in other scripts and CI.
@@ -203,5 +204,5 @@ It saves a screenshot and the `.FCStd` to `runs/gui_demo/`. `--delay` sets the p
 
 | Script | Version |
 |---|---|
-| `taiga_build_part.py` | 2026.10.10.3 |
+| `taiga_build_part.py` | 2026.10.12.1 |
 | `taiga_assemble.py` | 2026.10.05.2 |

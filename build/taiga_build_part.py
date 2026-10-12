@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.10.3
+Version: 2026.10.12.1
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -44,6 +44,12 @@ RAM): the worker starts with that address-space limit (so even a single step tha
 fails inside the worker), and is also checked after every step. A part whose build runs away (a
 model looping on the S 80 casing reached 37 GB) thus ends as a CRASH instead of the system
 killing processes, sometimes the whole run.
+
+--canon-top: top-face features written with an explicit normal nz=+1 (and z) but no datum
+offset "off" lose the normal and z before the build; their face is still Face+Z, picked with
+"at" if they have it, so the part is the same. Models trained before patch 0016 only saw nz=+1
+with "off" (an XY datum plane) and read such features as datum features (the S 80 casing's top
+flange went onto Plane:XY); this writes them the way those models learned.
 
 Timing: each part reports how long it took to make, split into model decisions,
 FreeCAD steps and saving/export; a summary table with the totals is printed at the end.
@@ -207,6 +213,23 @@ def state_key(state: dict) -> str:
     return json.dumps({k: v for k, v in state.items() if k not in ("recent", "events")}, sort_keys=True)
 
 
+EDGE_KINDS = ("fillet_edges", "chamfer_edges")  # their normal selects edges: kept
+
+
+def canon_top(goal: dict) -> tuple[dict, int]:
+    """--canon-top: drop nx/ny/nz/z from features on a +Z face (not datum planes); returns the
+    goal and how many features changed."""
+    feats, n = [], 0
+    for f in goal.get("features", []):
+        p = f.get("params", {})
+        if (f.get("kind") not in EDGE_KINDS and "off" not in p and float(p.get("nz", 0.0)) == 1.0
+                and float(p.get("nx", 0.0)) == 0.0 and float(p.get("ny", 0.0)) == 0.0):
+            f = {**f, "params": {k: v for k, v in p.items() if k not in ("nx", "ny", "nz", "z")}}
+            n += 1
+        feats.append(f)
+    return {**goal, "features": feats}, n
+
+
 def base_scale(goal: dict) -> float:
     """Largest extent of the base feature; upstream's goals use this as `scale`."""
     f = goal["features"][0]
@@ -254,6 +277,9 @@ def main() -> None:
     ap.add_argument("--guard-redos", type=int, default=-1,
                     help="how often per part the guard may redo a step the model undid; -1 (default): no limit "
                          "(see Loop guard above)")
+    ap.add_argument("--canon-top", action="store_true",
+                    help="drop the explicit +Z normal (nz=1, z) from non-datum top-face features "
+                         "(models trained before patch 0016; see above)")
     ap.add_argument("--max-worker-gb", type=float, default=None,
                     help="restart the FreeCAD worker and count the part as CRASH when its memory passes this "
                          "(default: half the machine's RAM; 0: no limit)")
@@ -285,6 +311,10 @@ def main() -> None:
     try:
         for name in names:
             spec = dict(goals[name])
+            if args.canon_top:
+                spec, n_canon = canon_top(spec)
+                if n_canon and not args.quiet:
+                    print(f"{name}: --canon-top rewrote {n_canon} top-face feature(s)")
             spec.setdefault("scale", base_scale(spec))
             spec.setdefault("level", 3)
             try:

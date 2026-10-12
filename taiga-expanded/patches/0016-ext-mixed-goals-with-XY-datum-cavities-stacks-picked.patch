@@ -1,0 +1,442 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Mon, 12 Oct 2026 17:25:06 -0400
+Subject: [PATCH] ext: mixed goals with XY-datum cavities, stacks picked by
+ "at" and top features written with nz=+1
+
+Training mixed goals (and the new suites mixed_at / mixed_at_long) gain two groups, after the
+others as in a pump casing: a closed cavity on an XY datum plane, and a stack (neck, flange,
+bore, mirrored bolt holes) on the top face or a side face whose faces are picked with "at".
+Half of them write top-face features with an explicit normal nz=+1 and z. Before, nz=+1 only
+came with "off" (datum planes), so a model sketched the S 80 casing's top flange on Plane:XY.
+The mixed / mixed_long suites and every other split keep their goals.
+---
+ freecad_s1/evaluate.py     |   4 +-
+ freecad_s1/ext/mixed.py    | 174 ++++++++++++++++++++++++++++++++++---
+ freecad_s1/ext/sampler.py  |  22 +++--
+ freecad_s1/goals.py        |   6 +-
+ tests/test_ext_mixed_at.py |  77 ++++++++++++++++
+ 5 files changed, 262 insertions(+), 21 deletions(-)
+ create mode 100644 tests/test_ext_mixed_at.py
+
+diff --git a/freecad_s1/evaluate.py b/freecad_s1/evaluate.py
+index ef1cd0f..86fc8ce 100644
+--- a/freecad_s1/evaluate.py
++++ b/freecad_s1/evaluate.py
+@@ -69,7 +69,7 @@ def offline_metrics(model: S1Model, ds: Dataset, device: torch.device, batch_siz
+ 
+ 
+ # Seed offsets keep suites that share a level (iid-L3, comp, comp2, comp3) on disjoint seeds.
+-SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000, "edges": 90_000, "large": 0, "large_ext": 95_000, "datum_z": 96_000, "overhang": 97_000, "turned": 98_000, "mixed": 99_000}  # large: the iid seeds
++SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000, "edges": 90_000, "large": 0, "large_ext": 95_000, "datum_z": 96_000, "overhang": 97_000, "turned": 98_000, "mixed": 99_000, "mixed_at": 99_500}  # large: the iid seeds
+ 
+ SUITES = {
+     "iid": [(1, "iid"), (2, "iid"), (3, "iid")],  # training distribution, fresh goals
+@@ -91,6 +91,8 @@ SUITES = {
+     "turned": [(3, "turned")],  # taiga-expanded: outline features on the end face of turned hubs, polar about the axis
+     "mixed": [(3, "mixed")],  # taiga-expanded: several families on one part, 3-11 intents
+     "mixed_long": [(4, "mixed")],  # taiga-expanded: mixed goals of 8-14 intents (longer than training)
++    "mixed_at": [(3, "mixed_at")],  # taiga-expanded (0016): mixed goals with a stack picked by "at", top features nz=+1
++    "mixed_at_long": [(4, "mixed_at")],  # taiga-expanded (0016): the same, longer
+     "len3": [(6, "len")],  # held-out length: 11 intents (2.2x the training maximum)
+     "len4": [(7, "len")],  # stress: 13 intents
+     "len5": [(8, "len")],  # stress: 15 intents
+diff --git a/freecad_s1/ext/mixed.py b/freecad_s1/ext/mixed.py
+index 2472c37..b294a55 100644
+--- a/freecad_s1/ext/mixed.py
++++ b/freecad_s1/ext/mixed.py
+@@ -12,6 +12,17 @@ mixed:  a box base with several feature groups drawn from different families on
+ 
+ Patch 0011: mixed goals may also carry one group on the bottom face (Face-Z).
+ 
++Patch 0016 (training goals and the suites mixed_at / mixed_at_long only; the mixed and
++mixed_long suites are unchanged): two more groups, after the others as in a pump casing,
++  - a closed cavity on an XY datum plane (nz=+1 with "off"), single or a row;
++  - a stack on the top face or a side face, every feature's face picked with "at": a neck,
++    optionally a wider flange on it, then a bore and / or bolt holes in the flange rim
++    (mirrored), or a hole in the neck's end;
++and half the goals write their top-face features the way a planner may: with an explicit
++normal nz=+1 and z (sometimes also "at"). Before this patch nz=+1 only ever came with "off",
++so a model read any nz=+1 as a datum plane (the S 80 casing built its top flange on
++Plane:XY instead of Face+Z).
++
+ Neither family produces a composition upstream holds out (goals.heldout_composition): no
+ boss_box at all, no mirrored hole_std, no patterned pocket_rect.
+ 
+@@ -23,7 +34,7 @@ import math
+ import random
+ 
+ from ..schema import Goal, GoalFeature
+-from .sampler import to_bottom
++from .sampler import _cavity, to_bottom
+ 
+ 
+ def _u(rng: random.Random, lo: float, hi: float) -> float:
+@@ -324,16 +335,114 @@ def _cross_group(rng, base):
+     return [f]
+ 
+ 
+-def sample_mixed_goal(level: int, rng: random.Random, allow_heldout: bool = False) -> Goal:
++SKETCHED = ("hole", "hole_std", "boss_cyl", "boss_box", "pocket_rect", "profile_pocket", "profile_boss")
++
++
++def _explicit_top(f: GoalFeature, h: float, with_at: bool) -> GoalFeature:
++    """A top-face feature written with its normal (nz=+1) and z = h, optionally also "at"
++    (patch 0016). The teacher builds it exactly as without them."""
++    if f.kind not in SKETCHED or any(k in f.params for k in ("nx", "ny", "nz")):
++        return f
++    p = dict(f.params)
++    p.update(nx=0.0, ny=0.0, nz=1.0, z=round(h, 1))
++    if with_at and "at" not in p:
++        p["at"] = [p.get("x", 0.0), p.get("y", 0.0), round(h, 1)]
++    return GoalFeature(f.kind, p)
++
++
++def _stack_group(rng, base, face, xr=None, explicit=False):
++    """A stack on one face of the box (patch 0016), every feature's face picked with "at": a
++    neck (boss_cyl; boss_box only with held-out pairs kept), optionally a wider flange on it,
++    then a bore through them and / or bolt holes in the flange rim mirrored across the neck's
++    axis plane, or a hole in the neck's end. On the top face the neck stays in the X half xr.
++    Side-face features carry their normal; top-face ones only with `explicit`."""
++    from . import patterns as pt
++    from .sampler import _circle, _outline_feature
++
++    p = base.params
++    w, d, h = p["w"], p["d"], p["h"]
++    k, sign = "xyz".index(face[1].lower()), (1.0 if face[0] == "+" else -1.0)
++    ua, va = [i for i in range(3) if i != k]
++    m = 1 if k == 2 else ua  # mirror axis: y on top, the horizontal in-plane axis on a side
++    if k == 2:
++        room = {0: (xr[1] - xr[0]) / 2, 1: d / 2}
++    else:
++        room = {ua: (d if k == 0 else w) / 2, 2: h / 2}
++    r_room = min(room.values())
++    rn = _u(rng, 2.5, max(2.6, r_room * 0.45))
++    if rn + 1.5 > r_room:
++        return None
++    mirror = rng.random() < 0.5
++    c = [0.0, 0.0, 0.0]
++    c[k] = h if k == 2 else sign * (w / 2 if k == 0 else d / 2)
++    if k == 2:
++        c[0] = round((xr[0] + xr[1]) / 2, 1)
++    for a in (ua, va):
++        if a == k or (k == 2 and a == 0):
++            continue
++        lo, hi = (rn + 1.5, h - rn - 1.5) if a == 2 else (-(room[a] - rn - 1.5), room[a] - rn - 1.5)
++        c[a] = 0.0 if (a == m and mirror) else _u(rng, lo, max(lo + 0.1, hi))
++    c = [round(v, 1) for v in c]
++
++    def place(q):
++        if k == 2 and not explicit:
++            return {"x": q[0], "y": q[1]}
++        n = {"nx": 0.0, "ny": 0.0, "nz": 0.0}
++        n["n" + "xyz"[k]] = sign
++        return {**n, "x": q[0], "y": q[1], "z": q[2]}
++
++    def shifted(q, dist):
++        q = list(q)
++        q[k] = round(q[k] + sign * dist, 1)
++        return q
++
++    hn = _u(rng, 3, 15)
++    kind = rng.choice(_kinds(["boss_cyl"], "boss_box"))
++    if kind == "boss_box":
++        neck = GoalFeature("boss_box", {**place(c), "w": round(2 * rn, 1), "d": round(2 * rn, 1), "h": hn, "at": list(c)})
++    else:
++        neck = GoalFeature("boss_cyl", {**place(c), "r": rn, "h": hn, "at": list(c)})
++    feats = [neck]
++    end = shifted(c, hn)
++    flange = rng.random() < 0.6
++    rf = hf = 0.0
++    if flange:
++        rf = min(round(rn * _u(rng, 1.4, 2.2), 1), round(r_room * 1.1, 1))
++        flange = rf - rn >= 1.0
++    if flange:
++        hf = _u(rng, 2, 8)
++        feats.append(GoalFeature("boss_cyl", {**place(end), "r": rf, "h": hf, "at": list(end)}))
++        end = shifted(end, hf)
++    if rng.random() < (0.8 if flange else 0.5):  # bore through flange and neck, into the part
++        rb = round(rn * _u(rng, 0.4, 0.75), 1)
++        feats.append(_outline_feature("profile_pocket", _circle(end[ua], end[va], rb), **place(end),
++                                      depth=round(hn + hf + _u(rng, 1, 5), 1), at=list(end)))
++    elif not flange:  # a hole in the neck's end
++        feats.append(GoalFeature("hole", {**place(end), "r": round(rn * _u(rng, 0.3, 0.6), 1), "at": list(end)}))
++    if flange and mirror and rf - rn > 3 and rng.random() < 0.7:  # bolt hole in the rim, mirrored
++        q = list(end)
++        q[m] = round(c[m] + (rn + rf) / 2, 1)
++        hr = _u(rng, 1, max(1.1, (rf - rn) * 0.25))
++        feats.append(_outline_feature("profile_pocket", _circle(q[ua], q[va], hr), **place(q),
++                                      depth=round(hf + 1, 1), at=q))
++        feats.append(GoalFeature("mirror", pt.pattern_params("mirror", m)))
++    return feats
++
++
++def sample_mixed_goal(level: int, rng: random.Random, allow_heldout: bool = False, extra: bool = False,
++                      need_stack: bool = False, explicit: bool | None = None) -> Goal:
++    """`extra` (patch 0016): also cavity and stack groups and the explicit top-face form (training
++    goals, suites mixed_at*); `need_stack`: only goals with a stack; `explicit`: force the form."""
+     global _HELD
+     _HELD = allow_heldout
+     try:
+-        return _sample_mixed_goal(level, rng)
++        return _sample_mixed_goal(level, rng, extra, need_stack, explicit)
+     finally:
+         _HELD = False
+ 
+ 
+-def _sample_mixed_goal(level: int, rng: random.Random) -> Goal:
++def _sample_mixed_goal(level: int, rng: random.Random, extra: bool = False, need_stack: bool = False,
++                       explicit: bool | None = None) -> Goal:
+     for _ in range(200):
+         base = GoalFeature("base_box", {"w": _u(rng, 40, 95), "d": _u(rng, 30, 80), "h": _u(rng, 16, 45)})
+         w, d, h = base.params["w"], base.params["d"], base.params["h"]
+@@ -350,12 +459,39 @@ def _sample_mixed_goal(level: int, rng: random.Random) -> Goal:
+         bottom_free = True  # patch 0011: one group on the bottom face (Face-Z)
+         rng.shuffle(faces_free)
+         cross_free = True
+-        top, side, cross = [], [], []
++        top, side, cross, cavity, stack = [], [], [], [], []
++        # patch 0016: only with `extra`, so the mixed / mixed_long suites stay as they were
++        expl = (rng.random() < 0.5 if explicit is None else explicit) if extra else False
++        expl_at = extra and rng.random() < 0.5
++        wheres = ["top", "top", "side", "side", "cross", "bottom"] + (["cavity", "stack", "stack"] if extra else [])
++        if need_stack:  # the stack first, so it gets a face
++            face = rng.choice(["+Z", "+Z", "+Z", *faces_free])
++            if face == "+Z":
++                g = _stack_group(rng, base, face, top_regions.pop()[0], expl)
++            else:
++                faces_free.remove(face)
++                g = _stack_group(rng, base, face, None, expl)
++            if not g:
++                continue
++            stack.append(g)
+         for _g in range(n_groups * 3):
+-            if len(top) + len(side) + len(cross) >= n_groups:
++            if len(top) + len(side) + len(cross) + len(cavity) + len(stack) >= n_groups:
+                 break
+-            where = rng.choice(["top", "top", "side", "side", "cross", "bottom"])
+-            if where == "top" and top_regions:
++            where = rng.choice(wheres)
++            if where == "cavity" and not cavity:
++                g = _cavity(rng, base)
++                if g:
++                    cavity.append(g)
++            elif where == "stack" and (top_regions or faces_free):
++                face = rng.choice((["+Z"] if top_regions else []) + faces_free)
++                if face == "+Z":
++                    g = _stack_group(rng, base, face, top_regions.pop()[0], expl)
++                else:
++                    faces_free.remove(face)
++                    g = _stack_group(rng, base, face, None, expl)
++                if g:
++                    stack.append(g)
++            elif where == "top" and top_regions:
+                 xr, yr = top_regions.pop()
+                 g = rng.choice([_top_single, _top_row, _top_mirror])(rng, base, xr, yr)
+                 if g:
+@@ -380,10 +516,14 @@ def _sample_mixed_goal(level: int, rng: random.Random) -> Goal:
+                 g = _cross_group(rng, base)
+                 if g:
+                     cross.append(g)
+-        groups = top + side + cross
++        if expl:  # top-face features with nz=+1 and z (patch 0016)
++            top = [[_explicit_top(f, h, expl_at) for f in g] for g in top]
++        groups = top + side + cross + cavity + stack  # cavities and stacks last, as in a pump casing
+         if len(groups) < min(n_groups, 2 if level >= 3 else 1):
+             continue
+         feats = [base] + [f for g in groups for f in g]
++        if len(feats) > 22:  # room in the goal encoding (MAX_GOAL 24); only stacks get this long
++            continue
+         if level >= 3 and rng.random() < 0.2:
+             feats.append(GoalFeature("chamfer_top", {"size": _u(rng, 0.5, 1.0)}))
+         return Goal(feats, level=min(level, 3), scale=max(w, d, h))
+@@ -396,14 +536,16 @@ def main(argv: list[str] | None = None) -> None:
+     """Write sampled goals of a split to a goals JSON for build/taiga_build_part.py, e.g. to
+     check with FreeCAD that the teacher builds them:
+         python -m freecad_s1.ext.mixed --split mixed --level 3 --n 200 --out mixed_goals.json
+-        python <repo>/build/taiga_build_part.py --goals mixed_goals.json --check"""
++        python <repo>/build/taiga_build_part.py --goals mixed_goals.json --check
++    --split mixed_train: the mixed goals training draws (patch 0016: with cavities, stacks and
++    both top-face forms; held-out pairs as TAIGA_KEEP_HELDOUT says)."""
+     import argparse
+     import json
+ 
+     from ..goals import sample_split_goal
+ 
+     ap = argparse.ArgumentParser(description=main.__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+-    ap.add_argument("--split", required=True, help="any split of goals.SPLITS, e.g. mixed, turned, revolve, train")
++    ap.add_argument("--split", required=True, help="any split of goals.SPLITS (e.g. mixed, mixed_at, turned, train) or mixed_train")
+     ap.add_argument("--level", type=int, default=3)
+     ap.add_argument("--n", type=int, default=100)
+     ap.add_argument("--seed", type=int, default=0)
+@@ -412,7 +554,15 @@ def main(argv: list[str] | None = None) -> None:
+     rng = random.Random(args.seed)
+     goals = {}
+     for i in range(args.n):
+-        g = sample_split_goal(args.split, args.level, rng)
++        if args.split == "mixed_train":
++            from ..goals import heldout_composition, keep_heldout
++
++            while True:
++                g = sample_mixed_goal(args.level, rng, allow_heldout=keep_heldout(), extra=True)
++                if keep_heldout() or heldout_composition(g) is None:
++                    break
++        else:
++            g = sample_split_goal(args.split, args.level, rng)
+         goals[f"{args.split}_L{args.level}_{i:04d}"] = {"features": [{"kind": f.kind, "params": f.params} for f in g.features],
+                                                        "level": g.level, "scale": g.scale}
+     with open(args.out, "w") as fh:
+diff --git a/freecad_s1/ext/sampler.py b/freecad_s1/ext/sampler.py
+index aec53d8..7cdce09 100644
+--- a/freecad_s1/ext/sampler.py
++++ b/freecad_s1/ext/sampler.py
+@@ -1006,17 +1006,29 @@ def _turned(level: int, rng: random.Random) -> Goal:
+     return sample_turned_goal(level, rng)
+ 
+ 
+-def _mixed(level: int, rng: random.Random, allow_heldout: bool = False) -> Goal:
++def _mixed(level: int, rng: random.Random, allow_heldout: bool = False, extra: bool = False) -> Goal:
+     from .mixed import sample_mixed_goal
+ 
+-    return sample_mixed_goal(level, rng, allow_heldout=allow_heldout)
++    return sample_mixed_goal(level, rng, allow_heldout=allow_heldout, extra=extra)
++
++
++def _mixed_at(level: int, rng: random.Random) -> Goal:
++    """Suites mixed_at / mixed_at_long (patch 0016): mixed goals with a stack picked by "at" and
++    top-face features written with nz=+1 (the S 80 casing's form)."""
++    from .mixed import sample_mixed_goal
++
++    return sample_mixed_goal(level, rng, extra=True, need_stack=True, explicit=True)
+ 
+ 
+ SAMPLERS = {"side": sample_side_goal, "plane": sample_plane_goal, "outline": _outline_split,
+             "revolve": sample_revolve_goal, "pattern": sample_pattern_goal,
+             "edges": sample_edges_goal,
+             "datum_z": sample_datum_z_goal, "overhang": sample_overhang_goal,
+-            "turned": _turned, "mixed": _mixed}
++            "turned": _turned, "mixed": _mixed, "mixed_at": _mixed_at}
++# evaluation-only splits (patch 0016): not drawn for training (sample_train uses SPLITS) and not
++# part of large_ext (ext.sizes), so the earlier suites keep their goals
++EVAL_SPLITS = ("mixed_at",)
++ALL_SPLITS = SPLITS + EVAL_SPLITS
+ 
+ 
+ def sample_split(split: str, level: int, rng: random.Random) -> Goal:
+@@ -1043,6 +1055,6 @@ def sample_train(level: int, rng: random.Random) -> Goal:
+     split = rng.choices(SPLITS, weights)[0]
+     from ..goals import keep_heldout
+ 
+-    if split == "mixed" and keep_heldout():  # patch 0015: mixed training goals also use boss_box
+-        return _mixed(level, rng, allow_heldout=True)
++    if split == "mixed":  # patch 0015: boss_box too when held-out pairs are kept; 0016: cavities, stacks
++        return _mixed(level, rng, allow_heldout=keep_heldout(), extra=True)
+     return SAMPLERS[split](level, rng)
+diff --git a/freecad_s1/goals.py b/freecad_s1/goals.py
+index 41c9d80..48374ed 100644
+--- a/freecad_s1/goals.py
++++ b/freecad_s1/goals.py
+@@ -260,7 +260,7 @@ def heldout_composition(goal: Goal) -> str | None:
+     return None
+ 
+ 
+-SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext", "datum_z", "overhang", "turned", "mixed")  # side .. mixed: taiga-expanded
++SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext", "datum_z", "overhang", "turned", "mixed", "mixed_at")  # side .. mixed_at: taiga-expanded
+ 
+ 
+ def keep_heldout() -> bool:
+@@ -336,9 +336,9 @@ def sample_split_goal(split: str, level: int, rng: random.Random, tries: int = 2
+             g = goalsfile.sample(level, rng)
+             if g is not None:
+                 return g
+-    if split in ext.SPLITS or (split == "train" and ext.use_expanded_for_train(rng, level)):
++    if split in ext.ALL_SPLITS or (split == "train" and ext.use_expanded_for_train(rng, level)):
+         for _ in range(tries):  # never a composition upstream holds out for its comp suites
+-            goal = ext.sample_split(split, level, rng) if split in ext.SPLITS else ext.sample_train(level, rng)
++            goal = ext.sample_split(split, level, rng) if split in ext.ALL_SPLITS else ext.sample_train(level, rng)
+             if heldout_composition(goal) is None or (split == "train" and keep_heldout()):
+                 return goal
+         raise ValueError(f"could not sample a {split} goal at level {level}")
+diff --git a/tests/test_ext_mixed_at.py b/tests/test_ext_mixed_at.py
+new file mode 100644
+index 0000000..9dc32e4
+--- /dev/null
++++ b/tests/test_ext_mixed_at.py
+@@ -0,0 +1,77 @@
++"""taiga-expanded: cavities, stacks picked by "at" and the explicit nz=+1 top-face form in mixed
++goals (patch 0016)."""
++import random
++
++from freecad_s1.evaluate import SUITES
++from freecad_s1.ext import mixed, sampler
++from freecad_s1.goals import heldout_composition, sample_split_goal
++
++
++def _explicit_top(f):
++    return f.params.get("nz") == 1.0 and "off" not in f.params
++
++
++def test_mixed_suites_keep_their_goals():
++    # without `extra` nothing new appears, and the mixed suite is the plain sampler
++    rng = random.Random(3)
++    for _ in range(400):
++        g = mixed.sample_mixed_goal(4, rng)
++        assert not any("at" in f.params or _explicit_top(f) for f in g.features)
++    a = [sample_split_goal("mixed", 3, random.Random(9)).to_json() for _ in range(3)]
++    b = [mixed.sample_mixed_goal(3, random.Random(9)) for _ in range(3)]
++    assert a[0] == b[0].to_json()
++
++
++def test_mixed_at_suite():
++    assert SUITES["mixed_at"] == [(3, "mixed_at")] and "mixed_at" not in sampler.SPLITS
++    rng = random.Random(1)
++    for level in (3, 4):
++        for _ in range(300):
++            g = sample_split_goal("mixed_at", level, rng)
++            assert heldout_composition(g) is None and len(g.features) <= 24
++            assert any("at" in f.params for f in g.features)
++            for f in g.features:
++                if _explicit_top(f) or ("at" in f.params and "nx" in f.params):
++                    assert "z" in f.params
++                if "at" in f.params and "nx" in f.params:  # the point is the feature's own centre
++                    assert f.params["at"] == [f.params["x"], f.params["y"], f.params["z"]]
++            # no feature without a normal once the goal uses the explicit form on top
++            assert not any(f.kind in mixed.SKETCHED and "nx" not in f.params for f in g.features[1:])
++
++
++def test_training_mixed_goals_mix_datum_and_face_normals(monkeypatch):
++    monkeypatch.delenv("TAIGA_KEEP_HELDOUT", raising=False)
++    rng = random.Random(2)
++    both = cav = stack = 0
++    for _ in range(1500):
++        g = sampler._mixed(3, rng, extra=True)
++        assert heldout_composition(g) is None
++        datum = any(f.params.get("nz") == 1.0 and "off" in f.params for f in g.features)
++        top = any(_explicit_top(f) for f in g.features)
++        cav += datum
++        stack += any("at" in f.params for f in g.features)
++        both += datum and top
++    assert cav > 300 and stack > 600 and both > 100
++
++
++def test_stack_bolt_holes_are_mirrored_about_the_neck():
++    rng = random.Random(4)
++    base = mixed.GoalFeature("base_box", {"w": 80.0, "d": 60.0, "h": 30.0})
++    seen = 0
++    for _ in range(400):
++        for face, xr in (("+Z", (1.5, 38.5)), ("+X", None), ("-Y", None)):
++            g = mixed._stack_group(rng, base, face, xr, explicit=True)
++            if not g or g[-1].kind != "mirror":
++                continue
++            seen += 1
++            neck, hole, m = g[0], g[-2], g[-1]
++            k = [a for a in "xyz" if m.params["a" + a] != 0.0][0]
++            assert neck.params[k] == 0.0 and hole.params[k] != 0.0  # mirror plane through the neck's axis
++    assert seen > 50
++
++
++def test_training_draws_no_eval_only_split():
++    rng = random.Random(6)
++    for _ in range(300):
++        sampler.sample_train(3, rng)  # would raise for an unknown split
++    assert set(sampler.ALL_SPLITS) - set(sampler.SPLITS) == {"mixed_at"}

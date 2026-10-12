@@ -135,6 +135,11 @@ So the vocabulary expresses the S 80 to within 0.2 % of its volume; anything a m
 - **The bracket builds exactly** on four seeds: patch 0011's bottom-face features were the missing piece.
 - **The casing gets further** (0.83–0.90 on four seeds against the earlier ceiling of 0.80) even with the 40-object input limit; it still fails, and the casing core (24 intents) is erratic. Whether the raised limits help is the Quadro run's question.
 
+**Where the casing build goes wrong** (verbose builds, 2026-10-12): `long1` seed 32 (7M, DeepCAD goals) and `long2` seed 2 (matched ordinal and position tables) both build the casing correctly up to feature 18, the discharge neck on top. Feet, chambers on datum planes and the rear hub are right (spurious Undos after the feet's linear patterns are caught by the loop guard). For feature 18 the model selects `Plane:XY` where the teacher selects `Face+Z` (step 101 and step 95), and the build does not recover (`long2`: IoU 0.0 after 540 steps). Feature 18 is `boss_cyl` with `nz: 1` and `at` on the top face; the six features before it are pockets on XY datum planes, also `nz: 1` but with `off`. Training before patch 0016 never wrote a top-face feature with an explicit `nz: 1` (top features had no normal; `nz: 1` came only with `off`), so the model read it as a datum feature. A coverage gap, not ordinals or length. Two fixes:
+
+- **Now, for existing models:** `taiga_build_part.py --canon-top` (2026.10.12.1) drops the explicit `+Z` normal from non-datum features, the form those models learned (the part is the same). For the S 80 run: `BUILD_ARGS=--canon-top OUT=$WORK/s80_canon ./run_s80.sh models <RUNS>`.
+- **For production models:** patch 0016 trains on both forms, and on cavities on datum planes followed by stacks picked by `at` in the same goal (suites `mixed_at`, `mixed_at_long`).
+
 **Patch-0010 models** (Quadro, 2× data, 8 epochs, 5 seeds, 2026-10-10). Seeds exact / mean IoU against the reference:
 
 | Part | With guard | Without guard |
@@ -160,6 +165,7 @@ The default-budget models (5060 Ti, 1× data, 4 epochs, 2026-10-10) give the sam
 - **Pads start at the sketch plane.** The discharge neck is wider than the flat top of the casing; the reference neck fills down to the rounded corners, the Taiga neck starts at the top face (a few cm³).
 - **Internal cavities** are pockets on datum planes inside the body, extruded both ways. That works for the 2.5D chambers of this model; real cast cavities with rounded, varying sections would need sweeps and lofts (Phase 2).
 - **Long goals.** A real casing is ~50 features; the models are trained on ≤ 5.
+- **The same normal with two meanings.** `nz: 1` with `off` is an XY datum plane, without `off` the top face. Models trained before patch 0016 only saw the first; write top features without a normal for them, or use `--canon-top`.
 
 ## Versions
 

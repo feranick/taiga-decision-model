@@ -3,7 +3,7 @@
 # the patches' BASE commit with the patch series applied, in its own WORK folder, with the
 # expanded evaluation suites added. BASELINE=1 runs the same upstream commit unpatched
 # (the reference for "no regression on the original suites").
-# Version: 2026.10.08.1
+# Version: 2026.10.12.1
 #
 # Usage:   ./train_expanded.sh <dgx|5060ti|quadro> <stages...>
 #   e.g.   ./train_expanded.sh 5060ti setup
@@ -29,6 +29,12 @@ if [[ ${BASELINE:-0} == 1 ]]; then
 else
   # the patches extend the vocabulary, so the published weights only make sense on the baseline
   export WORK=${WORK:-$HOME/taiga-expanded} PATCHES=$HERE/patches REF_EVAL=${REF_EVAL:-0}
+fi
+# patch 0016 adds mixed_at / mixed_at_long: only for a WORK that has them (or is not set up yet),
+# so work folders made with an earlier series keep evaluating as before
+ev=$WORK/taiga-s1/freecad_s1/evaluate.py
+if [[ ${BASELINE:-0} != 1 ]] && { [[ ! -f $ev ]] || grep -q '"mixed_at"' "$ev"; }; then
+  EXT_SUITES+=" mixed_at mixed_at_long"
 fi
 export SUITES=${SUITES:-"iid comp comp2 comp3 len len2 len3 len4 len5 len6"}
 [[ ${BASELINE:-0} == 1 ]] || SUITES="$SUITES $EXT_SUITES"
