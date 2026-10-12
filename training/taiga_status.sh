@@ -1,6 +1,6 @@
 #!/bin/bash
 # taiga_status.sh — what is running and how far it is, on this machine (read-only).
-# Version: 2026.10.12.5
+# Version: 2026.10.12.6
 #
 # Usage: ~/Software/taiga-decision-model/training/taiga_status.sh
 # Looks at every ~/taiga-expanded* work folder: setup tests, sweeps (seeds finished, current
@@ -37,14 +37,17 @@ for W in "$HOME"/taiga-expanded*; do
     fi
     say "$line"
   done
-  # sweeps still generating data (no run folder yet)
+  # sweeps without a run folder yet (generating data): found from the per-stage logs that every
+  # sweep writes, <stage>_<exp>_seed<N>.log
   declare -A seen=()
-  for L in "$W"/logs/sweep_*.log; do   # sweep_<exp>_seed<N>.log (parallel seeds) or sweep_<exp>.log
-    exp=$(basename "$L" .log); exp=${exp#sweep_}; exp=${exp%_seed[0-9]*}
-    [[ -n ${seen[$exp]:-} || -d $W/taiga-s1/runs/$exp ]] && continue
+  for L in "$W"/logs/{datagen_train,datagen_test,train}_*_seed*.log; do
+    b=$(basename "$L" .log)
+    case $b in datagen_train_*) stage=datagen_train ;; datagen_test_*) stage=datagen_test ;; *) stage=train ;; esac
+    exp=${b#"$stage"_}; exp=${exp%_seed[0-9]*}
+    [[ -n ${seen[$exp]:-} || -d $W/taiga-s1/runs/$exp || $exp == seed* || -z $exp ]] && continue
     seen[$exp]=1
-    now=$(grep -a -E '^\[[0-9:]+\]' "$(newest "$W"/logs/sweep_"${exp}"_seed*.log "$W"/logs/sweep_"${exp}".log)" | tail -n 1 | cut -c1-80)
-    say "   sweep $exp: starting | now: ${now:-?}"
+    last=$(newest "$W"/logs/*_"${exp}"_seed*.log)
+    say "   sweep $exp: starting | now: $(basename "$last" .log | sed "s/_${exp}_/ /") $(tail -n 1 "$last" | cut -c1-60)"
   done
   unset seen
   # S 80
