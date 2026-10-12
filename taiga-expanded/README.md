@@ -327,6 +327,18 @@ Phase-1 targets (`../docs/README_production_plan.md`): comp back to 1.00 at the 
 - **Cause:** the model learns its position and ordinal embeddings by drawing, per training example, `pos_table` = 48 positions and `ord_table` = 12 ordinals from the tables. With tables of 256 and 72 but the same 48 and 12, each slot is trained much less often, and any training goal with more than 12 intents collapses its later ordinals into one. `train_sft` had no flags for the two ranges; patch 0014 adds `--pos-table` and `--ord-table`. Keep them in upstream's proportion (12 of 32, 48 of 128): `--ord-table 28` with `--max-ord 72`, `--pos-table 96` with `--max-pos 256`.
 - The S 80 still gains a little (bracket 5 / 5, casing up to 0.93 on one seed), but the casing never finishes with either setting: 52 intents is far beyond the longest training goals (12 synthetic, 21 DeepCAD).
 
+**Step 7 (`long1`): DeepCAD designs as training goals and a larger model** (Spark2, patches 0001–0013, `TAIGA_GOALS_FILE` = the 116,688 verified train-split designs at 25 % of the training goals, `MODEL_ARGS="--width 256 --ff 768 --enc-layers 4"` plus step 6's raised limits, 2× data, 8 epochs, 5 seeds, 2026-10-12):
+
+| Clean | Step 5 (1.2M, upstream limits) | Step 6 (1.2M, raised limits) | **`long1` (7M, raised limits, DeepCAD)** |
+|---|---|---|---|
+| comp | 0.56 (four seeds 0.49) | 0.52 | **0.89 ± 0.22** (four seeds 0.98–1.00) |
+| comp3 | 0.94 | 0.98 | 1.00 |
+| len5 / len6 | 1.00 / 0.99 | 0.82 / 0.67 | 0.90 / 0.73 |
+| `mixed_long` | 1.00 | 0.94 | 0.96 |
+
+- **comp recovers at the large budget for the first time:** four of five seeds at 0.98–1.00, against 0.49 for every 1.2M model at this budget. Either the real designs or the larger model (or both) weaken the spurious-Undo reflex; the step-8 runs separate them.
+- **Length suffers the same way as in step 6:** this run had the same mismatched `pos_table` / `ord_table`, fixed in patch 0014.
+
 **Training plan step 3: perturbed DAgger** (unpatched `4a31bcf`, `DAGGER_PERTURB=0.2`, 4 epochs, fixed data, 5 seeds; 5060 Ti, 2026-10-08), against the same commit without perturbation (step 1 baseline, Spark2):
 
 | Suite | Without (Spark2) | With `DAGGER_PERTURB=0.2` (5060 Ti) |
