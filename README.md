@@ -38,6 +38,7 @@ taiga-decision-model/
 │   ├── README_training.md        stages, environment variables, outputs, variance studies, known issues
 │   ├── taiga_aggregate.py        distribution of results across runs (used by sweep/aggregate)
 │   ├── taiga_bench_size.py       time per decision at larger model sizes (random weights, CPU/GPU)
+│   ├── taiga_status.sh           what is running on this machine and how far it is (read-only)
 │   ├── benchmarks/               saved outputs of taiga_bench_size.py per machine
 │   ├── taiga_run.py              runs upstream training/evaluation with FreeCAD worker-crash recovery
 │   ├── taiga_repro_DGX.sh        NVIDIA DGX Spark, Ubuntu 24.04 (noble)

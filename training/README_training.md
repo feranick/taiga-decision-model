@@ -149,6 +149,12 @@ GPU=1 SEED=12 nohup ./taiga_repro_Quadro6000.sh data train export eval calib > ~
 ```
 
 ### Monitoring
+
+`taiga_status.sh` summarizes everything on a machine in one go (read-only): tmux sessions, and for every `~/taiga-expanded*` folder the setup tests, each sweep's finished seeds and current stage, the S 80 builds and scores, and DeepCAD builds and scoring progress, plus the `~/agg_*.txt` aggregates:
+
+```bash
+~/Software/taiga-decision-model/training/taiga_status.sh
+```
 ```bash
 tail -f ~/taiga/logs/run.log               # or pair.log
 tail -f ~/taiga/logs/pair_seed2.log        # Quadro pair: full output of each seed
@@ -494,4 +500,5 @@ Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header 
 | `taiga_repro_Quadro6000.sh` | 2026.10.11.1 |
 | `taiga_aggregate.py` | 2026.10.04.3 |
 | `taiga_bench_size.py` | 2026.10.06.1 |
+| `taiga_status.sh` | 2026.10.12.1 |
 | `taiga_run.py` | 2026.10.04.1 |
