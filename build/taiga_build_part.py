@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.12.1
+Version: 2026.10.13.1
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -50,6 +50,10 @@ offset "off" lose the normal and z before the build; their face is still Face+Z,
 "at" if they have it, so the part is the same. Models trained before patch 0016 only saw nz=+1
 with "off" (an XY datum plane) and read such features as datum features (the S 80 casing's top
 flange went onto Plane:XY); this writes them the way those models learned.
+
+A FreeCAD step that never returns (OpenCASCADE stuck in one operation: an S 80 casing build sat
+6 hours on one step, 2026-10-13) is stopped after --step-timeout seconds (default 900): the
+worker is killed, the part counts as CRASH and the remaining goals are built.
 
 Timing: each part reports how long it took to make, split into model decisions,
 FreeCAD steps and saving/export; a summary table with the totals is printed at the end.
@@ -198,6 +202,31 @@ def new_env(limit_gb: float) -> FreeCADEnv:
         resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
 
 
+def call_limited(env: FreeCADEnv, req: dict, limit: float) -> dict:
+    """env.call, but a request that takes longer than `limit` seconds kills the worker (WorkerError)."""
+    if limit <= 0:
+        return env.call(req)
+    import threading
+
+    fired = threading.Event()
+
+    def kill():
+        fired.set()
+        env.proc.kill()
+
+    timer = threading.Timer(limit, kill)
+    timer.daemon = True
+    timer.start()
+    try:
+        return env.call(req)
+    except WorkerError:
+        if fired.is_set():
+            raise WorkerError(f"no answer to '{req.get('op')}' in {limit:.0f} s; worker killed") from None
+        raise
+    finally:
+        timer.cancel()
+
+
 def default_worker_limit_gb() -> float:
     """Half the machine's RAM (Linux), else no limit."""
     try:
@@ -277,6 +306,9 @@ def main() -> None:
     ap.add_argument("--guard-redos", type=int, default=-1,
                     help="how often per part the guard may redo a step the model undid; -1 (default): no limit "
                          "(see Loop guard above)")
+    ap.add_argument("--step-timeout", type=float, default=900,
+                    help="seconds one FreeCAD request (step, check, save; 3x for the reset, which builds the target) "
+                         "may take before the worker is killed and the part counts as CRASH (default 900; 0: no limit)")
     ap.add_argument("--canon-top", action="store_true",
                     help="drop the explicit +Z normal (nz=1, z) from non-datum top-face features "
                          "(models trained before patch 0016; see above)")
@@ -318,8 +350,9 @@ def main() -> None:
             spec.setdefault("scale", base_scale(spec))
             spec.setdefault("level", 3)
             try:
-                r = env.call({"op": "reset", "goal": spec,
-                              "start": {"doc_open": True, "workbench": "PartDesignWorkbench"}})
+                r = call_limited(env, {"op": "reset", "goal": spec,
+                              "start": {"doc_open": True, "workbench": "PartDesignWorkbench"}},
+                                 3 * args.step_timeout)  # reset also builds the target (~10 min for the casing)
             except WorkerError as exc:
                 failures += 1
                 if env.proc.poll() is not None or "exited" in str(exc):  # the worker died: start a new one
@@ -383,7 +416,7 @@ def main() -> None:
                         mark = "ok" if action in expert else f"(expert: {expert[0]})"
                         print(f"{steps:3d}  {action:34s} {mark}")
                     t = time.perf_counter()
-                    s = env.call({"op": "step", "action": action})
+                    s = call_limited(env, {"op": "step", "action": action}, args.step_timeout)
                     t_fc += time.perf_counter() - t
                     if mem_limit > 0 and tree_rss_gb(env.proc.pid) > mem_limit:  # runaway part: stop it here
                         env.proc.kill()
@@ -399,11 +432,11 @@ def main() -> None:
                     raw = s["state"]
                     state, actions, expert = State.from_json(raw), s["actions"], s["expert"]
                 t_built = time.perf_counter()
-                sc = env.call({"op": "score"})
+                sc = call_limited(env, {"op": "score"}, args.step_timeout)
                 t_score = time.perf_counter() - t_built
                 t_save0 = time.perf_counter()
                 fcstd = out / f"{name}.FCStd"
-                env.call({"op": "save", "fcstd": str(fcstd)})
+                call_limited(env, {"op": "save", "fcstd": str(fcstd)}, args.step_timeout)
                 extra = []
                 if not args.no_gui_data:
                     n = add_gui_document(fcstd)
