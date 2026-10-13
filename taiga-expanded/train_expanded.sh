@@ -3,7 +3,7 @@
 # the patches' BASE commit with the patch series applied, in its own WORK folder, with the
 # expanded evaluation suites added. BASELINE=1 runs the same upstream commit unpatched
 # (the reference for "no regression on the original suites").
-# Version: 2026.10.13.1
+# Version: 2026.10.13.2
 #
 # Usage:   ./train_expanded.sh <dgx|5060ti|quadro> <stages...>
 #   e.g.   ./train_expanded.sh 5060ti setup
@@ -38,8 +38,14 @@ if [[ ${BASELINE:-0} != 1 && -f $WORK/patches.sha ]]; then
     [[ $(cat "${all[@]:0:n}" | sha256sum | cut -c1-12) == "$want" ]] && { n_ok=$n; break; }
   done
   if [[ -n $n_ok && $n_ok -lt ${#all[@]} ]]; then
-    PATCHES=$WORK/patches_series; rm -rf "$PATCHES"; mkdir -p "$PATCHES"
-    cp "${all[@]:0:n_ok}" "$HERE/patches/BASE" "$PATCHES"/
+    # one folder per series, named by its fingerprint, built aside and moved into place in one step:
+    # runs started together (or still running) never see it half-written or deleted
+    PATCHES=$WORK/patches_$want
+    if [[ ! -d $PATCHES ]]; then
+      tmp=$(mktemp -d "$WORK/.patches.XXXXXX")
+      cp "${all[@]:0:n_ok}" "$HERE/patches/BASE" "$tmp"/
+      mv -T "$tmp" "$PATCHES" 2>/dev/null || rm -rf "$tmp"   # another run got there first: use its copy
+    fi
     echo "note: $WORK was set up with patches 1-$n_ok of ${#all[@]}; using those (a newer series needs a new WORK)"
   fi
 fi
