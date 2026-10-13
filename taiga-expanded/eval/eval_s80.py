@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """eval_s80.py — score Taiga-built S 80 parts against the reference CAD, part by part.
-Version: 2026.10.11.1
+Version: 2026.10.13.1
 
 Runs in FreeCAD's Python (needs numpy):
     source ~/taiga-expanded/freecad.env
@@ -16,6 +16,12 @@ Runs in FreeCAD's Python (needs numpy):
 --overlay  also write <out dir>/s80_overlay_<label>.FCStd: reference (grey, transparent) and
            the build (orange) in pump coordinates
 
+--part-timeout  seconds one score may take (default 900; 0: no limit). A score that takes longer
+           (meshing or classifying a pathological model build can run for hours inside OpenCASCADE,
+           where Python cannot interrupt it) ends the process with exit code 1; the next run resumes
+           from the checkpoint and scores that build 0 ("timeout" in the JSON). run_deepcad.sh
+           restarts it by itself.
+
 Scores: volumetric IoU on a voxel grid (voxel_iou.py; OCC booleans of two nearly identical
 solids can fail silently), plus the built and reference volumes. "coverage" = share of the
 reference volume that the build fills, "excess" = built volume outside the reference, as a
@@ -27,6 +33,7 @@ mean and standard deviation over them (the teacher is not included).
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
 import math
 import re
@@ -154,6 +161,8 @@ def main() -> None:
     ap.add_argument("--teacher", help="teacher build folder: also score each build against it, goal by goal")
     ap.add_argument("--out", help="JSON results (default: eval_s80.json next to the first build folder)")
     ap.add_argument("--res", type=int, default=384, help="voxels along the longest side of each part (default 384)")
+    ap.add_argument("--part-timeout", type=float, default=900,
+                    help="seconds one score may take; longer ends the run, and the resumed run scores that build 0 (default 900; 0: no limit)")
     ap.add_argument("--overlay", action="store_true", help="write an overlay .FCStd per build folder")
     args = ap.parse_args()
 
@@ -179,6 +188,7 @@ def main() -> None:
             prior = json.loads(partial.read_text())
             if prior.get("builds") == results["builds"] and prior.get("res") == args.res:
                 done_parts, done_goals = prior.get("parts", {}), prior.get("vs_teacher", {})
+                results["timeouts"] = prior.get("timeouts", [])
                 print(f"resuming from {partial}: {len(done_parts)} parts, {len(done_goals)} goals already scored",
                       flush=True)
         except ValueError:
@@ -190,6 +200,30 @@ def main() -> None:
         n_new += 1
         if force or n_new % 25 == 0:
             partial.write_text(json.dumps(results))
+
+    # a score the previous run did not finish in --part-timeout (it left its name in `current`)
+    current = out.with_name(out.stem + ".current")
+    if current.is_file():
+        tag = current.read_text().strip()
+        results.setdefault("timeouts", []).append(tag)
+        current.unlink()
+        print(f"{tag}: not scored within {args.part_timeout:.0f} s by the previous run: IoU 0 (timeout)", flush=True)
+        checkpoint(force=True)
+
+    def timed(tag: str, fn) -> dict:
+        """fn() under the --part-timeout watchdog (faulthandler: a C-level thread, so it also ends a
+        process stuck inside OpenCASCADE)."""
+        if tag in results.get("timeouts", []):
+            return {"iou": 0.0, "volume_cm3": 0.0, "coverage": 0.0, "excess": 0.0, "h_mm": 0.0, "timeout": True}
+        if args.part_timeout <= 0:
+            return fn()
+        current.write_text(tag)
+        faulthandler.dump_traceback_later(args.part_timeout, exit=True)
+        try:
+            return fn()
+        finally:
+            faulthandler.cancel_dump_traceback_later()
+            current.unlink(missing_ok=True)
     refs = {}
     for part, alt, builds in rows:
         if part not in refs:
@@ -214,7 +248,7 @@ def main() -> None:
             continue
         results["parts"][key] = {"ref_volume_cm3": round(ref.Volume / 1000, 2)}
         for label, folder in built:
-            r = score(assemble(folder, builds), ref_tris, ref.Volume, args.res, ref)
+            r = timed(f"{key} {label}", lambda: score(assemble(folder, builds), ref_tris, ref.Volume, args.res, ref))
             results["parts"][key][label] = r
             print(f"{key:36s} {label:12s} " + ("missing" if r.get("missing") else
                   f"IoU {r['iou']:.4f}  coverage {r['coverage']:.4f}  excess {r['excess']:.4f}  "
@@ -236,8 +270,8 @@ def main() -> None:
             for label, folder in built:
                 if folder == teacher:
                     continue
-                shape, _ = load_shape(folder, goal)
-                r = score(shape, t_tris, t_shape.Volume, args.res, t_shape)
+                r = timed(f"{goal} {label} vs teacher",
+                          lambda: score(load_shape(folder, goal)[0], t_tris, t_shape.Volume, args.res, t_shape))
                 results["vs_teacher"][goal][label] = r
                 print(f"{goal:36s} {label:12s} vs teacher " + ("missing" if r.get("missing") else f"IoU {r['iou']:.4f}"),
                       flush=True)

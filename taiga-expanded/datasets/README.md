@@ -58,7 +58,7 @@ cd taiga-expanded/datasets
 ./run_deepcad.sh eval          # share built to IoU >= 0.99, by goal length, mean ± sd over seeds
 ```
 
-`LIMIT=0` converts the whole split; `SUBSET=train` the training split (for the training family, later); `MAX_FEATURES`, `MIN_IOU`, `OUT`, `DATA` and `REF_PY` override the defaults. `convert` uses the OCP venv that `../eval/run_s80.sh eval` creates (`~/taiga-expanded/ocp-venv`).
+`LIMIT=0` converts the whole split; `SUBSET=train` the training split (for the training family, later); `MAX_FEATURES`, `MIN_IOU`, `OUT`, `DATA` and `REF_PY` override the defaults. `convert` uses the OCP venv that `../eval/run_s80.sh eval` creates (`~/taiga-expanded/ocp-venv`). `eval` resumes an interrupted run from its checkpoint, and a build whose score takes over `PART_TIMEOUT` seconds (default 900) scores 0 instead of stalling the run: on the 5060 Ti a single model build had held phase 1 for over 5 hours (2026-10-12).
 
 **Tested** on synthetic models in DeepCAD's format (a plate with a hole, a boss, a cut slot on the XZ plane extruded both ways, a two-sided join on the YZ plane; a model whose first sketch is on the XZ plane with a negative extrude): the goals rebuild the originals to IoU 0.9999 in an OpenCASCADE re-implementation of the goal semantics; angled sketch planes and intersect are left out as intended. The real data and FreeCAD's builds are next (`convert`, `teacher`, `verify`).
 
@@ -126,5 +126,5 @@ As training goals (patch 0011, `TAIGA_GOALS_FILE`) they fall into level 1 (54,77
 | File | Version |
 |---|---|
 | `convert_deepcad.py` | 2026.10.06.10 |
-| `run_deepcad.sh` | 2026.10.12.1 |
+| `run_deepcad.sh` | 2026.10.13.1 |
 | `diagnose_goals.py` | 2026.10.06.2 |
