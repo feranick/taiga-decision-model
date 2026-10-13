@@ -1,6 +1,6 @@
 #!/bin/bash
 # run_s80.sh — S 80 evaluation of taiga-expanded: build the S 80 goals, score them against the reference CAD.
-# Version: 2026.10.10.1
+# Version: 2026.10.13.1
 #
 # Usage:  ./run_s80.sh check             check that every goal can be built (fast, nothing saved)
 #         ./run_s80.sh teacher           build every goal with the scripted teacher   -> $OUT/teacher
@@ -88,8 +88,18 @@ stage_eval() {
   (( ${#built[@]} > 0 )) || die "no builds in $OUT (run teacher and/or models first)"
   local t=(); [[ -d $OUT/teacher ]] && t=(--teacher "$OUT/teacher")
   log "eval: ${built[*]}"
-  "$FREECAD_PYTHON" "$HERE/eval_s80.py" --ref "$REF" --built "${built[@]}" "${t[@]}" \
-    --out "$OUT/eval_s80.json" --overlay 2>&1 | tee "$OUT/eval_s80.log"
+  # a score over --part-timeout ends eval_s80.py and leaves its name in eval_s80.current: resume
+  # from the checkpoint (that build then scores 0), as run_deepcad.sh does
+  [[ -f $OUT/eval_s80.partial.json ]] || : > "$OUT/eval_s80.log"
+  local restarts=0 rc
+  while :; do
+    "$FREECAD_PYTHON" "$HERE/eval_s80.py" --ref "$REF" --built "${built[@]}" "${t[@]}" \
+      --out "$OUT/eval_s80.json" --overlay 2>&1 | tee -a "$OUT/eval_s80.log"
+    rc=${PIPESTATUS[0]}
+    [[ $rc == 0 ]] && break
+    [[ -f $OUT/eval_s80.current ]] && (( ++restarts <= 50 )) || die "eval_s80.py failed (exit $rc), see $OUT/eval_s80.log"
+    log "eval: $(cat "$OUT/eval_s80.current") took too long; resuming (it scores 0)"
+  done
 }
 
 stage=${1:-}; shift || true

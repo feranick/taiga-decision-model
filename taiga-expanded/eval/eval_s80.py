@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """eval_s80.py — score Taiga-built S 80 parts against the reference CAD, part by part.
-Version: 2026.10.13.3
+Version: 2026.10.13.4
 
 Runs in FreeCAD's Python (needs numpy):
     source ~/taiga-expanded/freecad.env
@@ -92,24 +92,31 @@ def _inside(shape, p) -> bool:
         return False
 
 
-def sampled_iou(a, b, n: int = 20000, seed: int = 0) -> dict:
+def sampled_iou(a, b, n: int = 20000, seed: int = 0, budget: float = 240.0) -> dict:
     """IoU from random points classified against the solids themselves (no mesh): the fallback
     when a mesh is not watertight (OCC sometimes leaves a face without triangles), which breaks
-    the voxel fill. Identical solids still give exactly 1."""
+    the voxel fill. Identical solids still give exactly 1. On a large, complex build (an S 80
+    casing a model got wrong) each point can take tens of ms: after `budget` seconds the points
+    classified so far are used (at least 1000; IoU within about +-0.03), so the score never hits
+    the --part-timeout."""
     import random
+    import time
 
     bb = a.BoundBox
     bb.add(b.BoundBox)
     rng = random.Random(seed)
     na = nb = ni = 0
-    for _ in range(n):
+    t0, k = time.monotonic(), 0
+    for k in range(1, n + 1):
         p = App.Vector(rng.uniform(bb.XMin, bb.XMax), rng.uniform(bb.YMin, bb.YMax), rng.uniform(bb.ZMin, bb.ZMax))
         ia, ib = _inside(a, p), _inside(b, p)
         na, nb, ni = na + ia, nb + ib, ni + (ia and ib)
-    box = bb.XLength * bb.YLength * bb.ZLength / n
+        if k >= 1000 and k % 100 == 0 and time.monotonic() - t0 > budget:
+            break
+    box = bb.XLength * bb.YLength * bb.ZLength / k
     union = na + nb - ni
     return {"iou": ni / union if union else 0.0, "vol_a": na * box, "vol_b": nb * box, "vol_inter": ni * box,
-            "h": 0.0, "converged": True, "sampled": True}
+            "h": 0.0, "converged": True, "sampled": True, "samples": k}
 
 
 def score(shape, ref_tris, ref_volume: float, res: int, ref_shape=None) -> dict:
