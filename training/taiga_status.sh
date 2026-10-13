@@ -1,6 +1,6 @@
 #!/bin/bash
 # taiga_status.sh — what is running and how far it is, on this machine (read-only).
-# Version: 2026.10.13.1
+# Version: 2026.10.13.2
 #
 # Usage: ~/Software/taiga-decision-model/training/taiga_status.sh
 # Looks at every ~/taiga-expanded* work folder: setup tests, sweeps (seeds finished, current
@@ -9,6 +9,7 @@ shopt -s nullglob
 
 say() { printf '%s\n' "$*"; }
 newest() { local f best=""; for f in "$@"; do [[ -z $best || $f -nt $best ]] && best=$f; done; printf '%s' "$best"; }
+ago() { local m=$(( ($(date +%s) - $(stat -c %Y "$1")) / 60 )); (( m < 120 )) && echo "${m}m ago" || echo "$((m / 60))h ago"; }
 count_lines() { local c; c=$(grep -cE "$1" "$2" 2>/dev/null); echo "${c:-0}"; }   # grep -c prints 0 itself (exit 1)
 
 say "== $(hostname)  $(date '+%Y-%m-%d %H:%M')"
@@ -30,12 +31,20 @@ for W in "$HOME"/taiga-expanded*; do
     G=${G%/}; exp=$(basename "$G")
     [[ $exp == reference_hf || $exp == seed* ]] && continue
     done_files=("$G"/seed*/eval_perturb.json); n_done=${#done_files[@]}
-    line="   sweep $exp: $n_done/5 seeds finished"
+    say "   sweep $exp: $n_done/5 seeds finished"
     if (( n_done < 5 )); then
-      last=$(newest "$W"/logs/*_"${exp}"_seed*.log)   # the newest stage log (train, eval, ...) of any seed
-      [[ -n $last ]] && line+=" | now: $(basename "$last" .log | sed "s/_${exp}_/ /"): $(grep -a -v '^\s*$' "$last" | tail -n 1 | cut -c1-70)"
+      # each unfinished seed with logs: its newest stage log, last line, and when it was last written
+      # (a log silent for hours is a hung run)
+      declare -A seeds=()
+      for L in "$W"/logs/*_"${exp}"_seed*.log; do s=${L##*_seed}; seeds[${s%.log}]=1; done
+      for s in $(printf '%s\n' "${!seeds[@]}" | sort -n); do
+        [[ -f $G/seed$s/eval_perturb.json ]] && continue
+        last=$(newest "$W"/logs/*_"${exp}"_seed"$s".log)
+        stage=$(basename "$last" .log); stage=${stage%%_"${exp}"_*}
+        say "     seed $s: $stage ($(ago "$last")): $(grep -a -v '^\s*$' "$last" | tail -n 1 | cut -c1-70)"
+      done
+      unset seeds
     fi
-    say "$line"
   done
   # sweeps without a run folder yet (generating data): found from the per-stage logs that every
   # sweep writes, <stage>_<exp>_seed<N>.log
