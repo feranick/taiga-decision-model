@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """eval_s80.py — score Taiga-built S 80 parts against the reference CAD, part by part.
-Version: 2026.10.13.1
+Version: 2026.10.13.2
 
 Runs in FreeCAD's Python (needs numpy):
     source ~/taiga-expanded/freecad.env
@@ -199,7 +199,14 @@ def main() -> None:
         nonlocal n_new
         n_new += 1
         if force or n_new % 25 == 0:
-            partial.write_text(json.dumps(results))
+            # with what a resumed run has not reached again yet, so a checkpoint never loses scores
+            # (2026.10.13.2: the forced one after a timeout had written none, and a second timeout
+            # soon after then restarted the evaluation from zero)
+            merged = {**results, "parts": {**done_parts, **results["parts"]},
+                      "vs_teacher": {**done_goals, **results["vs_teacher"]}}
+            tmp = partial.with_name(partial.name + ".tmp")
+            tmp.write_text(json.dumps(merged))
+            tmp.replace(partial)  # atomic: an interrupted write leaves the previous checkpoint
 
     # a score the previous run did not finish in --part-timeout (it left its name in `current`)
     current = out.with_name(out.stem + ".current")

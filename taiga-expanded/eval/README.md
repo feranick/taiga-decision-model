@@ -172,6 +172,6 @@ The default-budget models (5060 Ti, 1× data, 4 epochs, 2026-10-10) give the sam
 | File | Version |
 |---|---|
 | `make_s80_goals.py` | 2026.10.05.2 |
-| `eval_s80.py` | 2026.10.13.1 |
+| `eval_s80.py` | 2026.10.13.2 |
 | `voxel_iou.py` | 2026.10.06.1 |
 | `run_s80.sh` | 2026.10.10.1 |

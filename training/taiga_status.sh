@@ -1,6 +1,6 @@
 #!/bin/bash
 # taiga_status.sh — what is running and how far it is, on this machine (read-only).
-# Version: 2026.10.12.7
+# Version: 2026.10.13.1
 #
 # Usage: ~/Software/taiga-decision-model/training/taiga_status.sh
 # Looks at every ~/taiga-expanded* work folder: setup tests, sweeps (seeds finished, current
@@ -69,9 +69,11 @@ for W in "$HOME"/taiga-expanded*; do
     nb=0; for f in "$D"/seed*.log; do nb=$((nb + $(count_lines '^dc_[0-9_]+: (SUCCESS|FAIL|CRASH)' "$f"))); done
     (( nb > 0 )) && say "   $name: $nb model builds"
     if [[ -f $D/eval.log ]]; then
-      p1=$(grep -v 'vs teacher' "$D/eval.log" | grep -c ' teacher ')
-      p2=$(( $(grep -c 'vs teacher' "$D/eval.log") / 5 ))
-      say "   $name scoring: phase 1 $p1, phase 2 $p2 (of the goal count)$(grep -q '^Share of' "$D/eval.log" && echo ' | done')"
+      # distinct goals: a resumed run (eval_s80.py checkpoint) rescores up to 25 parts and appends to the log
+      p1=$(grep -v 'vs teacher' "$D/eval.log" | grep ' teacher ' | awk '{print $1}' | sort -u | wc -l)
+      p2=$(grep 'vs teacher' "$D/eval.log" | awk '{print $1}' | sort -u | wc -l)
+      nt=$(count_lines 'IoU 0 \(timeout\)' "$D/eval.log")
+      say "   $name scoring: phase 1 $p1, phase 2 $p2 (of the goal count)$( (( nt > 0 )) && echo ", $nt timeouts")$(grep -q '^Share of' "$D/eval.log" && echo ' | done')"
     fi
   done
 done
