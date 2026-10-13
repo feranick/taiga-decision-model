@@ -3,7 +3,7 @@
 # the patches' BASE commit with the patch series applied, in its own WORK folder, with the
 # expanded evaluation suites added. BASELINE=1 runs the same upstream commit unpatched
 # (the reference for "no regression on the original suites").
-# Version: 2026.10.12.1
+# Version: 2026.10.13.1
 #
 # Usage:   ./train_expanded.sh <dgx|5060ti|quadro> <stages...>
 #   e.g.   ./train_expanded.sh 5060ti setup
@@ -29,6 +29,19 @@ if [[ ${BASELINE:-0} == 1 ]]; then
 else
   # the patches extend the vocabulary, so the published weights only make sense on the baseline
   export WORK=${WORK:-$HOME/taiga-expanded} PATCHES=$HERE/patches REF_EVAL=${REF_EVAL:-0}
+fi
+# A WORK set up with an earlier, shorter series keeps working after new patches are added: its
+# series is the first n patches of patches/ (patches are only ever appended), so those n are used.
+if [[ ${BASELINE:-0} != 1 && -f $WORK/patches.sha ]]; then
+  all=("$HERE"/patches/*.patch); want=$(cat "$WORK/patches.sha"); n_ok=""
+  for ((n = ${#all[@]}; n >= 1; n--)); do
+    [[ $(cat "${all[@]:0:n}" | sha256sum | cut -c1-12) == "$want" ]] && { n_ok=$n; break; }
+  done
+  if [[ -n $n_ok && $n_ok -lt ${#all[@]} ]]; then
+    PATCHES=$WORK/patches_series; rm -rf "$PATCHES"; mkdir -p "$PATCHES"
+    cp "${all[@]:0:n_ok}" "$HERE/patches/BASE" "$PATCHES"/
+    echo "note: $WORK was set up with patches 1-$n_ok of ${#all[@]}; using those (a newer series needs a new WORK)"
+  fi
 fi
 # patch 0016 adds mixed_at / mixed_at_long: only for a WORK that has them (or is not set up yet),
 # so work folders made with an earlier series keep evaluating as before

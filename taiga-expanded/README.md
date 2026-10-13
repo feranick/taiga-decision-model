@@ -415,6 +415,6 @@ Typical order: S 80 `check → teacher → eval` (vocabulary), then `models → 
 
 | File | Version |
 |---|---|
-| `train_expanded.sh` | 2026.10.12.1 |
+| `train_expanded.sh` | 2026.10.13.1 |
 | `dev/*.sh` | 2026.10.05.1 (`export_patches.sh` 2026.10.05.2) |
 | `patches/` | 0001 (features on any planar face), 0002 (features on origin planes with an offset), 0003 (curved outlines), 0004 (revolve and groove with a profile), 0005 (patterns and mirrors about any axis, wider goal rows), 0006 (fillets and chamfers on chosen edges, features on a chosen face), 0007 (goals at other sizes), 0008 (enough steps for the target build of long goals), 0009 (XY datum planes and overhanging features in training), 0010 (turned hubs with end-face outlines, mixed-family and longer goals, revolves off the origin), 0011 (configurable input limits, bottom-face features, training goals from a goals file), 0012 (the IoU check rejects malformed solids), 0013 (data generation survives a FreeCAD crash), 0014 (`--pos-table`, `--ord-table`), 0015 (`TAIGA_KEEP_HELDOUT`), 0016 (datum cavities and `at` stacks in mixed goals, explicit top normals), against upstream `4a31bcf` |
