@@ -150,7 +150,7 @@ Fixed before the production training starts:
 5. ~~**`TAIGA_KEEP_HELDOUT=1`**~~ **done** (patch 0015): production trains on every feature combination; the held-out pairs exist only to measure generalization.
 6. ~~**Pooled data generation**~~ **done** (`taiga_pool_data.sh`, `TRAIN_DATA_DIR`): each machine generates shards with its own `DATA_SEED` (`./train_expanded.sh <machine> data`), the helper checks and combines them into one training folder.
 7. ~~**DeepCAD scoring without the second phase**~~ **done** (`run_deepcad.sh` 2026.10.12.1: off unless `VS_TEACHER=1`), which roughly halves the gate's time.
-8. ~~**Patch 0016**~~ **done**: datum cavities and `at` stacks in one goal, explicit top normals (suites `mixed_at`, `mixed_at_long`); needs a teacher check of the new goals before production data.
+8. ~~**Patch 0016**~~ **done**: datum cavities and `at` stacks in one goal, explicit top normals (suites `mixed_at`, `mixed_at_long`); teacher check: 793 of 800 sampled goals build (Spark1, 2026-10-13).
 9. Only if the casing still fails on length beyond 21 intents after item 8: longer mixed goals (curriculum to ~40 intents) or mid-part start states (section 4.1).
 
 **Decisions:**
