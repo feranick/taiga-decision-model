@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """eval_s80.py — score Taiga-built S 80 parts against the reference CAD, part by part.
-Version: 2026.10.13.2
+Version: 2026.10.13.3
 
 Runs in FreeCAD's Python (needs numpy):
     source ~/taiga-expanded/freecad.env
@@ -233,6 +233,14 @@ def main() -> None:
             current.unlink(missing_ok=True)
     refs = {}
     for part, alt, builds in rows:
+        key = part if alt is None else f"{part} [{alt}]"
+        # already scored (resumed run): skip before reading and meshing the reference, which on
+        # thousands of DeepCAD parts took most of the time of every restart (2026.10.13.3)
+        resumed = key in done_parts and all(label in done_parts[key] for label, _ in built)
+        if resumed:
+            results["parts"][key] = done_parts[key]
+            if not args.overlay:  # the overlay files need every reference again
+                continue
         if part not in refs:
             step = ref_dir / f"{part}.step"
             if not step.is_file():
@@ -248,11 +256,9 @@ def main() -> None:
                 results.setdefault("invalid_refs", []).append(part)
         if refs[part] is None:
             continue
-        ref, ref_tris = refs[part]
-        key = part if alt is None else f"{part} [{alt}]"
-        if key in done_parts and all(label in done_parts[key] for label, _ in built):
-            results["parts"][key] = done_parts[key]
+        if resumed:
             continue
+        ref, ref_tris = refs[part]
         results["parts"][key] = {"ref_volume_cm3": round(ref.Volume / 1000, 2)}
         for label, folder in built:
             r = timed(f"{key} {label}", lambda: score(assemble(folder, builds), ref_tris, ref.Volume, args.res, ref))
