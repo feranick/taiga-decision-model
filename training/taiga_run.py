@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """taiga_run.py — run an upstream freecad_s1 module or script with FreeCAD worker-crash
 recovery and, for training, optional deterministic PyTorch.
-Version: 2026.10.04.1
+Version: 2026.10.13.1
 
     python taiga_run.py freecad_s1.evaluate --ckpt ... [args]      # a module (like python -m)
     python taiga_run.py scripts/calibrate.py --model ... [args]    # a script
@@ -13,6 +13,9 @@ the affected episode fails:
   - crash while scoring  -> IoU 0, no match (the episode counts as a failure)
   - crash during a step  -> the episode ends as "unrecoverable"
   - crash during a reset -> the reset is retried once on a fresh worker
+A worker that hangs (OpenCASCADE stuck in one operation: a perturbed-DAgger evaluation on the
+Quadro sat 16 hours on one step at 770 % CPU, 2026-10-13) is killed after S1_STEP_TIMEOUT
+seconds (default 1800; 0: never) on one request, and then handled as a crash.
 Every crash is reported on stderr and, if S1_CRASH_LOG is set, appended to that file as
 one JSON line (phase, episode spec, number of steps sent), so crashes stay visible.
 
@@ -24,7 +27,9 @@ import json
 import os
 import runpy
 import sys
+import threading
 import time
+import weakref
 
 
 def install_crash_recovery() -> None:
@@ -113,6 +118,48 @@ def install_crash_recovery() -> None:
     client.VecEnv.score = score
 
 
+def install_watchdog() -> None:
+    """Kill a FreeCAD worker that has not answered one request within S1_STEP_TIMEOUT seconds;
+    the reader then sees the worker exit and the crash recovery above takes over."""
+    limit = float(os.environ.get("S1_STEP_TIMEOUT", "1800"))
+    if limit <= 0:
+        return
+    from freecad_s1.runtime import client
+
+    pending = weakref.WeakKeyDictionary()  # env -> time its oldest unanswered request was sent
+    lock = threading.Lock()
+    send0, recv0 = client.FreeCADEnv.send, client.FreeCADEnv.recv
+
+    def send(self, req):
+        with lock:
+            pending.setdefault(self, time.monotonic())
+        return send0(self, req)
+
+    def recv(self):
+        try:
+            return recv0(self)
+        finally:
+            with lock:
+                pending.pop(self, None)
+
+    def watch():
+        while True:
+            time.sleep(min(30.0, limit / 4))
+            now = time.monotonic()
+            with lock:
+                stuck = [env for env, t in pending.items() if now - t > limit]
+            for env in stuck:
+                if env.proc.poll() is None:
+                    print(f"[taiga_run] FreeCAD worker pid {env.proc.pid} gave no answer in {limit:.0f} s: killed",
+                          file=sys.stderr, flush=True)
+                    env.proc.kill()
+                with lock:
+                    pending.pop(env, None)
+
+    client.FreeCADEnv.send, client.FreeCADEnv.recv = send, recv
+    threading.Thread(target=watch, daemon=True, name="s1-watchdog").start()
+
+
 def maybe_deterministic(target: str) -> None:
     mode = os.environ.get("DETERMINISTIC", "0")
     if mode in ("", "0") or not target.endswith("train_sft"):
@@ -129,6 +176,7 @@ def main() -> None:
         sys.exit(__doc__)
     target, args = sys.argv[1], sys.argv[2:]
     install_crash_recovery()
+    install_watchdog()
     maybe_deterministic(target)
     sys.argv = [target] + args
     if target.endswith(".py"):
