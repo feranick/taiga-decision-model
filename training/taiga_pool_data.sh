@@ -1,6 +1,6 @@
 #!/bin/bash
 # taiga_pool_data.sh — combine training-data folders (shards) into one folder to train on.
-# Version: 2026.10.12.1
+# Version: 2026.10.14.1
 #
 # Usage: taiga_pool_data.sh OUT_DIR SRC_DIR [SRC_DIR ...]
 #   e.g. taiga_pool_data.sh ~/pool/prod1 ~/taiga-expanded-0015/taiga-s1/data/gen_train_seed21_x4_kh \
@@ -15,8 +15,10 @@
 #   TRAIN_DATA_DIR=OUT_DIR ... ./train_expanded.sh <m> sweep
 # Pool only data made with the same patch series and TAIGA_* settings (the data folder names
 # carry those settings).
+# FRACTION=0.5 takes only the first half of each source's shards (data-scaling runs).
 set -euo pipefail
-(( $# >= 2 )) || { sed -n '2,20p' "$0"; exit 1; }
+(( $# >= 2 )) || { sed -n '2,21p' "$0"; exit 1; }
+frac=${FRACTION:-1}
 out=$1; shift
 [[ -e $out ]] && { echo "error: $out exists; choose a new folder" >&2; exit 1; }
 mkdir -p "$out"
@@ -27,6 +29,8 @@ for src in "$@"; do
   files=("$src"/*.jsonl.gz)
   [[ -e ${files[0]} ]] || { echo "error: no *.jsonl.gz shards in $src" >&2; rm -rf "$out"; exit 1; }
   [[ -f $src/.incomplete ]] && { echo "error: $src is marked incomplete (generation did not finish)" >&2; rm -rf "$out"; exit 1; }
+  keep=$(awk -v n="${#files[@]}" -v f="$frac" 'BEGIN { k = int(n * f + 0.5); print (k < 1 ? 1 : (k > n ? n : k)) }')
+  files=("${files[@]:0:keep}")
   n=0
   for f in "${files[@]}"; do
     gzip -t "$f" 2>/dev/null || { echo "error: damaged shard $f" >&2; rm -rf "$out"; exit 1; }
