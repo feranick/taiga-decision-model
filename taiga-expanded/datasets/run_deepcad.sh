@@ -1,6 +1,6 @@
 #!/bin/bash
 # run_deepcad.sh — DeepCAD build histories as Taiga goals: download, convert, verify, score models.
-# Version: 2026.10.13.1
+# Version: 2026.10.14.1
 #
 # Usage:  ./run_deepcad.sh download          DeepCAD's data (cad_json + split) into $DATA
 #         ./run_deepcad.sh convert           JSON -> goals + reference STEP files        -> $OUT
@@ -14,7 +14,7 @@
 #         MAX_FEATURES (60), MIN_IOU (0.99), OUT ($WORK/deepcad_$SUBSET), REF_PY (Python with OCP 7.9:
 #         $WORK/ocp-venv/bin/python, as created by ../eval/run_s80.sh), VS_TEACHER=1 (eval also scores
 #         every model build against the teacher's, a second pass as long as the first), BUILD_ARGS (extra options for
-#         taiga_build_part.py in "models", e.g. --no-loop-guard), PART_TIMEOUT (900: seconds one score
+#         taiga_build_part.py in "models", e.g. --no-loop-guard), PART_TIMEOUT (300: seconds one score
 #         may take in "eval"; a build that takes longer scores 0, see eval_s80.py)
 # License: DeepCAD's models come from public Onshape documents (see README.md); check before use
 #         beyond research.
@@ -155,13 +155,13 @@ stage_eval() {
   local current=$OUT/eval_${SUBSET}_models.current restarts=0 rc
   while :; do
     "$FREECAD_PYTHON" "$REPO/taiga-expanded/eval/eval_s80.py" --spec "$OUT/eval_${SUBSET}_verified.json" --ref "$OUT/refs" \
-      --built "${built[@]}" "${vs[@]}" --part-timeout "${PART_TIMEOUT:-900}" --out "$OUT/eval_${SUBSET}_models.json" 2>&1 \
+      --built "${built[@]}" "${vs[@]}" --part-timeout "${PART_TIMEOUT:-300}" --out "$OUT/eval_${SUBSET}_models.json" 2>&1 \
       | clean >> "$OUT/eval.log"
     rc=${PIPESTATUS[0]}
     [[ $rc == 0 ]] && break
     # a score over PART_TIMEOUT ends the run and leaves its name in $current: resume, it then scores 0
     [[ -f $current ]] && (( ++restarts <= 200 )) || die "eval_s80.py failed (exit $rc), see $OUT/eval.log"
-    log "eval: $(cat "$current") took over ${PART_TIMEOUT:-900} s; resuming (that build scores 0)"
+    log "eval: $(cat "$current") took over ${PART_TIMEOUT:-300} s; resuming (that build scores 0)"
   done
   "$PY" - "$OUT/eval_${SUBSET}_models.json" "$OUT/goals_${SUBSET}_verified.json" "$MIN_IOU" <<'PYEOF'
 import json, math, sys
