@@ -107,6 +107,17 @@ Fix: `taiga_build_part.py` 2026.10.07.1 reports a crashed part as CRASH (a failu
 
 As in the first pass: single extrudes build, almost anything with an XY datum-plane feature does not, and length makes it worse. This is the reference point for every later model on this test set.
 
+**Patch-0013 models** (5060 Ti, 2× data, 8 epochs, upstream input limits, synthetic goals only: no DeepCAD design in training; 16 of 33,810 builds over the scoring time limit, counted as 0; 2026-10-14). Same test set:
+
+| Features | Goals | Teacher | seed 12 | seed 2 | seed 22 | seed 32 | seed 42 | mean ± sd |
+|---|---|---|---|---|---|---|---|---|
+| 1–5 | 6,187 | 1.000 | 0.946 | 0.956 | 0.974 | 0.989 | 0.962 | 0.965 ± 0.017 |
+| 6–10 | 544 | 0.998 | 0.818 | 0.886 | 0.892 | 0.915 | 0.781 | 0.858 ± 0.056 |
+| 11–20 | 31 | 1.000 | 0.806 | 0.968 | 0.871 | 0.710 | 0.290 | 0.729 ± 0.263 |
+| all | 6,762 | 0.999 | 0.935 | 0.950 | 0.967 | 0.982 | 0.944 | **0.956 ± 0.019** |
+
+From 0.52 to 0.96 without a single DeepCAD design in training: patches 0009–0013 (XY datum planes, bottom faces, longer mixed goals) cover what real sketch-and-extrude designs need. What is left grows with length, as on the synthetic suites; the 11–20 bucket has only 31 designs, so its spread is mostly sampling. This is the reference for the production gates (`../../docs/README_production_plan.md`, section 7).
+
 **Train split** (Spark2, `SUBSET=train LIMIT=0`, FreeCAD 1.1.3, patches 0001–0009, 2026-10-08 to 2026-10-11): 117,855 designs converted, 117,550 built by the teacher, **116,688 match their original** (IoU ≥ 0.99; 99.0 % of the converted designs). Verified goals by number of features:
 
 | Features | 1 | 2 | 3 | 4 | 5 | 6–10 | 11–15 | 16–21 |

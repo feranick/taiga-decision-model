@@ -142,7 +142,7 @@ Fixed before the production training starts:
 
 1. ~~**Input limits with matched tables**~~ **done** (Quadro `s0014`, 2026-10-13): `len6` 0.99 with `--max-nodes 160 --max-goal 64 --max-ord 72 --max-pos 256 --ord-table 28 --pos-table 96 --newest-nodes`; every S 80 part except the casing exact. These are the production limits.
 2. ~~**DeepCAD goals at 1.2M and 7M**~~ **done** (Spark1 `dc1`, Spark2 `long2`, 2026-10-13; `../taiga-expanded/eval/README.md`): DeepCAD goals make the casing core exact on every seed at both sizes; the full casing (52 intents) reaches 0.97 / 0.93 only at 7M (mean 0.74 against 0.51 at 1.2M without its hung build). Data mix: DeepCAD goals at 25 %; a larger long-goal model.
-3. **DeepCAD test split with the patch-0013 models** (5060 Ti): the first full real-design score of a current model, and the reference for the gates.
+3. ~~**DeepCAD test split with the patch-0013 models**~~ **done** (5060 Ti, 2026-10-14; `../taiga-expanded/datasets/README.md`): **0.956 ± 0.019** of the 6,762 verified test designs built to IoU ≥ 0.99 (teacher 0.999), by length 0.965 (1–5 features), 0.858 (6–10), 0.73 (11–20, 31 designs), with no DeepCAD design in training (step-1 baseline 0.52).
 4. ~~**Why the casing stalls at 0.81**~~ **found** (verbose builds on Spark1 and Spark2): not length, ordinals or the held-out pair, but the top flange read as a datum feature (`nz: 1` had only come with `off`). Fixed by patch 0016 for new models and `--canon-top` for existing ones (`../taiga-expanded/eval/README.md`).
 
 **Code to add:**
@@ -156,7 +156,17 @@ Fixed before the production training starts:
 **Decisions:**
 
 10. **Model sizes** (from items 1–2): two production models, routed by goal length (section 2): **small** 1.2M for parts up to about 25 intents (every S 80 part but the casing exact, casing core exact with DeepCAD goals), and **long** 7M (or larger, from a short data-scaling run at 1× / 2× / 4× data) for longer parts. Recovery deep in long builds (the remaining casing failures) needs perturbed DAgger (`DAGGER_PERTURB`) in the long model's training.
-11. **Pass criteria** per test set and length bucket (section 6), fixed before the run.
+11. **Pass criteria** per test set and length bucket (section 6), fixed before the run. Proposal (mean over 5 seeds; every seed within 0.03 of it):
+
+    | Test set | Small model (≤ 25 intents) | Long model |
+    |---|---|---|
+    | Synthetic suites, clean | ≥ 0.99 on every suite up to `len6` | the same, plus `mixed_at_long` ≥ 0.97 |
+    | Synthetic, 20 % perturbed | `len6` ≥ 0.85 (patch-0014 runs: 0.78) | `len6` ≥ 0.90 |
+    | DeepCAD test, 1–5 / 6–10 / 11–20 features | ≥ 0.98 / 0.95 / 0.90 (now 0.965 / 0.858 / 0.73) | the same |
+    | S 80, ten parts other than the casing | exact on every seed | exact on every seed |
+    | S 80 casing core / casing | core ≥ 0.98 | core ≥ 0.98; casing ≥ 0.95 on 3 of 5 seeds |
+
+    The DeepCAD rows are the ones the DeepCAD training goals should move; the pilot models are scored on the test split to check that before the gates are fixed.
 12. **Pinned platform:** FreeCAD 1.1.3–1.1.4 (decided 2026-10-12), and which machines generate data and which train.
 
 The spurious Undo after a correct but unfamiliar step is a training issue that the loop guard covers at run time; with item 5 and the real designs (comp recovered in `long1`) it may not need its own fix, so it waits for the results above.
