@@ -174,6 +174,17 @@ The default-budget models (5060 Ti, 1× data, 4 epochs, 2026-10-10) give the sam
 - `eval_s80.py` 2026.10.10.1 also scores builds with no volume (open shells, loose faces) as 0; before, their triangles could still enclose voxels (e.g. IoU 0.28 with "vol 0.0").
 - **The casing parts are unchanged:** they fail on length and on the model's input limits (`../README.md`, primitive 8), not on the guard.
 
+**Patch-0016 pilots: 7M long model, patch 0016, `TAIGA_KEEP_HELDOUT=1`, DeepCAD goals at 25 %** (2× data, 8 epochs, 3 seeds, plain goals: no `--canon-top`, 2026-10-14). IoU per seed (seeds 12, 2, 22):
+
+| Run | Casing | Casing core | The nine other parts | Whole pump |
+|---|---|---|---|---|
+| Control (Spark1) | 0.97 0.94 0.22 | 0.99 on all three | exact on all three | 0.98 0.95 0.28 |
+| `DAGGER_PERTURB=0.2` (Spark2) | **0.973 0.966 0.973** | 0.99 on all three | exact on all three | **0.98 0.97 0.98** |
+
+- **Patch 0016 fixes the flange:** the goals as written now build as well as the `--canon-top` builds of the patch-0014 models did at their best; the casing core is exact on every seed.
+- **Perturbed DAgger makes the long part reliable:** all three casings at 0.97 (± 0.004), against one broken build in three without it, although the synthetic suites under perturbation show no difference (`len6` 0.85 against 0.86). Recovery on a real long part is what it buys.
+- **The casing is not yet exact:** 0.973 against the teacher's 0.998, the same value on two seeds, so the same features are missed every time; a verbose build shows which.
+
 ## Limits of the vocabulary found on the way
 
 - **Patterns only about the origin axes.** The suction flange's 8 bolt holes are on a circle around the port axis (z = 110), not the shaft axis, so they are written as 4 holes, each mirrored. A polar pattern about a feature's own axis would make it one hole and one pattern.

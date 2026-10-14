@@ -197,7 +197,7 @@ Fixed before the production training starts:
 
 **Decisions:**
 
-10. **Model sizes** (from items 1–2): two production models, routed by goal length (section 2): **small** 1.2M for parts up to about 25 intents (every S 80 part but the casing exact, casing core exact with DeepCAD goals), and **long** 7M (or larger, from a short data-scaling run at 1× / 2× / 4× data) for longer parts. Recovery deep in long builds (the remaining casing failures) needs perturbed DAgger (`DAGGER_PERTURB`) in the long model's training.
+10. **Model sizes** (from items 1–2): two production models, routed by goal length (section 2): **small** 1.2M for parts up to about 25 intents (every S 80 part but the casing exact, casing core exact with DeepCAD goals), and **long** 7M (or larger, from a short data-scaling run at 1× / 2× / 4× data) for longer parts. Recovery deep in long builds needs perturbed DAgger: the patch-0016 pilots (2026-10-14) put every casing at 0.97 with `DAGGER_PERTURB=0.2` against one broken build in three without it, so both production models train with it.
 11. **Pass criteria** per test set and length bucket (section 6), fixed before the run. Proposal (mean over 5 seeds; every seed within 0.03 of it):
 
     | Test set | Small model (≤ 25 intents) | Long model |
