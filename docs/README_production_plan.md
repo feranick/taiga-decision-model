@@ -193,6 +193,7 @@ Fixed before the production training starts:
 6. ~~**Pooled data generation**~~ **done** (`taiga_pool_data.sh`, `TRAIN_DATA_DIR`): each machine generates shards with its own `DATA_SEED` (`./train_expanded.sh <machine> data`), the helper checks and combines them into one training folder.
 7. ~~**DeepCAD scoring without the second phase**~~ **done** (`run_deepcad.sh` 2026.10.12.1: off unless `VS_TEACHER=1`), which roughly halves the gate's time.
 8. ~~**Patch 0016**~~ **done**: datum cavities and `at` stacks in one goal, explicit top normals (suites `mixed_at`, `mixed_at_long`); teacher check: 793 of 800 sampled goals build (Spark1, 2026-10-13).
+8b. ~~**Patch 0017**~~ **done** (2026-10-14): flanges with several mirrored bolt holes in training (the 0016 pilot's casing stopped at the suction port's second hole pair). Production data is generated with 0001–0017.
 9. Only if the casing still fails on length beyond 21 intents after item 8: longer mixed goals (curriculum to ~40 intents) or mid-part start states (section 4.1).
 
 **Decisions:**

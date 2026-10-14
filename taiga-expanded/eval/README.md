@@ -183,7 +183,7 @@ The default-budget models (5060 Ti, 1× data, 4 epochs, 2026-10-10) give the sam
 
 - **Patch 0016 fixes the flange:** the goals as written now build as well as the `--canon-top` builds of the patch-0014 models did at their best; the casing core is exact on every seed.
 - **Perturbed DAgger makes the long part reliable:** all three casings at 0.97 (± 0.004), against one broken build in three without it, although the synthetic suites under perturbation show no difference (`len6` 0.85 against 0.86). Recovery on a real long part is what it buys.
-- **The casing is not yet exact:** 0.973 against the teacher's 0.998, the same value on two seeds, so the same features are missed every time; a verbose build shows which.
+- **The casing is not yet exact:** 0.973 against the teacher's 0.998, the same value on two seeds. The verbose build (seed 12, `DAGGER_PERTURB=0.2`) is correct for 176 steps; then, after the suction port's first bolt-hole pair (hole, mirror), it mirrors again where the teacher starts the next hole on `Face+Y`, and the teacher's Undos come too late to repair it. Training had one mirrored hole per flange; patch 0017 adds flanges with up to three mirrored pairs.
 
 ## Limits of the vocabulary found on the way
 

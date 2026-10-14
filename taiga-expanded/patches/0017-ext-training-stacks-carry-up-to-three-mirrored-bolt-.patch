@@ -1,0 +1,197 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Wed, 14 Oct 2026 11:39:06 -0400
+Subject: [PATCH] ext: training stacks carry up to three mirrored bolt holes in
+ the flange rim
+
+As on the S 80 casing's ports: hole, mirror, hole, mirror. A 0016 model trained on one hole per
+flange added a second mirror after the suction port's first pair (step 177) and never recovered.
+Training goals only; every suite keeps its goals.
+---
+ freecad_s1/ext/mixed.py     | 48 +++++++++++++++++++++----------
+ freecad_s1/ext/sampler.py   |  2 +-
+ tests/test_ext_rim_holes.py | 56 +++++++++++++++++++++++++++++++++++++
+ 3 files changed, 91 insertions(+), 15 deletions(-)
+ create mode 100644 tests/test_ext_rim_holes.py
+
+diff --git a/freecad_s1/ext/mixed.py b/freecad_s1/ext/mixed.py
+index b294a55..2cae878 100644
+--- a/freecad_s1/ext/mixed.py
++++ b/freecad_s1/ext/mixed.py
+@@ -23,6 +23,10 @@ normal nz=+1 and z (sometimes also "at"). Before this patch nz=+1 only ever came
+ so a model read any nz=+1 as a datum plane (the S 80 casing built its top flange on
+ Plane:XY instead of Face+Z).
+ 
++Patch 0017 (training goals only; the suites keep their goals): a stack's flange may carry up to
++three bolt holes, each mirrored (hole, mirror, hole, mirror), as on the S 80 casing's ports. With
++one, a model trained on 0016 added a second mirror after the first pair of the suction port.
++
+ Neither family produces a composition upstream holds out (goals.heldout_composition): no
+ boss_box at all, no mirrored hole_std, no patterned pocket_rect.
+ 
+@@ -350,7 +354,7 @@ def _explicit_top(f: GoalFeature, h: float, with_at: bool) -> GoalFeature:
+     return GoalFeature(f.kind, p)
+ 
+ 
+-def _stack_group(rng, base, face, xr=None, explicit=False):
++def _stack_group(rng, base, face, xr=None, explicit=False, rim_holes=1):
+     """A stack on one face of the box (patch 0016), every feature's face picked with "at": a
+     neck (boss_cyl; boss_box only with held-out pairs kept), optionally a wider flange on it,
+     then a bore through them and / or bolt holes in the flange rim mirrored across the neck's
+@@ -419,30 +423,46 @@ def _stack_group(rng, base, face, xr=None, explicit=False):
+                                       depth=round(hn + hf + _u(rng, 1, 5), 1), at=list(end)))
+     elif not flange:  # a hole in the neck's end
+         feats.append(GoalFeature("hole", {**place(end), "r": round(rn * _u(rng, 0.3, 0.6), 1), "at": list(end)}))
+-    if flange and mirror and rf - rn > 3 and rng.random() < 0.7:  # bolt hole in the rim, mirrored
+-        q = list(end)
+-        q[m] = round(c[m] + (rn + rf) / 2, 1)
++    if flange and mirror and rf - rn > 3 and rng.random() < (0.9 if rim_holes > 1 else 0.7):  # rim bolt holes, each mirrored
+         hr = _u(rng, 1, max(1.1, (rf - rn) * 0.25))
+-        feats.append(_outline_feature("profile_pocket", _circle(q[ua], q[va], hr), **place(q),
+-                                      depth=round(hf + 1, 1), at=q))
+-        feats.append(GoalFeature("mirror", pt.pattern_params("mirror", m)))
++        rr = (rn + rf) / 2
++        o = va if m == ua else ua  # the in-plane axis along the mirror plane
++        # patch 0017 (training goals): up to `rim_holes` holes at different angles on the +m half, each
++        # followed by its mirror, as on a pump casing's ports (hole, mirror, hole, mirror, ...)
++        n = 1 if rim_holes <= 1 else rng.randint(1, rim_holes)
++        if n == 1:
++            angles = [0.0] if rim_holes <= 1 else [math.radians(_u(rng, -50, 50))]
++        else:
++            phi = math.radians(_u(rng, 25, 60))
++            angles = [-phi + 2 * phi * k / (n - 1) for k in range(n)]
++            if rr * 2 * phi / (n - 1) < 2 * hr + 1:  # too close together on this rim
++                angles = [0.0]
++        for th in angles:
++            q = list(end)
++            q[m] = round(c[m] + rr * math.cos(th), 1)
++            q[o] = round(c[o] + rr * math.sin(th), 1)
++            if q[m] - c[m] < hr + 0.5:  # would cross its mirror plane
++                continue
++            feats.append(_outline_feature("profile_pocket", _circle(q[ua], q[va], hr), **place(q),
++                                          depth=round(hf + 1, 1), at=q))
++            feats.append(GoalFeature("mirror", pt.pattern_params("mirror", m)))
+     return feats
+ 
+ 
+ def sample_mixed_goal(level: int, rng: random.Random, allow_heldout: bool = False, extra: bool = False,
+-                      need_stack: bool = False, explicit: bool | None = None) -> Goal:
++                      need_stack: bool = False, explicit: bool | None = None, rim_holes: int = 1) -> Goal:
+     """`extra` (patch 0016): also cavity and stack groups and the explicit top-face form (training
+     goals, suites mixed_at*); `need_stack`: only goals with a stack; `explicit`: force the form."""
+     global _HELD
+     _HELD = allow_heldout
+     try:
+-        return _sample_mixed_goal(level, rng, extra, need_stack, explicit)
++        return _sample_mixed_goal(level, rng, extra, need_stack, explicit, rim_holes)
+     finally:
+         _HELD = False
+ 
+ 
+ def _sample_mixed_goal(level: int, rng: random.Random, extra: bool = False, need_stack: bool = False,
+-                       explicit: bool | None = None) -> Goal:
++                       explicit: bool | None = None, rim_holes: int = 1) -> Goal:
+     for _ in range(200):
+         base = GoalFeature("base_box", {"w": _u(rng, 40, 95), "d": _u(rng, 30, 80), "h": _u(rng, 16, 45)})
+         w, d, h = base.params["w"], base.params["d"], base.params["h"]
+@@ -467,10 +487,10 @@ def _sample_mixed_goal(level: int, rng: random.Random, extra: bool = False, need
+         if need_stack:  # the stack first, so it gets a face
+             face = rng.choice(["+Z", "+Z", "+Z", *faces_free])
+             if face == "+Z":
+-                g = _stack_group(rng, base, face, top_regions.pop()[0], expl)
++                g = _stack_group(rng, base, face, top_regions.pop()[0], expl, rim_holes)
+             else:
+                 faces_free.remove(face)
+-                g = _stack_group(rng, base, face, None, expl)
++                g = _stack_group(rng, base, face, None, expl, rim_holes)
+             if not g:
+                 continue
+             stack.append(g)
+@@ -485,10 +505,10 @@ def _sample_mixed_goal(level: int, rng: random.Random, extra: bool = False, need
+             elif where == "stack" and (top_regions or faces_free):
+                 face = rng.choice((["+Z"] if top_regions else []) + faces_free)
+                 if face == "+Z":
+-                    g = _stack_group(rng, base, face, top_regions.pop()[0], expl)
++                    g = _stack_group(rng, base, face, top_regions.pop()[0], expl, rim_holes)
+                 else:
+                     faces_free.remove(face)
+-                    g = _stack_group(rng, base, face, None, expl)
++                    g = _stack_group(rng, base, face, None, expl, rim_holes)
+                 if g:
+                     stack.append(g)
+             elif where == "top" and top_regions:
+diff --git a/freecad_s1/ext/sampler.py b/freecad_s1/ext/sampler.py
+index 7cdce09..968d2c4 100644
+--- a/freecad_s1/ext/sampler.py
++++ b/freecad_s1/ext/sampler.py
+@@ -1009,7 +1009,7 @@ def _turned(level: int, rng: random.Random) -> Goal:
+ def _mixed(level: int, rng: random.Random, allow_heldout: bool = False, extra: bool = False) -> Goal:
+     from .mixed import sample_mixed_goal
+ 
+-    return sample_mixed_goal(level, rng, allow_heldout=allow_heldout, extra=extra)
++    return sample_mixed_goal(level, rng, allow_heldout=allow_heldout, extra=extra, rim_holes=3 if extra else 1)
+ 
+ 
+ def _mixed_at(level: int, rng: random.Random) -> Goal:
+diff --git a/tests/test_ext_rim_holes.py b/tests/test_ext_rim_holes.py
+new file mode 100644
+index 0000000..271221d
+--- /dev/null
++++ b/tests/test_ext_rim_holes.py
+@@ -0,0 +1,56 @@
++"""taiga-expanded: stacks with several mirrored bolt holes in the flange rim (patch 0017)."""
++import math
++import random
++
++from freecad_s1.ext import mixed, sampler
++from freecad_s1.goals import heldout_composition, sample_split_goal
++
++
++def test_suites_keep_one_rim_hole():
++    # the suites (and every goal without `extra`) draw stacks with rim_holes=1, as in patch 0016
++    rng = random.Random(5)
++    base = mixed.GoalFeature("base_box", {"w": 90.0, "d": 70.0, "h": 40.0})
++    for _ in range(600):
++        g = mixed._stack_group(rng, base, rng.choice(["+Z", "+Y"]), (1.5, 43.5), explicit=True)
++        if g:
++            assert sum(f.kind == "mirror" for f in g) <= 1
++
++
++def test_training_stacks_carry_several_mirrored_rim_holes():
++    rng = random.Random(3)
++    multi = 0
++    for _ in range(2000):
++        g = sampler._mixed(3, rng, extra=True)
++        assert heldout_composition(g) is None and len(g.features) <= 24
++        pairs = sum(1 for a, b in zip(g.features, g.features[1:])
++                    if a.kind == "profile_pocket" and "at" in a.params and b.kind == "mirror")
++        multi += pairs >= 2
++    assert multi > 100
++
++
++def test_rim_holes_sit_on_the_rim_apart_and_off_the_mirror_plane():
++    rng = random.Random(8)
++    base = mixed.GoalFeature("base_box", {"w": 90.0, "d": 70.0, "h": 40.0})
++    seen = 0
++    for _ in range(600):
++        for face, xr in (("+Z", (1.5, 43.5)), ("+Y", None), ("-X", None)):
++            g = mixed._stack_group(rng, base, face, xr, explicit=True, rim_holes=3)
++            if not g:
++                continue
++            holes = [f for f, nxt in zip(g, g[1:]) if f.kind == "profile_pocket" and nxt.kind == "mirror"]
++            if len(holes) < 2:
++                continue
++            seen += 1
++            neck, flange = g[0], g[1]
++            k = "xyz".index(face[1].lower())
++            m = [a for a in "xyz" if g[-1].params["a" + a] != 0.0][0]
++            rn, rf = neck.params.get("r", neck.params.get("w", 0) / 2), flange.params["r"]
++            for h in holes:
++                d = math.dist([h.params[a] for a in "xyz" if a != "xyz"[k]],
++                              [neck.params[a] for a in "xyz" if a != "xyz"[k]])
++                assert abs(d - (rn + rf) / 2) < 0.2  # on the rim circle
++                assert h.params[m] - neck.params[m] > 0.5  # on one side of the mirror plane
++            for a, b in zip(holes, holes[1:]):
++                hr = a.params["w"] / 2
++                assert math.dist([a.params[x] for x in "xyz"], [b.params[x] for x in "xyz"]) >= 2 * hr + 0.9
++    assert seen > 30
