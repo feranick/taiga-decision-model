@@ -1,6 +1,6 @@
 #!/bin/bash
 # taiga_status.sh — what is running and how far it is, on this machine (read-only).
-# Version: 2026.10.14.1
+# Version: 2026.10.14.2
 #
 # Usage: ~/Software/taiga-decision-model/training/taiga_status.sh
 # Looks at every ~/taiga-expanded* work folder: setup tests, sweeps (seeds finished, current
@@ -30,6 +30,8 @@ for W in "$HOME"/taiga-expanded*; do
   for G in "$W"/taiga-s1/runs/*/; do
     G=${G%/}; exp=$(basename "$G")
     [[ $exp == reference_hf || $exp == seed* ]] && continue
+    # a data-only run (./train_expanded.sh <m> data) has a run folder but no training: not a sweep
+    tl=("$W"/logs/train_"${exp}"_seed*.log); (( ${#tl[@]} )) || continue
     done_files=("$G"/seed*/eval_perturb.json); n_done=${#done_files[@]}
     say "   sweep $exp: $n_done/5 seeds finished"
     if (( n_done < 5 )); then

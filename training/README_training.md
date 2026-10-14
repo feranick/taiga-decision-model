@@ -518,5 +518,5 @@ Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header 
 | `taiga_aggregate.py` | 2026.10.04.3 |
 | `taiga_bench_size.py` | 2026.10.06.1 |
 | `taiga_pool_data.sh` | 2026.10.14.1 |
-| `taiga_status.sh` | 2026.10.14.1 |
+| `taiga_status.sh` | 2026.10.14.2 |
 | `taiga_run.py` | 2026.10.13.1 |
