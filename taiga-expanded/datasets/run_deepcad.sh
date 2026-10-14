@@ -1,6 +1,6 @@
 #!/bin/bash
 # run_deepcad.sh — DeepCAD build histories as Taiga goals: download, convert, verify, score models.
-# Version: 2026.10.14.1
+# Version: 2026.10.14.2
 #
 # Usage:  ./run_deepcad.sh download          DeepCAD's data (cad_json + split) into $DATA
 #         ./run_deepcad.sh convert           JSON -> goals + reference STEP files        -> $OUT
@@ -10,6 +10,7 @@
 #         ./run_deepcad.sh diagnose          why the goals the teacher can't build fail (first rejected feature)
 #         ./run_deepcad.sh models [RUNS]     every model in RUNS/seed*/hf builds the verified goals -> $OUT/seed<N>
 #         ./run_deepcad.sh eval              score teacher and model builds (verified goals only)
+#         ./run_deepcad.sh report            the table of the last eval again (-> eval_summary.txt)
 # Env:    WORK (~/taiga-expanded), DATA (~/deepcad), SUBSET (test), LIMIT (300 models; 0 = all),
 #         MAX_FEATURES (60), MIN_IOU (0.99), OUT ($WORK/deepcad_$SUBSET), REF_PY (Python with OCP 7.9:
 #         $WORK/ocp-venv/bin/python, as created by ../eval/run_s80.sh), VS_TEACHER=1 (eval also scores
@@ -163,7 +164,12 @@ stage_eval() {
     [[ -f $current ]] && (( ++restarts <= 200 )) || die "eval_s80.py failed (exit $rc), see $OUT/eval.log"
     log "eval: $(cat "$current") took over ${PART_TIMEOUT:-300} s; resuming (that build scores 0)"
   done
-  "$PY" - "$OUT/eval_${SUBSET}_models.json" "$OUT/goals_${SUBSET}_verified.json" "$MIN_IOU" <<'PYEOF'
+  stage_report
+}
+
+stage_report() {  # the table of the last eval, also saved to $OUT/eval_summary.txt
+  [[ -f $OUT/eval_${SUBSET}_models.json ]] || die "no $OUT/eval_${SUBSET}_models.json; run eval first"
+  "$PY" - "$OUT/eval_${SUBSET}_models.json" "$OUT/goals_${SUBSET}_verified.json" "$MIN_IOU" <<'PYEOF' | tee "$OUT/eval_summary.txt"
 import json, math, sys
 res = json.loads(open(sys.argv[1]).read())
 goals, thr = json.loads(open(sys.argv[2]).read()), float(sys.argv[3])
@@ -191,6 +197,9 @@ for b in ("1-5", "6-10", "11-20", "21+", "all"):
         m, s = stat([ok[lb] for lb in models])
         line += f"   {m:.3f} ± {s:.3f}"
     print(line)
+n_to = len(res.get("timeouts", []))
+if n_to:
+    print(f"({n_to} model builds took over the time limit to score and count as IoU 0)")
 PYEOF
 }
 
@@ -204,5 +213,6 @@ case $stage in
   diagnose) stage_diagnose ;;
   models) stage_models "$@" ;;
   eval) stage_eval ;;
-  *) sed -n '3,21p' "$0"; exit 1 ;;
+  report) stage_report ;;
+  *) sed -n '3,22p' "$0"; exit 1 ;;
 esac

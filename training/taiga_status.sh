@@ -1,6 +1,6 @@
 #!/bin/bash
 # taiga_status.sh — what is running and how far it is, on this machine (read-only).
-# Version: 2026.10.13.3
+# Version: 2026.10.14.1
 #
 # Usage: ~/Software/taiga-decision-model/training/taiga_status.sh
 # Looks at every ~/taiga-expanded* work folder: setup tests, sweeps (seeds finished, current
@@ -86,7 +86,7 @@ for W in "$HOME"/taiga-expanded*; do
         p1=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["parts"]))' "$pj" 2>/dev/null || echo "$p1")
       done
       nt=$(count_lines 'IoU 0 \(timeout\)' "$D/eval.log")
-      say "   $name scoring: phase 1 $p1, phase 2 $p2 (of the goal count)$( (( nt > 0 )) && echo ", $nt timeouts")$(grep -q '^Share of' "$D/eval.log" && echo ' | done')"
+      say "   $name scoring: phase 1 $p1, phase 2 $p2 (of the goal count)$( (( nt > 0 )) && echo ", $nt timeouts")$( [[ -f $D/eval_summary.txt ]] || { M=("$D"/eval_*_models.json); (( ${#M[@]} )); } && echo ' | done')"
     fi
   done
 done
