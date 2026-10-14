@@ -58,6 +58,48 @@ A goal that no registered model covers (a feature kind none was trained on) is r
 
 The router is a small script, `taiga_route.py`, to be written once there are two models to choose between. It sits on top of `../build/taiga_build_part.py` and the IoU checker in `../taiga-expanded/eval`.
 
+### Deployment: a machine of many parts, and design changes
+
+A whole machine is many goals built in parallel: an LLM decomposes the machine into parts, one agent per part runs the router above, and the parts are assembled and checked together. The S 80 kit (`../build/pump/`, `../taiga-expanded/eval/`) is this pipeline at 11 parts.
+
+**Parameters, not rewritten goals.** The hard part of a change is consistency between parts, not rebuilding them: a new shaft diameter has to reach the bearing bores, the seal, the impeller hub and the bracket bore together. So the LLM writes a **parametric assembly spec** once, during decomposition: shared parameters (shaft Ø, bolt circles, wall thickness, ...) and the rules that turn them into each part's goal, as `../taiga-expanded/eval/make_s80_goals.py` does for the pump. A design change then means:
+
+1. the LLM edits parameters in the spec (seconds);
+2. every goal is regenerated from the spec, deterministically;
+3. only the parts whose goal changed are rebuilt and checked;
+4. the assembly checks run again (interference, fits, matching hole patterns).
+
+Taiga builds exactly what each goal says, so the spec is where the design is right or wrong.
+
+**Timing** (measured on the S 80, Spark and Quadro, 2026-10-13):
+
+| | Time |
+|---|---|
+| Model decision | 20–30 ms per step (the model size barely matters) |
+| FreeCAD step | 0.02–0.1 s on simple parts; 0.6–2 s on a large casing (it grows with the part) |
+| Simple part: plate, shaft, cover (5–25 steps) | 0.3–2 s |
+| Bearing bracket (52 steps) | ~5 s |
+| Casing core (24 features) | ~100 s |
+| Full casing (52 features, a few hundred steps) | 6–17 min |
+| Check against the target | about as long again (the target is built too) |
+
+FreeCAD, not the model, sets the pace.
+
+**Swarm size and wall time.** One agent is one FreeCAD worker, about one CPU core and 0.3–2 GB of memory: about 16 on a 20-core Spark, about 60 on the four machines. The wall time is the longer of the slowest single part and the total work divided by the workers:
+
+| Job | Wall time on ~60 workers |
+|---|---|
+| The S 80 (11 parts) | 6–17 min (the casing; about 17 min one part after another) |
+| A machine of 500 parts, mostly simple, a few castings | 15–20 min (the simple parts take about a minute; the castings run in parallel and set the time) |
+| One dimension changed (5–20 affected parts) | seconds to a few minutes; ~15 min if a large casting is among them |
+
+**What it needs:**
+
+- **Checker on every part**, with fallback to the long model and then to the teacher; for fully specified goals the teacher is the deterministic route, the model the one for continuing from existing or edited documents (section 1).
+- **Watchdogs at every level** (`taiga_build_part.py --step-timeout`, `taiga_run.py` `S1_STEP_TIMEOUT`, `eval_s80.py --part-timeout`): across thousands of builds a stuck OpenCASCADE operation is a certainty, not an exception.
+- **A result cache** keyed by goal (and model version), so an unchanged part is never rebuilt.
+- **The vocabulary limits stay** (no sweeps, lofts, multi-body parts, patterns of patterns): such parts are flagged at decomposition, for another tool or an approximation.
+
 ## 3. Where the current training set falls short
 
 | Gap | Evidence | Training data today |
