@@ -140,8 +140,8 @@ Fixed before the production training starts:
 
 **Results to finish** (runs in progress):
 
-1. **Input limits with matched tables** (Quadro `s0014`): does `--ord-table 28 --pos-table 96` bring length back to 0.99 with the raised limits, and does the casing gain? Decides the production limits.
-2. **DeepCAD goals at 1.2M** (Spark1 `dc1`) against `s0014` and **at 7M** (Spark2 `long2`): what the real designs add, and what the larger model adds. Decides the data mix and whether the long-goal model needs to be larger.
+1. ~~**Input limits with matched tables**~~ **done** (Quadro `s0014`, 2026-10-13): `len6` 0.99 with `--max-nodes 160 --max-goal 64 --max-ord 72 --max-pos 256 --ord-table 28 --pos-table 96 --newest-nodes`; every S 80 part except the casing exact. These are the production limits.
+2. ~~**DeepCAD goals at 1.2M and 7M**~~ **done** (Spark1 `dc1`, Spark2 `long2`, 2026-10-13; `../taiga-expanded/eval/README.md`): DeepCAD goals make the casing core exact on every seed at both sizes; the full casing (52 intents) reaches 0.97 / 0.93 only at 7M (mean 0.74 against 0.51 at 1.2M without its hung build). Data mix: DeepCAD goals at 25 %; a larger long-goal model.
 3. **DeepCAD test split with the patch-0013 models** (5060 Ti): the first full real-design score of a current model, and the reference for the gates.
 4. ~~**Why the casing stalls at 0.81**~~ **found** (verbose builds on Spark1 and Spark2): not length, ordinals or the held-out pair, but the top flange read as a datum feature (`nz: 1` had only come with `off`). Fixed by patch 0016 for new models and `--canon-top` for existing ones (`../taiga-expanded/eval/README.md`).
 
@@ -155,7 +155,7 @@ Fixed before the production training starts:
 
 **Decisions:**
 
-10. **Model sizes:** several production models of different sizes (section 2's registry and router pick one per design), e.g. 1.2M for short parts and one or two larger long-goal models; the sizes come from a short data-scaling run (the same configuration at 1× / 2× / 4× data) once items 1–2 are in.
+10. **Model sizes** (from items 1–2): two production models, routed by goal length (section 2): **small** 1.2M for parts up to about 25 intents (every S 80 part but the casing exact, casing core exact with DeepCAD goals), and **long** 7M (or larger, from a short data-scaling run at 1× / 2× / 4× data) for longer parts. Recovery deep in long builds (the remaining casing failures) needs perturbed DAgger (`DAGGER_PERTURB`) in the long model's training.
 11. **Pass criteria** per test set and length bucket (section 6), fixed before the run.
 12. **Pinned platform:** FreeCAD 1.1.3–1.1.4 (decided 2026-10-12), and which machines generate data and which train.
 

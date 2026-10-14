@@ -140,6 +140,22 @@ So the vocabulary expresses the S 80 to within 0.2 % of its volume; anything a m
 - **Now, for existing models:** `taiga_build_part.py --canon-top` (2026.10.12.1) drops the explicit `+Z` normal from non-datum features, the form those models learned (the part is the same). For the S 80 run: `BUILD_ARGS=--canon-top OUT=$WORK/s80_canon ./run_s80.sh models <RUNS>`.
 - **For production models:** patch 0016 trains on both forms, and on cavities on datum planes followed by stacks picked by `at` in the same goal (suites `mixed_at`, `mixed_at_long`).
 
+**Patch-0014 models, raised input limits with matched tables** (`--max-nodes 160 --max-goal 64 --max-ord 72 --max-pos 256 --ord-table 28 --pos-table 96 --newest-nodes`; 2× data, 8 epochs, 5 seeds, loop guard on, 2026-10-13). Casing IoU per seed (seeds 12, 2, 22, 32, 42), plain goals and with `--canon-top`:
+
+| Run | `len6` | Casing, plain | Casing, `--canon-top` | Casing core, `--canon-top` |
+|---|---|---|---|---|
+| `s0014`: 1.2M, synthetic goals only (Quadro) | 0.99 | 0.90 0.82 0.85 0.74 0.81 | 0.90 0.80 0.82 0.83 0.80 | 0.96 0.77 0.99 0.90 0.78 |
+| `dc1`: 1.2M, DeepCAD goals at 25 % (Spark1) | 1.00 | 0.21 0.81 0.18 0.34 0.87 | 0.46 0.90 0.34 0.35 0.00¹ | **0.99 on all five** |
+| `long2`: 7M, DeepCAD goals at 25 % (Spark2) | 0.99 | 0.21 0.00 0.80 0.81 0.63 | **0.97** 0.34 **0.93** 0.78 0.65 | **0.98–0.99 on all five** |
+
+¹ FreeCAD worker hung for 6 hours on one step, killed: CRASH (since then `taiga_build_part.py --step-timeout`).
+
+The nine other parts (impeller, wear plate, covers, check valve, bearing bracket, shaft, bearings, seal) are exact on all 15 models with and without `--canon-top`, except `s0014` seed 22's bracket (0.0, a failed build).
+
+- **The matched tables fix length** at both sizes and with or without DeepCAD goals: `len6` 0.99–1.00 (the raised limits with the default tables had given 0.67–0.73).
+- **DeepCAD goals make the casing core (24 intents) exact on every seed** once the flange is written in the learned form; without them it stalls between 0.77 and 0.99. They also make the plain casing worse: every sketch in a DeepCAD goal sits on a plane with an offset, which reinforces "`nz: 1` means a datum plane", so the explicit top flange is wrecked (excess up to 4×). `--canon-top` removes it; patch 0016 trains both meanings.
+- **The full casing (52 intents) needs the larger model:** with `--canon-top`, 7M reaches 0.97 and 0.93 on two seeds and 0.74 ± 0.26 on average, 1.2M at most 0.90 and 0.41 ± 0.32 (0.51 without the hung build). The rest of the failures are the missing recovery: one wrong step (e.g. a skipped mirror at step 175) and the model never takes the teacher's Undo.
+
 **Patch-0010 models** (Quadro, 2× data, 8 epochs, 5 seeds, 2026-10-10). Seeds exact / mean IoU against the reference:
 
 | Part | With guard | Without guard |
