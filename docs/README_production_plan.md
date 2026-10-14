@@ -160,7 +160,7 @@ DeepCAD contains only sketches and extrudes, so revolves, fillets, holes and pat
 
 **Data size and memory** (measured on the patch-0016 pilot, 2026-10-14): 1.2M labelled states take 97 MB as raw shards and 4.7 GB as featurized caches (`.pkl`, one per shard, built on first load). `train_sft` holds the whole featurized set in RAM, about 6 GB per million states with Python's overhead, so the current loader trains on up to about 10M states on a 121 GB Spark. Moving data between machines is cheap (only the raw shards); a loader that reads from disk is needed only if the data-scaling run shows 10M states still beating 5M.
 
-**Production data** (patches 0001–0017, `TAIGA_KEEP_HELDOUT=1`, DeepCAD goals at 25 %): `DATA_SCALE=8` on each machine with its own `DATA_SEED` (101 Quadro, 102 5060 Ti, 103 Spark2, 104 Spark1), about 5M states each and 20M in all, pooled with `../training/taiga_pool_data.sh`. Then the data-scaling run of the long model at about 2.5M, 5M and 10M states, then both production models with `DAGGER_PERTURB=0.2`.
+**Production data** (patches 0001–0017; 0018 for any data generated from 2026-10-15, `TAIGA_KEEP_HELDOUT=1`, DeepCAD goals at 25 %): `DATA_SCALE=8` on each machine with its own `DATA_SEED` (101 Quadro, 102 5060 Ti, 103 Spark2, 104 Spark1), about 5M states each and 20M in all, pooled with `../training/taiga_pool_data.sh`. Then the data-scaling run of the long model at about 2.5M, 5M and 10M states, then both production models with `DAGGER_PERTURB=0.2`.
 
 Larger models stay fast enough: the decision time is small next to the FreeCAD step time. Whether they need to be larger is a question for a data-scaling run: if the 1.2M model stops improving as data grows, it is too small.
 

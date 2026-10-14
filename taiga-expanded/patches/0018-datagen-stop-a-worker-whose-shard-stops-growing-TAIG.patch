@@ -1,0 +1,107 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Wed, 14 Oct 2026 15:40:42 -0400
+Subject: [PATCH] datagen: stop a worker whose shard stops growing
+ (TAIGA_DATAGEN_STALL)
+
+A worker stuck inside FreeCAD (OpenCASCADE hang) held the whole data stage for hours (2 of 36
+workers on the Quadro, 2026-10-14). A worker whose shard has not grown for TAIGA_DATAGEN_STALL
+seconds (default 1800) is killed and its shard repaired like a crashed worker's (patch 0013).
+Worker output is now read while they run.
+---
+ freecad_s1/datagen.py     | 36 ++++++++++++++++++++++++++++++++++--
+ tests/test_ext_datagen.py | 35 +++++++++++++++++++++++++++++++++++
+ 2 files changed, 69 insertions(+), 2 deletions(-)
+
+diff --git a/freecad_s1/datagen.py b/freecad_s1/datagen.py
+index b53edd7..0482d3d 100644
+--- a/freecad_s1/datagen.py
++++ b/freecad_s1/datagen.py
+@@ -108,10 +108,42 @@ def launch(args) -> None:
+         cmd = [py, "-m", "freecad_s1.datagen", "--shard", str(w), "--out", str(out), "--seed", str(args.seed),
+                "--episodes", *map(str, per_worker[w])]
+         procs.append(subprocess.Popen(cmd, env=freecad_env(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True))
++    # taiga-expanded (patch 0018): a worker whose shard has not grown for TAIGA_DATAGEN_STALL seconds
++    # (default 1800) is stuck inside FreeCAD (OpenCASCADE hangs: 2 of 36 workers sat for hours on
++    # the Quadro, 2026-10-14); it is killed and handled like a crashed one below
++    import threading
++    import time
++
++    stall = float(os.environ.get("TAIGA_DATAGEN_STALL", "1800"))
++    outputs: list[list[str]] = [[] for _ in procs]
++
++    def drain(i: int) -> None:  # read each worker's output as it comes, so no pipe fills up
++        for line in procs[i].stdout:
++            outputs[i].append(line)
++
++    readers = [threading.Thread(target=drain, args=(i,), daemon=True) for i in range(len(procs))]
++    for t in readers:
++        t.start()
++    started = time.time()
++    while any(p.poll() is None for p in procs):
++        time.sleep(min(30.0, max(1.0, stall / 10)))
++        if stall <= 0:
++            continue
++        now = time.time()
++        for w, p in enumerate(procs):
++            if p.poll() is not None:
++                continue
++            shard = out / f"shard{w:03d}.jsonl.gz"
++            last = max(started, shard.stat().st_mtime if shard.exists() else 0.0)
++            if now - last > stall:
++                print(f"shard {w}: no progress for {now - last:.0f} s; worker stopped", flush=True)
++                p.kill()
++    for t in readers:
++        t.join(timeout=10)
+     failed = 0
+     for w, p in enumerate(procs):
+-        stdout, _ = p.communicate()
+-        lines = [ln for ln in stdout.splitlines() if ln.startswith("{")]
++        p.wait()
++        lines = [ln.rstrip("\n") for ln in outputs[w] if ln.startswith("{")]
+         if p.returncode == 0:
+             print(lines[-1] if lines else f"shard {w}: no summary")
+             continue
+diff --git a/tests/test_ext_datagen.py b/tests/test_ext_datagen.py
+index 62e170c..4a8dd35 100644
+--- a/tests/test_ext_datagen.py
++++ b/tests/test_ext_datagen.py
+@@ -23,3 +23,38 @@ def test_a_cut_shard_keeps_its_complete_records(tmp_path):
+ 
+ def test_a_missing_shard_keeps_nothing(tmp_path):
+     assert repair_shard(tmp_path / "shard009.jsonl.gz") == 0
++
++
++def test_a_stuck_worker_is_stopped_and_its_shard_kept(tmp_path, monkeypatch):
++    """Patch 0018: a worker whose shard stops growing is killed after TAIGA_DATAGEN_STALL seconds."""
++    import argparse
++    import stat
++    import sys
++    import time
++
++    from freecad_s1 import datagen
++    from freecad_s1.runtime import fcenv
++
++    fake = tmp_path / "fake_python"
++    fake.write_text(f"""#!{sys.executable}
++import gzip, json, sys, time
++a = sys.argv; w = int(a[a.index("--shard") + 1]); out = a[a.index("--out") + 1]
++with gzip.open(f"{{out}}/shard{{w:03d}}.jsonl.gz", "wt") as fh:
++    fh.write(json.dumps({{"ep": "e", "goal": {{}}}}) + "\\n")
++    for i in range(5):
++        fh.write(json.dumps({{"ep": "e", "state": i}}) + "\\n")
++    fh.flush()
++    if w == 1:
++        time.sleep(600)  # stuck, like a hung OpenCASCADE call
++print(json.dumps({{"shard": w, "ok": True}}))
++""")
++    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
++    monkeypatch.setattr(fcenv, "freecad_python", lambda: (str(fake), ""))
++    monkeypatch.setattr(fcenv, "freecad_env", lambda: None)
++    monkeypatch.setenv("TAIGA_DATAGEN_STALL", "3")
++    args = argparse.Namespace(out=str(tmp_path / "data"), workers=2, seed=1, episodes=[1, 1, 1])
++    t0 = time.time()
++    datagen.launch(args)
++    assert time.time() - t0 < 60
++    with gzip.open(tmp_path / "data" / "shard001.jsonl.gz", "rt") as fh:  # repaired, complete gzip
++        assert sum('"state"' in ln for ln in fh) == 5
