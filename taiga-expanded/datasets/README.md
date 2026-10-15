@@ -44,6 +44,7 @@ So: **DeepCAD first**, with the `LICENSE`-tab check. Before using either dataset
 |---|---|
 | `convert_deepcad.py` | DeepCAD JSON → goals (rules 1–5), the original models as STEP (`--refs`, needs OCP), an eval spec and a report of what was left out and why |
 | `run_deepcad.sh` | Download, convert, teacher builds, verification against the originals, diagnosis of failures, model builds, scores |
+| `survey_whucad.py` | Vocabulary survey: which features (fillet, shell, draft, revolve, ...) real parametric parts use and how often, from WHUCAD's 4,244 hand-built models |
 | `diagnose_goals.py` | For goals the teacher can't build: the first feature FreeCAD rejects, and FreeCAD's reason |
 
 ## Run (on the DGX, after `../train_expanded.sh dgx setup`)
@@ -149,4 +150,5 @@ As training goals (patch 0011, `TAIGA_GOALS_FILE`) they fall into level 1 (54,77
 |---|---|
 | `convert_deepcad.py` | 2026.10.06.10 |
 | `run_deepcad.sh` | 2026.10.14.2 |
+| `survey_whucad.py` | 2026.10.15.1 |
 | `diagnose_goals.py` | 2026.10.06.2 |

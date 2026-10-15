@@ -145,6 +145,11 @@ Decided from use, not guessed:
 
 DeepCAD contains only sketches and extrudes, so revolves, fillets, holes and patterns need synthetic families or other sources.
 
+**Started 2026-10-15 without company parts**, from two public sources that measure real usage:
+
+- **DeepCAD's left-out designs:** the converter's `report_<subset>.json` lists why each design could not become a goal (angled sketch planes, intersect, bodies that stay apart, ...), over ~180k real sketch-and-extrude designs.
+- **WHUCAD** (Fan et al., *Integrated Computer-Aided Engineering* 32(1), 2025; code MIT per its mirror, to be confirmed): 4,244 parts rebuilt by hand in CATIA from ABC models, with 18 feature types (extrude, revolve, groove, pocket, fillet, chamfer, shell, draft, hole, mirror, ...). `../taiga-expanded/datasets/survey_whucad.py` counts how many parts use each feature and in which combinations; the ranking of what the goals cannot yet express decides the next patches. (Its other 142k models are DeepCAD with features inserted at random, so they say nothing about real usage.)
+
 ### 4.5 Recovery behaviour
 
 - Perturbed DAgger (`DAGGER_PERTURB`) on the expanded model and on long goals.
