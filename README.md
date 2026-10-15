@@ -27,7 +27,8 @@ The planner decides *what* to build; Taiga-S1 decides *how*, command by command.
 | [`training/`](training/) | Setup, data generation, training, evaluation and calibration, one script per machine; multi-seed sweeps and variance analysis | [`README_training.md`](training/README_training.md) |
 | [`build/`](build/) | Building parts with a trained model (inference) and example goals | [`README_build_part.md`](build/README_build_part.md) |
 | [`taiga-expanded/`](taiga-expanded/) | Extends Taiga-S1's vocabulary (side faces, curved outlines, revolve, …) as a patch series on a pinned upstream commit; trains with the scripts in `training/` | [`README.md`](taiga-expanded/README.md) |
-| [`docs/`](docs/) | Planning notes: the road to a production model, and which other tools the approach suits | [`README_production_plan.md`](docs/README_production_plan.md), [`README_beyond_freecad.md`](docs/README_beyond_freecad.md) |
+| [`harness/`](harness/) | The interface for other tools and LLM agents: goal format, validation, builds through the production runtime, files (command line and MCP server) | [`README.md`](harness/README.md) |
+| [`docs/`](docs/) | Using a trained model; planning notes: the road to a production model, and which other tools the approach suits | [`README_using_models.md`](docs/README_using_models.md), [`README_production_plan.md`](docs/README_production_plan.md), [`README_beyond_freecad.md`](docs/README_beyond_freecad.md) |
 
 More folders will be added as the project grows.
 
@@ -74,7 +75,12 @@ taiga-decision-model/
 │   ├── eval/                     S 80 goals; builds them (teacher, models) and scores them against the reference CAD
 │   ├── datasets/                 public CAD build histories (DeepCAD) converted into goals, verified, scored
 │   └── train_expanded.sh         trains the patched (or baseline) model with the training scripts
+├── harness/
+│   ├── README.md                 for other tools and LLM agents: setup, MCP tools, command line, results
+│   ├── taiga_harness.py          goal format, validation, check, build, files (JSON in, JSON out)
+│   └── taiga_mcp.py              MCP server over the same (stdio or streamable HTTP)
 └── docs/
+    ├── README_using_models.md    trying a trained model, the production runtime, viewing parts, other tools
     ├── README_production_plan.md training set, evaluation and phases toward a production model
     └── README_beyond_freecad.md  which other tools the approach suits, and which are LLM territory
 ```
@@ -99,7 +105,7 @@ The model is small, so the GPU is not the bottleneck: most of the time goes into
    ```
    See [`training/README_training.md`](training/README_training.md) for the other machines, running detached and the outputs.
 
-2. **Build a part** with it:
+2. **Build a part** with it (for trained expanded models, the production runtime and calls from other tools, see [`docs/README_using_models.md`](docs/README_using_models.md)):
    ```bash
    cd ~/taiga/taiga-s1 && source ~/taiga/freecad.env
    .venv/bin/python <repo>/build/taiga_build_part.py --model runs/seed2/hf \
