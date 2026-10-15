@@ -1,6 +1,6 @@
 #!/bin/bash
 # taiga_status.sh — what is running and how far it is, on this machine (read-only).
-# Version: 2026.10.14.2
+# Version: 2026.10.15.1
 #
 # Usage: ~/Software/taiga-decision-model/training/taiga_status.sh
 # Looks at every ~/taiga-expanded* work folder: setup tests, sweeps (seeds finished, current
@@ -64,6 +64,7 @@ for W in "$HOME"/taiga-expanded*; do
   # S 80
   for S in "$W"/s80*/; do
     S=${S%/}
+    [[ $S == *_prefixes ]] && continue   # teacher prefix builds for feature_check.py, not a model run
     built=0; for f in "$S"/seed*.log; do built=$((built + $(count_lines '^s80_\w+: (SUCCESS|FAIL|CRASH)' "$f"))); done
     if [[ -f $S/eval_s80.log ]] && grep -q "^whole pump" "$S/eval_s80.log"; then
       say "   $(basename "$S"): scored | whole pump: $(grep '^whole pump' "$S/eval_s80.log" | cut -c37- | tr -s ' ')"

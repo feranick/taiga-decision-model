@@ -118,6 +118,17 @@ As in the first pass: single extrudes build, almost anything with an XY datum-pl
 
 From 0.52 to 0.96 without a single DeepCAD design in training: patches 0009–0013 (XY datum planes, bottom faces, longer mixed goals) cover what real sketch-and-extrude designs need. What is left grows with length, as on the synthetic suites; the 11–20 bucket has only 31 designs, so its spread is mostly sampling. This is the reference for the production gates (`../../docs/README_production_plan.md`, section 7).
 
+**Patch-0016 pilot models** (7M, DeepCAD training goals at 25 %, `TAIGA_KEEP_HELDOUT=1`, `DAGGER_PERTURB=0.2`, 2× data, 8 epochs, 3 seeds; Spark1, 2026-10-15). Same test set:
+
+| Features | Goals | Teacher | seed 12 | seed 2 | seed 22 | mean ± sd |
+|---|---|---|---|---|---|---|
+| 1–5 | 6,187 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 ± 0.000 |
+| 6–10 | 544 | 1.000 | 0.998 | 0.998 | 1.000 | 0.999 ± 0.001 |
+| 11–20 | 31 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 ± 0.000 |
+| all | 6,762 | 1.000 | 1.000 | 1.000 | 1.000 | **1.000 ± 0.000** |
+
+From 0.956 to 1.000: with DeepCAD training goals the models build all but one or two of the 6,762 test designs. The test split is DeepCAD's own and the converter removed duplicates within each split, but DeepCAD is known to hold near-identical designs across its splits, so part of this may be recall of designs seen in training; the share of test goals identical to a training goal is the check (next).
+
 **Train split** (Spark2, `SUBSET=train LIMIT=0`, FreeCAD 1.1.3, patches 0001–0009, 2026-10-08 to 2026-10-11): 117,855 designs converted, 117,550 built by the teacher, **116,688 match their original** (IoU ≥ 0.99; 99.0 % of the converted designs). Verified goals by number of features:
 
 | Features | 1 | 2 | 3 | 4 | 5 | 6–10 | 11–15 | 16–21 |
