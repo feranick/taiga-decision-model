@@ -3,7 +3,7 @@
 # the patches' BASE commit with the patch series applied, in its own WORK folder, with the
 # expanded evaluation suites added. BASELINE=1 runs the same upstream commit unpatched
 # (the reference for "no regression on the original suites").
-# Version: 2026.10.13.2
+# Version: 2026.10.15.1
 #
 # Usage:   ./train_expanded.sh <dgx|5060ti|quadro> <stages...>
 #   e.g.   ./train_expanded.sh 5060ti setup
@@ -54,6 +54,9 @@ fi
 ev=$WORK/taiga-s1/freecad_s1/evaluate.py
 if [[ ${BASELINE:-0} != 1 ]] && { [[ ! -f $ev ]] || grep -q '"mixed_at"' "$ev"; }; then
   EXT_SUITES+=" mixed_at mixed_at_long"
+fi
+if [[ ${BASELINE:-0} != 1 ]] && { [[ ! -f $ev ]] || grep -q '"points"' "$ev"; }; then
+  EXT_SUITES+=" points"   # patch 0019
 fi
 export SUITES=${SUITES:-"iid comp comp2 comp3 len len2 len3 len4 len5 len6"}
 [[ ${BASELINE:-0} == 1 ]] || SUITES="$SUITES $EXT_SUITES"

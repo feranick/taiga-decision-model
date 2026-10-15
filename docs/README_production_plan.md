@@ -209,6 +209,7 @@ Fixed before the production training starts:
 7. ~~**DeepCAD scoring without the second phase**~~ **done** (`run_deepcad.sh` 2026.10.12.1: off unless `VS_TEACHER=1`), which roughly halves the gate's time.
 8. ~~**Patch 0016**~~ **done**: datum cavities and `at` stacks in one goal, explicit top normals (suites `mixed_at`, `mixed_at_long`); teacher check: 793 of 800 sampled goals build (Spark1, 2026-10-13).
 8b. ~~**Patch 0017**~~ **done** (2026-10-14): flanges with several mirrored bolt holes in training (the 0016 pilot's casing stopped at the suction port's second hole pair). Production data is generated with 0001–0017.
+8c. **Patch 0019** (written 2026-10-15): fillet and chamfer on chosen edges and shell with chosen faces, named by points (`pts`), family and suite `points`; the top of the vocabulary ranking (4.4). Production follows in two steps: **v1**, the 1.2M model on the 0017 data (training on Spark2), deployable now and the baseline; **v2**, the same model retrained on that data plus a supplement of `points` goals only (`TAIGA_TRAIN_ONLY=points`, about 10–15 % of the total), so the 9.7M states need not be generated again.
 9. Only if the casing still fails on length beyond 21 intents after item 8: longer mixed goals (curriculum to ~40 intents) or mid-part start states (section 4.1).
 
 **Decisions:**

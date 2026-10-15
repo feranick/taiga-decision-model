@@ -2,7 +2,7 @@
 # =============================================================================
 # taiga_repro_DGX.sh — reproduce Taiga-S1 from scratch on an NVIDIA DGX Spark
 # (DGX OS / Ubuntu 24.04 noble), with FreeCAD 1.1.x from ppa:bleedingedge/noble-spark-bleed (Qt5 build)
-# Version: 2026.10.12.1
+# Version: 2026.10.15.1
 #
 # Pipeline (mirrors upstream scripts/train_final.sh + final_eval.sh):
 #   setup   : uv + Python 3.11 venv, PyTorch (CUDA 13, aarch64), FreeCAD from
@@ -107,6 +107,7 @@ data_tag() {  # taiga-expanded settings that change the training data
   # goals file (patch 0011): named after the folder of the first file, plus the fraction
   [[ -n ${TAIGA_GOALS_FILE:-} ]] && t+="_g$(basename "$(dirname "${TAIGA_GOALS_FILE%%:*}")")f${TAIGA_GOALS_FRACTION:-0.25}"
   [[ ${TAIGA_KEEP_HELDOUT:-0} == 1 ]] && t+="_kh"   # held-out compositions in training (patch 0015)
+  [[ -n ${TAIGA_TRAIN_ONLY:-} ]] && t+="_only${TAIGA_TRAIN_ONLY//,/-}"   # training goals from these families only (patch 0019)
   echo "$t"
 }
 exp_tag() {  # experiment name from non-default settings; empty for the defaults

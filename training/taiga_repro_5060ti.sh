@@ -2,7 +2,7 @@
 # =============================================================================
 # taiga_repro_5060ti.sh — reproduce Taiga-S1 from scratch on Ubuntu 26.04
 # (resolute), host "mochi", with FreeCAD 1.1.x from ppa:bleedingedge/resolute-bleed
-# Version: 2026.10.12.1
+# Version: 2026.10.15.1
 #
 # Same pipeline as taiga_repro_DGX.sh (DGX Spark); only setup differs:
 #   - FreeCAD from your PPA via apt (system Python), no conda
@@ -88,6 +88,7 @@ data_tag() {  # taiga-expanded settings that change the training data
   # goals file (patch 0011): named after the folder of the first file, plus the fraction
   [[ -n ${TAIGA_GOALS_FILE:-} ]] && t+="_g$(basename "$(dirname "${TAIGA_GOALS_FILE%%:*}")")f${TAIGA_GOALS_FRACTION:-0.25}"
   [[ ${TAIGA_KEEP_HELDOUT:-0} == 1 ]] && t+="_kh"   # held-out compositions in training (patch 0015)
+  [[ -n ${TAIGA_TRAIN_ONLY:-} ]] && t+="_only${TAIGA_TRAIN_ONLY//,/-}"   # training goals from these families only (patch 0019)
   echo "$t"
 }
 exp_tag() {  # experiment name from non-default settings; empty for the defaults

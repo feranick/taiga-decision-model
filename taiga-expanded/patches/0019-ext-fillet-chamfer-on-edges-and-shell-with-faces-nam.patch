@@ -1,0 +1,576 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Thu, 15 Oct 2026 09:50:02 -0400
+Subject: [PATCH] ext: fillet / chamfer on edges and shell with faces named by
+ points (Select:Edges@Point, Face@Point)
+
+An intent lists points on the edges it rounds or chamfers, or on the faces a shell removes
+("pts"); the model issues one selection command and the runtime picks the nearest edge or
+face for each point, as it does for "at". New family and suite "points" (box with bosses,
+pockets, holes; dressups on chosen edges of any of them; shells opening chosen faces).
+In WHUCAD's hand-built parts this takes the share whose every feature the goals express from
+32 % to 96 %. Every earlier suite keeps its goals (large_ext draws from the earlier families).
+TAIGA_TRAIN_ONLY=points generates data for this family alone, to add to an existing data set.
+---
+ freecad_s1/actions.py         |   4 +
+ freecad_s1/evaluate.py        |   5 +-
+ freecad_s1/ext/edges.py       |   5 +
+ freecad_s1/ext/faces.py       |   9 +-
+ freecad_s1/ext/pointsel.py    | 201 ++++++++++++++++++++++++++++++++++
+ freecad_s1/ext/sampler.py     |  21 +++-
+ freecad_s1/ext/sizes.py       |   4 +-
+ freecad_s1/goals.py           |   2 +-
+ freecad_s1/runtime/session.py |   6 +
+ tests/test_ext_edges.py       |   5 +-
+ tests/test_ext_mixed.py       |   2 +-
+ tests/test_ext_pointsel.py    |  99 +++++++++++++++++
+ 12 files changed, 351 insertions(+), 12 deletions(-)
+ create mode 100644 freecad_s1/ext/pointsel.py
+ create mode 100644 tests/test_ext_pointsel.py
+
+diff --git a/freecad_s1/actions.py b/freecad_s1/actions.py
+index 9beb034..ee4e631 100644
+--- a/freecad_s1/actions.py
++++ b/freecad_s1/actions.py
+@@ -17,6 +17,7 @@ import re
+ from dataclasses import dataclass
+ 
+ from .ext import edges as ext_edges
++from .ext import pointsel as ext_pointsel
+ from .schema import State
+ 
+ 
+@@ -81,6 +82,8 @@ CATALOGUE: dict[str, ActionSpec] = {
+         _spec("Sketcher_ConstrainBlock", "sketch_constraint", "sketch"),
+         # taiga-expanded: edges of a face with any normal, edges parallel to X / Y (ext.edges)
+         *[_spec(f"Select:{a}", "select", "doc", False) for a in ext_edges.EXTRA_SELECTS],
++        # taiga-expanded (patch 0019): edges / faces named by points in the intent (ext.pointsel)
++        *[_spec(f"Select:{a}", "select", "doc", False) for a in ext_pointsel.POINT_SELECTS],
+     ]
+ }
+ 
+@@ -173,6 +176,7 @@ def enumerate_actions(state: State) -> list[str]:
+     if "|Z" in state.shape.face_dirs:
+         out.append("Select:Edges|Z")
+     out += ext_edges.extra_selects(state.shape.face_dirs)  # taiga-expanded: edges of any face, |X, |Y
++    out += ext_pointsel.extra_selects(has_solid)  # taiga-expanded (0019): edges / faces by points
+     if any(n.type in SOLID_FEATURE_TYPES for n in state.tree):
+         out.append("Select:Tip")
+     if state.selection:
+diff --git a/freecad_s1/evaluate.py b/freecad_s1/evaluate.py
+index 86fc8ce..3a29b26 100644
+--- a/freecad_s1/evaluate.py
++++ b/freecad_s1/evaluate.py
+@@ -69,7 +69,7 @@ def offline_metrics(model: S1Model, ds: Dataset, device: torch.device, batch_siz
+ 
+ 
+ # Seed offsets keep suites that share a level (iid-L3, comp, comp2, comp3) on disjoint seeds.
+-SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000, "edges": 90_000, "large": 0, "large_ext": 95_000, "datum_z": 96_000, "overhang": 97_000, "turned": 98_000, "mixed": 99_000, "mixed_at": 99_500}  # large: the iid seeds
++SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000, "edges": 90_000, "large": 0, "large_ext": 95_000, "datum_z": 96_000, "overhang": 97_000, "turned": 98_000, "mixed": 99_000, "mixed_at": 99_500, "points": 99_800}  # large: the iid seeds
+ 
+ SUITES = {
+     "iid": [(1, "iid"), (2, "iid"), (3, "iid")],  # training distribution, fresh goals
+@@ -92,7 +92,8 @@ SUITES = {
+     "mixed": [(3, "mixed")],  # taiga-expanded: several families on one part, 3-11 intents
+     "mixed_long": [(4, "mixed")],  # taiga-expanded: mixed goals of 8-14 intents (longer than training)
+     "mixed_at": [(3, "mixed_at")],  # taiga-expanded (0016): mixed goals with a stack picked by "at", top features nz=+1
+-    "mixed_at_long": [(4, "mixed_at")],  # taiga-expanded (0016): the same, longer
++    "mixed_at_long": [(4, "mixed_at")],
++    "points": [(3, "points")],  # taiga-expanded (0019): fillets, chamfers, shells on edges / faces named by points  # taiga-expanded (0016): the same, longer
+     "len3": [(6, "len")],  # held-out length: 11 intents (2.2x the training maximum)
+     "len4": [(7, "len")],  # stress: 13 intents
+     "len5": [(8, "len")],  # stress: 15 intents
+diff --git a/freecad_s1/ext/edges.py b/freecad_s1/ext/edges.py
+index 23e76d4..1c9d28f 100644
+--- a/freecad_s1/ext/edges.py
++++ b/freecad_s1/ext/edges.py
+@@ -30,6 +30,11 @@ def has_at(f) -> bool:
+ 
+ def select_for(f, recipe) -> str:
+     """Select argument for a non-sketched recipe (hook used by the expert)."""
++    from . import pointsel
++
++    by_points = pointsel.select_for(f)  # patch 0019: edges / faces named by points
++    if by_points is not None:
++        return by_points
+     if f.kind in EDGE_KINDS:
+         if revolve.has_axis(f):
+             return "Edges|" + faces.AXIS_NAMES[revolve.axis_index(f)]
+diff --git a/freecad_s1/ext/faces.py b/freecad_s1/ext/faces.py
+index 227a632..bf5dad0 100644
+--- a/freecad_s1/ext/faces.py
++++ b/freecad_s1/ext/faces.py
+@@ -117,8 +117,9 @@ def local_box(sk, f, sx: float, sy: float, vec_cls):
+ # without these keys featurize exactly as before
+ # Layout (22 numbers): z/scale, nx, ny, nz, off/scale, outline n_line/10, n_arc/10, n_spline/10,
+ # outline width/scale, height/scale | flags: has z, has normal, has off, has outline |
+-# axis ax, ay, az (signed), angle/360 (ext.revolve, ext.patterns) | at x, y, z /scale, has at (ext.edges).
+-EXT_NUM_DIM = 22
++# axis ax, ay, az (signed), angle/360 (ext.revolve, ext.patterns) | at x, y, z /scale, has at (ext.edges) |
++# points: count/10, centroid x, y, z /scale, has points (ext.pointsel, patch 0019).
++EXT_NUM_DIM = 27
+ GOAL_ROW_DIM = 64  # numbers per token row (upstream: 48), room for the extra block
+ 
+ 
+@@ -141,4 +142,6 @@ def extra_goal_num(f, scale: float) -> list[float]:
+ 
+     from . import edges
+ 
+-    return vals + flags + revolve.extra_goal_num(f) + edges.extra_goal_num(f, scale)
++    from . import pointsel
++
++    return vals + flags + revolve.extra_goal_num(f) + edges.extra_goal_num(f, scale) + pointsel.extra_goal_num(f, scale)
+diff --git a/freecad_s1/ext/pointsel.py b/freecad_s1/ext/pointsel.py
+new file mode 100644
+index 0000000..678ffe4
+--- /dev/null
++++ b/freecad_s1/ext/pointsel.py
+@@ -0,0 +1,201 @@
++"""Selection by points (taiga-expanded, patch 0019): fillet / chamfer on chosen edges, shell
++with chosen faces.
++
++Real parts pick the edges they round one by one: in WHUCAD's 4,509 hand-built parts, 49 %
++have fillets and 20 % chamfers, and 11 % a shell; with them the share of parts whose every
++feature the goals express goes from 32 % to 96 % (docs/README_production_plan.md, 4.4).
++
++An intent names its edges or faces by points, "pts": [[x, y, z], ...] (global), one point
++on each edge (fillet_edges, chamfer_edges) or on each face to remove (shell). The model
++issues one selection command, Select:Edges@Point or Select:Face@Point; the runtime selects
++for every point the edge or face nearest to it, as it does for a face picked with "at". A
++planner names an edge by any point on it (e.g. its midpoint), and the model's command set
++stays small. Intents without "pts" behave exactly as before.
++
++The family "points" (sampler split) builds a box with features on top (bosses, pockets,
++holes) and rounds, chamfers or shells chosen edges and faces of it; every point is computed
++from the goal, so the module stays pure stdlib.
++"""
++from __future__ import annotations
++
++import math
++import random
++
++from ..schema import Goal, GoalFeature
++
++POINT_SELECTS = ["Edges@Point", "Face@Point"]  # appended to the action catalogue
++EDGE_KINDS = ("fillet_edges", "chamfer_edges")
++FACE_KINDS = ("shell",)
++
++
++def has_pts(f) -> bool:
++    pts = None if f is None else f.params.get("pts")
++    return (isinstance(pts, (list, tuple)) and len(pts) > 0
++            and all(isinstance(p, (list, tuple)) and len(p) == 3 for p in pts))
++
++
++def select_for(f) -> str | None:
++    """Select argument for an intent with points (hook for the expert), else None."""
++    if not has_pts(f):
++        return None
++    if f.kind in EDGE_KINDS:
++        return "Edges@Point"
++    if f.kind in FACE_KINDS:
++        return "Face@Point"
++    return None
++
++
++def extra_selects(has_solid: bool) -> list[str]:
++    return [f"Select:{a}" for a in POINT_SELECTS] if has_solid else []
++
++
++def resolve(elements, pts, dist, tol: float) -> list[int] | None:
++    """Index of the element nearest to each point, in order, without repeats; None if some
++    point has no element within `tol`. `dist(element, (x, y, z))` is the distance."""
++    out: list[int] = []
++    for p in pts:
++        p = tuple(float(c) for c in p)
++        d = [dist(e, p) for e in elements]
++        if not d:
++            return None
++        best = min(range(len(d)), key=lambda i: d[i])
++        if d[best] > tol:
++            return None
++        if best not in out:
++            out.append(best)
++    return out
++
++
++def resolve_names(shape, arg: str, f, scale: float, vertex) -> list[str] | None:
++    """Sub-element names for Select:Edges@Point / Select:Face@Point (runtime hook).
++    `vertex(p)` makes a Part.Vertex at p."""
++    if not has_pts(f):
++        return None
++    edges = arg.startswith("Edges")
++    elements = shape.Edges if edges else shape.Faces
++    tol = max(0.05, 0.02 * scale)
++    idx = resolve(elements, f.params["pts"], lambda e, p: e.distToShape(vertex(p))[0], tol)
++    if not idx:
++        return None
++    return [f"{'Edge' if edges else 'Face'}{i + 1}" for i in idx]
++
++
++def extra_goal_num(f, scale: float) -> list[float]:
++    """Point count / 10, centroid / scale, and a flag (zeros without points): 5 numbers."""
++    if not has_pts(f):
++        return [0.0] * 5
++    pts = f.params["pts"]
++    c = [sum(float(p[k]) for p in pts) / len(pts) for k in range(3)]
++    return [min(len(pts), 10) / 10.0, *(max(-8.0, min(8.0, v / scale)) for v in c), 1.0]
++
++
++# ----------------------------------------------------------------------------- the "points" family
++
++def _u(rng: random.Random, lo: float, hi: float) -> float:
++    return round(rng.uniform(lo, hi), 1)
++
++
++def _r3(v: float) -> float:
++    return round(v, 3)
++
++
++def _on_circle(x: float, y: float, r: float, z: float, rng: random.Random) -> list[float]:
++    # never at 0 / 90 / 180 / 270 degrees: a circle's seam vertex (or a seam line) may sit there
++    a = math.radians(rng.choice([20, 35, 55, 70]) + 90 * rng.randrange(4))
++    return [_r3(x + r * math.cos(a)), _r3(y + r * math.sin(a)), _r3(z)]
++
++
++def _base_edges(w: float, d: float, h: float) -> dict[str, tuple[list, float]]:
++    """Edge groups of a box centred on the origin, z from 0 to h: ([point, ...], size limit)."""
++    lim = min(w, d, h)
++    return {
++        "box_top": ([[0.0, d / 2, h], [0.0, -d / 2, h], [w / 2, 0.0, h], [-w / 2, 0.0, h]], lim),
++        "box_vertical": ([[w / 2, d / 2, h / 2], [-w / 2, d / 2, h / 2], [w / 2, -d / 2, h / 2],
++                          [-w / 2, -d / 2, h / 2]], lim),
++        "box_bottom": ([[0.0, d / 2, 0.0], [0.0, -d / 2, 0.0], [w / 2, 0.0, 0.0], [-w / 2, 0.0, 0.0]], lim),
++    }
++
++
++def _place(rng: random.Random, w: float, d: float, half: float, margin: float, taken: list):
++    """Centre for a feature of half-size `half` on the top face, at least `margin` from the box
++    edges and from the other features; None if there is no room."""
++    lo_x, lo_y = -w / 2 + margin + half, -d / 2 + margin + half
++    if lo_x >= -lo_x or lo_y >= -lo_y:
++        return None
++    for _ in range(40):
++        x, y = _u(rng, lo_x, -lo_x), _u(rng, lo_y, -lo_y)
++        if all(max(abs(x - tx), abs(y - ty)) > half + th + margin for tx, ty, th in taken):
++            taken.append((x, y, half))
++            return x, y
++    return None
++
++
++def sample_points_goal(level: int, rng: random.Random) -> Goal:
++    for _ in range(200):
++        w, d, h = _u(rng, 30, 90), _u(rng, 25, 80), _u(rng, 10, 40)
++        feats = [GoalFeature("base_box", {"w": w, "d": d, "h": h})]
++        margin = max(4.0, min(w, d) * 0.12)
++        # box edges: no dressup larger than ~0.6 x the gap to the features on top
++        groups = {k: (pts, min(lim, 3 * margin)) for k, (pts, lim) in _base_edges(w, d, h).items()}
++        taken: list = []
++        shell = rng.random() < 0.25
++        n_top = 0 if level <= 2 else rng.randint(1, 3)
++        for k in range(n_top):
++            kind = "boss_cyl" if shell else rng.choice(["boss_cyl", "boss_cyl", "pocket_rect", "hole"])
++            if kind == "boss_cyl":
++                r = _u(rng, 3, max(3.1, min(w, d) * 0.15))
++                c = _place(rng, w, d, r, margin, taken)
++                if c is None:
++                    continue
++                bh = _u(rng, 4, 15)
++                feats.append(GoalFeature("boss_cyl", {"r": r, "x": c[0], "y": c[1], "h": bh}))
++                groups[f"boss{k}_top"] = ([_on_circle(c[0], c[1], r, h + bh, rng)], min(r, bh))
++                groups[f"boss{k}_root"] = ([_on_circle(c[0], c[1], r, h, rng)], min(bh, margin))
++            elif kind == "pocket_rect":
++                pw, pd = _u(rng, 6, max(6.1, w * 0.3)), _u(rng, 6, max(6.1, d * 0.3))
++                c = _place(rng, w, d, max(pw, pd) / 2, margin, taken)
++                if c is None:
++                    continue
++                dep = _u(rng, 3, max(3.1, h * 0.6))
++                x, y = c
++                feats.append(GoalFeature("pocket_rect", {"w": pw, "d": pd, "x": x, "y": y, "depth": dep}))
++                lim = min(pw, pd, dep)
++                groups[f"pocket{k}_rim"] = ([[x, y + pd / 2, h], [x, y - pd / 2, h], [x + pw / 2, y, h],
++                                             [x - pw / 2, y, h]], lim)
++                groups[f"pocket{k}_floor"] = ([[x, y + pd / 2, h - dep], [x, y - pd / 2, h - dep],
++                                               [x + pw / 2, y, h - dep], [x - pw / 2, y, h - dep]], lim)
++                groups[f"pocket{k}_corners"] = ([[x + sx * pw / 2, y + sy * pd / 2, h - dep / 2]
++                                                 for sx in (1, -1) for sy in (1, -1)], lim)
++            else:
++                r = _u(rng, 1.5, max(1.6, min(w, d) * 0.1))
++                c = _place(rng, w, d, r, margin, taken)
++                if c is None:
++                    continue
++                feats.append(GoalFeature("hole", {"r": r, "x": c[0], "y": c[1]}))
++                groups[f"hole{k}_rim"] = ([_on_circle(c[0], c[1], r, h, rng)], min(r * 2, margin))
++        if level >= 3 and len(feats) < 2:
++            continue
++        scale = max(w, d, h + 15)
++        if shell:
++            bosses = [f for f in feats[1:] if f.kind == "boss_cyl"]
++            t = _u(rng, 0.8, max(0.9, min([min(w, d, h) * 0.15] + [f.params["r"] * 0.4 for f in bosses])))
++            faces = {"top": [_r3(-w / 2 + margin / 2), _r3(-d / 2 + margin / 2), h], "bottom": [0.0, 0.0, 0.0],
++                     "+x": [w / 2, 0.0, _r3(h / 2)], "-x": [-w / 2, 0.0, _r3(h / 2)],
++                     "+y": [0.0, d / 2, _r3(h / 2)], "-y": [0.0, -d / 2, _r3(h / 2)]}
++            names = rng.choice([["top"], ["top"], ["bottom"], ["+x"], ["top", "+y"], ["-x", "+x"]])
++            if bosses and "top" in names:  # keep the bosses' face: open the part elsewhere
++                names = [n for n in names if n != "top"] or [rng.choice(["bottom", "-y"])]
++            feats.append(GoalFeature("shell", {"t": t, "pts": [faces[n] for n in names]}))
++            return Goal(feats, level=min(level, 3), scale=scale)
++        n_dress = 1 if level <= 2 else rng.choice([1, 1, 2])
++        names = list(groups) if level >= 3 else [g for g in groups if g.startswith("box")]
++        rng.shuffle(names)
++        for g in names[:n_dress]:
++            pts, lim = groups[g]
++            chosen = rng.sample(pts, rng.randint(1, len(pts)))
++            kind = rng.choice(["fillet_edges", "chamfer_edges"])
++            v = _u(rng, 0.3, max(0.4, lim * 0.2))
++            feats.append(GoalFeature(kind, {("r" if kind == "fillet_edges" else "size"): v,
++                                            "pts": [[_r3(c) for c in p] for p in chosen]}))
++        return Goal(feats, level=min(level, 3), scale=scale)
++    raise ValueError("could not sample a points goal")
+diff --git a/freecad_s1/ext/sampler.py b/freecad_s1/ext/sampler.py
+index 968d2c4..45c40e7 100644
+--- a/freecad_s1/ext/sampler.py
++++ b/freecad_s1/ext/sampler.py
+@@ -14,12 +14,18 @@ import random
+ from ..schema import Goal, GoalFeature
+ 
+ TRAIN_FRACTION = float(os.environ.get("TAIGA_EXT_FRACTION", "0.35"))
++# patch 0019: TAIGA_TRAIN_ONLY="points" (comma-separated splits) makes every expanded training goal
++# come from these families, e.g. to add data for a new family to an existing data set (with
++# TAIGA_EXT_FRACTION=1 and no goals file, every training goal); unset: all families
++TRAIN_ONLY = tuple(s.strip() for s in os.environ.get("TAIGA_TRAIN_ONLY", "").split(",") if s.strip())
+ 
+ # new evaluation splits (each also feeds training through sample_train)
+-SPLITS = ("side", "plane", "outline", "revolve", "pattern", "edges", "datum_z", "overhang", "turned", "mixed")
++SPLITS = ("side", "plane", "outline", "revolve", "pattern", "edges", "datum_z", "overhang", "turned", "mixed", "points")
++# the families large_ext draws from (ext.sizes): those before patch 0019, so the suite keeps its goals
++LARGE_EXT_SPLITS = ("side", "plane", "outline", "revolve", "pattern", "edges", "datum_z", "overhang", "turned", "mixed")
+ # how often each split is drawn for training (patch 0010: mixed goals carry the long-goal and
+ # composition load, so they are drawn more often)
+-TRAIN_WEIGHTS = {"mixed": 3.0}
++TRAIN_WEIGHTS = {"mixed": 3.0, "points": 2.0}  # 0019: fillets / chamfers / shells on chosen edges and faces
+ # level-1 training goals from the expanded families: a lone base that only these families make
+ LEVEL1_SPLITS = ("outline", "revolve", "turned")
+ 
+@@ -1012,6 +1018,12 @@ def _mixed(level: int, rng: random.Random, allow_heldout: bool = False, extra: b
+     return sample_mixed_goal(level, rng, allow_heldout=allow_heldout, extra=extra, rim_holes=3 if extra else 1)
+ 
+ 
++def _points(level: int, rng: random.Random) -> Goal:
++    from .pointsel import sample_points_goal
++
++    return sample_points_goal(level, rng)
++
++
+ def _mixed_at(level: int, rng: random.Random) -> Goal:
+     """Suites mixed_at / mixed_at_long (patch 0016): mixed goals with a stack picked by "at" and
+     top-face features written with nz=+1 (the S 80 casing's form)."""
+@@ -1024,7 +1036,7 @@ SAMPLERS = {"side": sample_side_goal, "plane": sample_plane_goal, "outline": _ou
+             "revolve": sample_revolve_goal, "pattern": sample_pattern_goal,
+             "edges": sample_edges_goal,
+             "datum_z": sample_datum_z_goal, "overhang": sample_overhang_goal,
+-            "turned": _turned, "mixed": _mixed, "mixed_at": _mixed_at}
++            "turned": _turned, "mixed": _mixed, "mixed_at": _mixed_at, "points": _points}
+ # evaluation-only splits (patch 0016): not drawn for training (sample_train uses SPLITS) and not
+ # part of large_ext (ext.sizes), so the earlier suites keep their goals
+ EVAL_SPLITS = ("mixed_at",)
+@@ -1047,6 +1059,9 @@ def sample_train(level: int, rng: random.Random) -> Goal:
+     """Expanded training goal: at level >= 2 one of the expanded splits (weighted by
+     TRAIN_WEIGHTS); at level 1 the lone base of a curved-outline, turned or revolved part, so
+     the model also learns to stop right after such a base (patch 0010)."""
++    if TRAIN_ONLY:
++        split = rng.choice(TRAIN_ONLY)
++        return SAMPLERS[split](max(level, 2), rng)
+     if level <= 1:
+         split = rng.choice(LEVEL1_SPLITS)
+         g = SAMPLERS[split](2, rng)
+diff --git a/freecad_s1/ext/sizes.py b/freecad_s1/ext/sizes.py
+index 91f9319..0528f18 100644
+--- a/freecad_s1/ext/sizes.py
++++ b/freecad_s1/ext/sizes.py
+@@ -52,6 +52,8 @@ def scale_goal(goal: Goal, k: float) -> Goal:
+                 p[key] = scale_outline(p[key], k)
+             elif key == "at":
+                 p[key] = [_s(c, k) for c in p[key]]
++            elif key == "pts":  # patch 0019: points on edges / faces
++                p[key] = [[_s(c, k) for c in q] for q in p[key]]
+     g.scale = goal.scale * k
+     return g
+ 
+@@ -71,4 +73,4 @@ def sample(split: str, level: int, rng, inner) -> Goal:
+         return scale_goal(inner("iid"), LARGE_FACTOR)
+     from . import sampler
+ 
+-    return scale_goal(inner(rng.choice(sampler.SPLITS)), LARGE_FACTOR)
++    return scale_goal(inner(rng.choice(sampler.LARGE_EXT_SPLITS)), LARGE_FACTOR)
+diff --git a/freecad_s1/goals.py b/freecad_s1/goals.py
+index 48374ed..355495f 100644
+--- a/freecad_s1/goals.py
++++ b/freecad_s1/goals.py
+@@ -260,7 +260,7 @@ def heldout_composition(goal: Goal) -> str | None:
+     return None
+ 
+ 
+-SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext", "datum_z", "overhang", "turned", "mixed", "mixed_at")  # side .. mixed_at: taiga-expanded
++SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext", "datum_z", "overhang", "turned", "mixed", "mixed_at", "points")  # side .. points: taiga-expanded
+ 
+ 
+ def keep_heldout() -> bool:
+diff --git a/freecad_s1/runtime/session.py b/freecad_s1/runtime/session.py
+index d97da45..5ed5bce 100644
+--- a/freecad_s1/runtime/session.py
++++ b/freecad_s1/runtime/session.py
+@@ -25,6 +25,7 @@ import Sketcher
+ from ..actions import CATALOGUE, SOLID_FEATURE_TYPES, enumerate_actions
+ from ..expert import Meta, ObjMeta, expert_actions, progress
+ from ..ext import edges as ext_edges
++from ..ext import pointsel as ext_pointsel
+ from ..ext import faces as ext_faces
+ from ..ext import profiles as ext_profiles
+ from ..ext import patterns as ext_patterns
+@@ -425,6 +426,11 @@ class HeadlessSession:
+         shape = self.solid()
+         if shape is None:
+             return None
++        if arg in ("Edges@Point", "Face@Point"):  # taiga-expanded (0019): nearest to the intent's points
++            f = self.intent_for() if self.goal is not None and self.goal.features else None
++            names = ext_pointsel.resolve_names(shape, arg, f, self.goal.scale if self.goal else 1.0,
++                                               lambda p: Part.Vertex(V(*p)))
++            return (tip.Name, names, arg) if names else None
+         if arg.startswith("Face"):
+             hit = self._pick(shape, arg[4:])  # taiga-expanded: nearest to the intent's "at", if any
+             return (tip.Name, [f"Face{hit[0] + 1}"], arg) if hit else None
+diff --git a/tests/test_ext_edges.py b/tests/test_ext_edges.py
+index 1c8e9e2..d56c3b5 100644
+--- a/tests/test_ext_edges.py
++++ b/tests/test_ext_edges.py
+@@ -16,7 +16,10 @@ BOX = GoalFeature("base_box", {"w": 40, "d": 30, "h": 20})
+ 
+ def test_kinds_and_selections_are_appended():
+     assert GOAL_KINDS[-2:] == ["fillet_edges", "chamfer_edges"]
+-    assert ACTION_IDS[-len(edges.EXTRA_SELECTS):] == [f"Select:{a}" for a in edges.EXTRA_SELECTS]
++    from freecad_s1.ext import pointsel
++
++    n = len(pointsel.POINT_SELECTS)  # patch 0019 appends its selections after these
++    assert ACTION_IDS[-len(edges.EXTRA_SELECTS) - n:-n] == [f"Select:{a}" for a in edges.EXTRA_SELECTS]
+     assert CATALOGUE["Select:Edges|X"].category == "select"
+     assert action_vector("Select:Edges|X") == [1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+     assert action_vector("Select:Edges|Z") == [0.0, 0.0, 1.0, 0.0, 0.0, 1.0]  # upstream, unchanged
+diff --git a/tests/test_ext_mixed.py b/tests/test_ext_mixed.py
+index 80c0b5f..ae46f32 100644
+--- a/tests/test_ext_mixed.py
++++ b/tests/test_ext_mixed.py
+@@ -18,7 +18,7 @@ def _lathe(base):
+ 
+ 
+ def test_new_splits_are_registered():
+-    assert sampler.SPLITS[-2:] == ("turned", "mixed")
++    assert sampler.SPLITS[-3:-1] == ("turned", "mixed")  # patch 0019 appends "points"
+     assert {"turned", "mixed"} <= set(SPLITS)
+ 
+ 
+diff --git a/tests/test_ext_pointsel.py b/tests/test_ext_pointsel.py
+new file mode 100644
+index 0000000..3a55150
+--- /dev/null
++++ b/tests/test_ext_pointsel.py
+@@ -0,0 +1,99 @@
++"""taiga-expanded: fillet / chamfer on edges and shell with faces named by points (patch 0019)."""
++import random
++
++from freecad_s1.actions import ACTION_IDS, CATALOGUE, action_vector, enumerate_actions
++from freecad_s1.evaluate import SUITES
++from freecad_s1.expert import Meta, ObjMeta, expert_actions
++from freecad_s1.ext import edges, pointsel, sampler, sizes
++from freecad_s1.goals import RECIPES, sample_split_goal
++from freecad_s1.model.featurize import NUM_DIM, SEG_GOAL, encode_state
++from freecad_s1.schema import Goal, GoalFeature, ShapeInfo, State
++
++BOX = GoalFeature("base_box", {"w": 40, "d": 30, "h": 20})
++FIL = GoalFeature("fillet_edges", {"r": 2.0, "pts": [[0.0, 15.0, 20.0], [20.0, 0.0, 20.0]]})
++SHELL = GoalFeature("shell", {"t": 1.5, "pts": [[0.0, 0.0, 20.0]]})
++
++
++def test_selections_are_appended_and_offered_on_a_solid():
++    assert ACTION_IDS[-2:] == ["Select:Edges@Point", "Select:Face@Point"]
++    assert CATALOGUE["Select:Edges@Point"].category == "select"
++    assert action_vector("Select:Edges@Point")[5] == 1.0 and action_vector("Select:Face@Point")[4] == 1.0
++    assert pointsel.extra_selects(True) == ["Select:Edges@Point", "Select:Face@Point"]
++    assert pointsel.extra_selects(False) == []
++
++
++def test_expert_selects_by_points_and_old_intents_are_unchanged():
++    assert edges.select_for(FIL, RECIPES["fillet_edges"]) == "Edges@Point"
++    assert edges.select_for(SHELL, RECIPES["shell"]) == "Face@Point"
++    assert edges.select_for(GoalFeature("shell", {"t": 1.0}), RECIPES["shell"]) == "Face+Z"  # upstream's
++    assert edges.select_for(GoalFeature("fillet_edges", {"r": 1.0, "ax": 1.0, "ay": 0.0, "az": 0.0}),
++                            RECIPES["fillet_edges"]) == "Edges|X"
++    meta = Meta(doc_open=True, workbench="PartDesignWorkbench", body="Body")
++    meta.objects["Body"] = ObjMeta("Body", "body")
++    meta.objects["Pad"] = ObjMeta("Pad", "feature", goal_ref=0)
++    goal = Goal([BOX, FIL], level=2, scale=40)
++    assert expert_actions(goal, meta) == ["Select:Edges@Point"]
++    meta.selection = ["Edges@Point"]
++    assert expert_actions(goal, meta) == ["PartDesign_Fillet"]
++
++
++def test_resolve_nearest_and_tolerance():
++    elements = [0.0, 10.0, 20.0]  # stand-ins: distance is |element - x|
++    dist = lambda e, p: abs(e - p[0])  # noqa: E731
++    assert pointsel.resolve(elements, [[19.9, 0, 0], [0.1, 0, 0], [20.0, 0, 0]], dist, 0.5) == [2, 0]
++    assert pointsel.resolve(elements, [[5.0, 0, 0]], dist, 0.5) is None
++
++
++def test_goal_encoding_has_the_points_block():
++    num = pointsel.extra_goal_num(FIL, 40.0)
++    assert num[0] == 0.2 and num[-1] == 1.0 and abs(num[1] - 0.25) < 1e-9
++    assert pointsel.extra_goal_num(BOX, 40.0) == [0.0] * 5
++    st = State(doc_open=True, workbench="PartDesignWorkbench", shape=ShapeInfo())
++    tok = encode_state(st, Goal([BOX, FIL], level=2, scale=40))
++    rows = [i for i, s in enumerate(tok.seg) if s == SEG_GOAL]
++    assert tok.num.shape[1] == NUM_DIM and tok.num[rows[1]].any()
++
++
++def test_points_scale_with_the_goal():
++    g = sizes.scale_goal(Goal([BOX, FIL], level=2, scale=40), 2.0)
++    assert g.features[1].params["pts"] == [[0.0, 30.0, 40.0], [40.0, 0.0, 40.0]]
++
++
++def test_points_family_goals():
++    assert "points" in sampler.SPLITS and "points" not in sampler.LARGE_EXT_SPLITS
++    assert SUITES["points"] == [(3, "points")]
++    rng = random.Random(1)
++    n_shell = n_multi = 0
++    for level in (2, 3):
++        for _ in range(300):
++            g = sample_split_goal("points", level, rng)
++            b = g.features[0].params
++            last = [f for f in g.features if pointsel.has_pts(f)]
++            assert last, g.features
++            for f in last:
++                for p in f.params["pts"]:  # every point inside the part's box (bosses above it)
++                    assert abs(p[0]) <= b["w"] / 2 + 1e-6 and abs(p[1]) <= b["d"] / 2 + 1e-6 and -1e-6 <= p[2] <= b["h"] + 16
++                if f.kind == "shell":
++                    n_shell += 1
++                    assert f.params["t"] > 0
++                else:
++                    v = f.params.get("r", f.params.get("size"))
++                    assert 0.3 <= v
++                n_multi += len(f.params["pts"]) > 1
++    assert n_shell > 50 and n_multi > 100
++
++
++def test_points_selections_are_valid_on_a_solid():
++    st = State(doc_open=True, workbench="PartDesignWorkbench", has_body=True,
++               shape=ShapeInfo(valid=True, volume=1000.0, face_dirs=["+Z", "-Z"]))
++    acts = enumerate_actions(st)
++    assert "Select:Edges@Point" in acts and "Select:Face@Point" in acts
++
++
++def test_train_only_restricts_training_goals(monkeypatch):
++    monkeypatch.setattr(sampler, "TRAIN_ONLY", ("points",))
++    rng = random.Random(9)
++    for level in (1, 2, 3):
++        for _ in range(50):
++            g = sampler.sample_train(level, rng)
++            assert any(pointsel.has_pts(f) for f in g.features)

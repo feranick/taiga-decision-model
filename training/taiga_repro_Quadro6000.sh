@@ -2,7 +2,7 @@
 # =============================================================================
 # taiga_repro_Quadro6000.sh — reproduce Taiga-S1 from scratch on a dual Quadro RTX 6000
 # (Turing, sm_75, 2 x 24 GB) workstation, Ubuntu 24.04 or 26.04, driver 595-open
-# Version: 2026.10.12.1
+# Version: 2026.10.15.1
 #
 # Same pipeline as the Spark/mochi scripts; differences:
 #   - FreeCAD from your PPA matching the release: noble -> bleedingedge/noble-bleed,
@@ -103,6 +103,7 @@ data_tag() {  # taiga-expanded settings that change the training data
   # goals file (patch 0011): named after the folder of the first file, plus the fraction
   [[ -n ${TAIGA_GOALS_FILE:-} ]] && t+="_g$(basename "$(dirname "${TAIGA_GOALS_FILE%%:*}")")f${TAIGA_GOALS_FRACTION:-0.25}"
   [[ ${TAIGA_KEEP_HELDOUT:-0} == 1 ]] && t+="_kh"   # held-out compositions in training (patch 0015)
+  [[ -n ${TAIGA_TRAIN_ONLY:-} ]] && t+="_only${TAIGA_TRAIN_ONLY//,/-}"   # training goals from these families only (patch 0019)
   echo "$t"
 }
 exp_tag() {  # experiment name from non-default settings; empty for the defaults

@@ -88,6 +88,7 @@ Run them one at a time or several in sequence, for example `./script.sh train ex
 | `DATA_SCALE` | `1` | Multiplies the number of training episodes (e.g. `0.5`, `2`) |
 | `EPOCHS` | `4` | Supervised training epochs |
 | `DAGGER_ROUNDS`, `DAGGER_EPISODES`, `DAGGER_EPOCHS` | `2`, `400`, `2` | DAgger rounds, episodes per level per round, training epochs per round |
+| `TAIGA_TRAIN_ONLY` | unset | Patch 0019: comma-separated families (e.g. `points`) every expanded training goal comes from; with `TAIGA_EXT_FRACTION=1` and no goals file, every training goal. Generates data for a new family to pool with an existing data set; the data folder gets `_only<families>` |
 | `TAIGA_DATAGEN_STALL` | `1800` | Patch 0018: seconds a data-generation worker may go without writing to its shard before it is stopped (a FreeCAD hang); its shard keeps the episodes written so far. `0`: never |
 | `DAGGER_PERTURB`, `DAGGER_PERTURB_FRAC` | `0`, `0.5` | `> 0`: perturbed DAgger. In that fraction of the rollout batches, each step takes a random off-plan command with this probability, so the model learns to notice and repair mistakes (upstream `--dagger-perturb`; upstream's Mesa-S1 uses `0.2`). Needs a `REPO_REF` that has it, e.g. `4a31bcf`; the pinned `a6e81d3` does not. |
 | `TAIGA_EXT_FRACTION`, `TAIGA_SIZE_AUG`, `TAIGA_SIZE_MAX` | unset | `taiga-expanded` only: share of expanded training goals (0.35), share of training goals scaled up (0), largest scale factor (5). See `../taiga-expanded/README.md`. Recorded in `manifest.json` and added to the data and experiment names. |
@@ -512,9 +513,9 @@ Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header 
 
 | Script | Version |
 |---|---|
-| `taiga_repro_DGX.sh` | 2026.10.12.1 |
-| `taiga_repro_5060ti.sh` | 2026.10.12.1 |
-| `taiga_repro_Quadro6000.sh` | 2026.10.12.1 |
+| `taiga_repro_DGX.sh` | 2026.10.15.1 |
+| `taiga_repro_5060ti.sh` | 2026.10.15.1 |
+| `taiga_repro_Quadro6000.sh` | 2026.10.15.1 |
 | `taiga_aggregate.py` | 2026.10.04.3 |
 | `taiga_bench_size.py` | 2026.10.06.1 |
 | `taiga_pool_data.sh` | 2026.10.15.1 |
