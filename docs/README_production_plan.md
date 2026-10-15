@@ -215,7 +215,7 @@ Fixed before the production training starts:
     | S 80, ten parts other than the casing | exact on every seed | exact on every seed |
     | S 80 casing core / casing | core ≥ 0.98 | core ≥ 0.98; casing ≥ 0.95 on 3 of 5 seeds |
 
-    The DeepCAD rows are the ones the DeepCAD training goals should move; the pilot models are scored on the test split to check that before the gates are fixed. Result (2026-10-15): the perturbed 7M pilots build 1.000 / 0.999 / 1.000 of the three buckets (0.965 / 0.858 / 0.73 without DeepCAD training goals), above every proposed gate; how much of it is overlap between DeepCAD's train and test splits is checked before the gates are raised.
+    The DeepCAD rows are the ones the DeepCAD training goals should move; the pilot models are scored on the test split to check that before the gates are fixed. Result (2026-10-15): the perturbed 7M pilots build 1.000 / 0.999 / 1.000 of the three buckets (0.965 / 0.858 / 0.73 without DeepCAD training goals), above every proposed gate; 18.6 % of the test goals also occur in the training split, and on the other 5,505 every seed still scores 1.000, so the DeepCAD gate can be raised to 0.99 in every bucket.
 12. **Pinned platform:** FreeCAD 1.1.3–1.1.4 (decided 2026-10-12), and which machines generate data and which train.
 
 The spurious Undo after a correct but unfamiliar step is a training issue that the loop guard covers at run time; with item 5 and the real designs (comp recovered in `long1`) it may not need its own fix, so it waits for the results above.
