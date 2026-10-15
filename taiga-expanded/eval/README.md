@@ -192,6 +192,15 @@ The default-budget models (5060 Ti, 1× data, 4 epochs, 2026-10-10) give the sam
 
 **Feature-level check** (`feature_check.py`, `./run_s80.sh features`, 2026-10-15). IoU hides missing features: the 0.97 casing lacks about 15 intents. The teacher builds each goal once more and saves the part after every finished intent (`taiga_build_part.py --teacher --prefixes`); each intent's contribution to the final part is the region it added or removed that survives in the target, and a build realizes the intent if it agrees with the target on at least 90 % of that region (voxels, any build order). The result names the missing intents per build, e.g. `intents 37/52 … missing 35:mirror, 36:boss_cyl, …`, plus material outside the target ("excess"). Intents too small for the grid (e.g. 0.5 mm chamfers) are reported as "small", ones cut away later as "hidden".
 
+First use (4.8M patch-0017 model, Quadro, 2026-10-15):
+
+| Build | Casing IoU | Casing intents | Casing core | Bearing bracket |
+|---|---|---|---|---|
+| Own intent pointer | 0.974 | **34/52**: missing 35 (the suction port's second mirror) to 52 | 24/24 | 8/8 |
+| `--guided-progress` | 0.9983 | **52/52**, no excess | 24/24 | 8/8 |
+
+IoU 0.974 hid a third of the casing's features; the check names exactly the step the verbose build showed. All 52 intents are measurable at the default grid (none "small" or "hidden").
+
 ## Limits of the vocabulary found on the way
 
 - **Patterns only about the origin axes.** The suction flange's 8 bolt holes are on a circle around the port axis (z = 110), not the shaft axis, so they are written as 4 holes, each mirrored. A polar pattern about a feature's own axis would make it one hole and one pattern.
