@@ -244,6 +244,8 @@ The spurious Undo after a correct but unfamiliar step is a training issue that t
 | 8 | **Next vocabulary:** sketches on angled planes, then draft (4.4 ranking) | patch series | after 6 |
 | 9 | **Pass criteria:** fix them per test set and length bucket (item 11 above) with the v1 and v2 results | this plan | after 6 |
 | 10 | **Phase 6:** goals from shapes (section 9) | | later |
+| 11 | **Timing benchmark:** a fixed goal set (short parts to the S 80 casing) through the harness; every stage logged per attempt in `runtime_log.jsonl` (process start, target build, model, FreeCAD, check, save); run on each machine, CPU and GPU; also the agent side (goal writing, MCP and ssh round trips). First numbers (mochi, 4 test parts): model 22–30 ms/step, FreeCAD 13–43 ms/step growing with the part, ~2 s process start per attempt (30–60 % of a small part) | `harness/`, `build/taiga_runtime.py` | to write |
+| 12 | **Persistent worker:** keep FreeCAD and the model loaded in the MCP server (a worker pool) instead of a new process per attempt; removes the ~2 s start per attempt and per fallback; measure with item 11 | `harness/`, `build/` | after 11 |
 
 ## 8. Phases
 
