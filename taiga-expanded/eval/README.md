@@ -185,6 +185,8 @@ The default-budget models (5060 Ti, 1× data, 4 epochs, 2026-10-10) give the sam
 - **Perturbed DAgger makes the long part reliable:** all three casings at 0.97 (± 0.004), against one broken build in three without it, although the synthetic suites under perturbation show no difference (`len6` 0.85 against 0.86). Recovery on a real long part is what it buys.
 - **The casing is not yet exact:** 0.973 against the teacher's 0.998, the same value on two seeds. The verbose build (seed 12, `DAGGER_PERTURB=0.2`) is correct for 176 steps; then, after the suction port's first bolt-hole pair (hole, mirror), it mirrors again where the teacher starts the next hole on `Face+Y`, and the teacher's Undos come too late to repair it. Training had one mirrored hole per flange; patch 0017 adds flanges with up to three mirrored pairs.
 
+**Patch-0017 model, 4.8M states** (Quadro, 4 epochs, 1 seed, 2026-10-15): casing 0.974, every other part exact. The verbose build skips the suction port's second mirror (step 187, after 5 mirrors and 17 pockets), where the 0016 pilot had mirrored once too often after the first pair. More rim-pair training did not fix it: the model's own "already built?" pointer miscounts runs of near-identical intents deep in a long goal. `taiga_build_part.py --guided-progress` (2026.10.15.1) lets the runtime supply the active intent from the teacher's progress tracking, for complete goals; the model still picks every command.
+
 ## Limits of the vocabulary found on the way
 
 - **Patterns only about the origin axes.** The suction flange's 8 bolt holes are on a circle around the port axis (z = 110), not the shaft axis, so they are written as 4 holes, each mirrored. A polar pattern about a feature's own axis would make it one hole and one pattern.

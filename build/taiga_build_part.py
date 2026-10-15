@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.13.1
+Version: 2026.10.15.1
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -54,6 +54,13 @@ flange went onto Plane:XY); this writes them the way those models learned.
 A FreeCAD step that never returns (OpenCASCADE stuck in one operation: an S 80 casing build sat
 6 hours on one step, 2026-10-13) is stopped after --step-timeout seconds (default 900): the
 worker is killed, the part counts as CRASH and the remaining goals are built.
+
+--guided-progress: the runtime tells the model which goal intent is next (the teacher's
+progress tracking, which compares the document with the goal), instead of the model's own
+"already built?" pointer; the model still picks every command. For complete goals only. On the
+S 80 casing the model's own pointer miscounts runs of near-identical intents (hole, mirror,
+hole, mirror on the suction port): once one mirror too many, once one too few (2026-10-14).
+Needs a modular model (upstream's final configuration); otherwise it has no effect.
 
 Timing: each part reports how long it took to make, split into model decisions,
 FreeCAD steps and saving/export; a summary table with the totals is printed at the end.
@@ -227,6 +234,24 @@ def call_limited(env: FreeCADEnv, req: dict, limit: float) -> dict:
         timer.cancel()
 
 
+def guided_distribution(policy, state, goal, actions: list[str], progress: int):
+    """Action probabilities with the active intent forced to the runtime's progress index
+    (--guided-progress). Falls back to the model's own pointer when progress is unknown."""
+    import torch
+    from freecad_s1.model.featurize import SEG_GOAL, collate, make_example
+
+    m = policy.model
+    m.eval()
+    batch = collate([make_example(state, goal, actions, **m.cfg.feature_opts())])
+    if m.cfg.modular and progress is not None and progress >= 0:
+        slots = torch.nonzero(batch["seg"][0] == SEG_GOAL).flatten()  # goal intents (+ END sentinel)
+        batch["force_intent"] = slots[min(progress, len(slots) - 1)].view(1)
+    batch = {k: v.to(policy.device) for k, v in batch.items()}
+    with torch.no_grad():
+        logits, _ = m(batch)
+    return torch.softmax(logits, -1).cpu()[0, : len(actions)]
+
+
 def default_worker_limit_gb() -> float:
     """Half the machine's RAM (Linux), else no limit."""
     try:
@@ -309,6 +334,9 @@ def main() -> None:
     ap.add_argument("--step-timeout", type=float, default=900,
                     help="seconds one FreeCAD request (step, check, save; 3x for the reset, which builds the target) "
                          "may take before the worker is killed and the part counts as CRASH (default 900; 0: no limit)")
+    ap.add_argument("--guided-progress", action="store_true",
+                    help="the runtime gives the model the next goal intent (teacher's progress tracking); "
+                         "the model still picks every command (see above)")
     ap.add_argument("--canon-top", action="store_true",
                     help="drop the explicit +Z normal (nz=1, z) from non-datum top-face features "
                          "(models trained before patch 0016; see above)")
@@ -330,6 +358,8 @@ def main() -> None:
 
         torch.set_num_threads(args.threads)
     policy = None if (args.check or args.teacher) else Policy(load_model(args.model), args.device)
+    if policy is not None and args.guided_progress and not policy.model.cfg.modular:
+        print("note: --guided-progress has no effect: this model has no intent pointer (not modular)")
     if args.name and args.name not in goals:
         sys.exit(f"error: no goal named '{args.name}' in {goals_path}; available: {', '.join(goals)}")
     names = [args.name] if args.name else list(goals)
@@ -373,6 +403,7 @@ def main() -> None:
                 print(f"\n== {name}: " + " -> ".join(f"{f.kind}{json.dumps(f.params)}" for f in goal.features))
                 raw = r["state"]
                 state, actions, expert = State.from_json(raw), r["actions"], r["expert"]
+                prog = r.get("progress", -1)
                 steps = agree = guarded = 0
                 tried: dict[str, set[str]] = {}  # loop guard: actions already taken from each state
                 went: dict[tuple[str, str], tuple[str, bool]] = {}  # (state, action) -> (next state, error)
@@ -386,9 +417,14 @@ def main() -> None:
                     if args.teacher:
                         action = expert[0]
                     elif args.no_loop_guard:
-                        action = policy.act([state], [goal], [actions])[0]
+                        if args.guided_progress:
+                            pr = guided_distribution(policy, state, goal, actions, prog)
+                            action = actions[int(pr.argmax())]
+                        else:
+                            action = policy.act([state], [goal], [actions])[0]
                     else:
-                        probs = policy.distributions([state], [goal], [actions])[0]
+                        probs = (guided_distribution(policy, state, goal, actions, prog) if args.guided_progress
+                                 else policy.distributions([state], [goal], [actions])[0])
                         ranked = [actions[j] for j in sorted(range(len(actions)), key=lambda j: -float(probs[j]))]
                         key = state_key(raw)
                         seen = tried.setdefault(key, set())
@@ -431,6 +467,7 @@ def main() -> None:
                         break
                     raw = s["state"]
                     state, actions, expert = State.from_json(raw), s["actions"], s["expert"]
+                    prog = s.get("progress", -1)
                 t_built = time.perf_counter()
                 sc = call_limited(env, {"op": "score"}, args.step_timeout)
                 t_score = time.perf_counter() - t_built
