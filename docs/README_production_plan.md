@@ -229,5 +229,29 @@ The spurious Undo after a correct but unfamiliar step is a training issue that t
 | 4 | Scale data and model; fix the gates | Gates met on all frozen test sets, 5 seeds |
 | 4b | Freeze the current small model as `small-v1` in the registry; write `taiga_route.py` once the long-goal model exists | The router picks per goal and falls back on checker rejection; fallbacks are logged |
 | 5 | Production runtime: teacher first, router-selected model, checker always | Pinned FreeCAD, versioned models in the registry, gates re-run on every FreeCAD update |
+| 6 | Goals from shapes (section 9): a goal generator from a target shape (STEP, mesh), sampled candidates built by the teacher and scored; search inside the build where the model is unsure; drawings last | Most DeepCAD test shapes rebuilt from the shape alone to IoU ≥ 0.99 with every intent realized; cost per part in CPU-seconds, no frontier model in the loop |
 
 Phase 0 is the cheapest and teaches the most: it sizes everything after it. The small model needs little beyond phase 1 (off-axis positions, the spurious Undo); phases 2–4 are mostly about the long-goal model.
+
+## 9. More thinking per part: goals from shapes (phase 6)
+
+Taiga carries out a goal; it does not decide what to build. Today the planner (an LLM) writes the goal. Systems such as Spectral Labs' SGS-Mk2 (a CAD model orchestrated by a frontier vision-language model, 2026-10-14) also decide the construction themselves, sampling several and scoring them, at a cost per part dominated by the frontier model in the loop. Nothing in our approach prevents doing the same; the line is only where the goal comes from. Adding it keeps our cost profile: CPU-bound, parallel, no per-part API bill.
+
+**Goal generator (a small "System 2").** A model that reads a target shape (STEP or mesh first; a point cloud or a drawing later) and writes a Taiga goal. The training data already exists, which is unusual for this problem:
+
+- 116,688 verified DeepCAD designs, whose goals the teacher rebuilds to IoU ≥ 0.99 (real shape → goal pairs, `../taiga-expanded/datasets/`);
+- unlimited synthetic pairs from the goal families of the patch series, since the teacher turns any goal into its exact shape;
+- the DeepCAD test split (6,762 verified designs) as the frozen test set.
+
+**Sample and score.** For each part, sample several candidate goals, build each with the teacher (deterministic, seconds of CPU) and score it against the target with IoU and the feature-level check (`../taiga-expanded/eval/feature_check.py`); keep the best. Every attempt costs CPU time, not tokens, so many candidates per part are affordable; the scoring prefers goals that are complete (every intent realized) and short.
+
+**Search inside the build.** Where Taiga is unsure (a low top probability, or the loop guard would step in), try two or three next commands on parallel FreeCAD workers and keep the continuation the checker scores best. This would replace the loop guard with a principled version of it.
+
+**Drawings last.** Reading dimensions, views and tolerances from an engineering drawing is a perception problem. An LLM or vision-language model can do it once per part, outside the build loop; the goal generator and the checker then take over.
+
+**What still limits it:**
+
+- the vocabulary: whatever the goal format cannot express (sweeps, lofts, multi-body parts, mates, patterns of patterns) no generator can produce; extending it remains the patch series' job;
+- design intent: sketches are fully fixed, so parametric intent lives in the goal or the assembly spec, not in the FreeCAD file;
+- consistency across parts (fits, interfaces) stays with the parametric assembly spec (section 2, deployment).
+
