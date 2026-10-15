@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """survey_whucad.py — which CAD features real parametric parts use, and how often (vocabulary
 survey for the production plan, section 4.4).
-Version: 2026.10.15.1
+Version: 2026.10.15.2
 
 WHUCAD (Fan et al., Integrated Computer-Aided Engineering 32(1), 2025) stores CAD models as
 command sequences in DeepCAD's vector format, extended to 18 feature types (extrude, revolve,
@@ -29,6 +29,21 @@ import numpy as np
 
 # sketch-level commands (everything else counts as a feature operation)
 SKETCH = {"line", "arc", "circle", "spline", "ellipse", "sol", "eos", "point", "topo", "sketch", "profile"}
+# topology selection commands (which edges / faces a feature acts on), not features themselves
+SELECTION = ("select", "included", "mirrorstart")
+# what the Taiga goals express today, and candidate additions in order (cumulative coverage)
+COVERAGE_STEPS = [
+    ("today (extrude, pocket, revolve, groove, mirror)", {"Ext", "Pocket", "Rev", "Groove", "Mirror"}),
+    ("+ fillet / chamfer on chosen edges", {"Fillet", "Chamfer"}),
+    ("+ shell", {"Shell"}),
+    ("+ sketch on any plane (SCP)", {"SCP"}),
+    ("+ draft", {"Draft"}),
+]
+
+
+def is_feature(c: str) -> bool:
+    low = c.lower()
+    return low not in SKETCH and not any(k in low for k in SELECTION)
 
 
 def command_names(repo: Path) -> list[str] | None:
@@ -71,12 +86,22 @@ def survey(files: list[Path], names: list[str] | None) -> dict:
         cmds = [name(int(c)) for c in vec[:, 0] if int(c) >= 0]
         total.update(cmds)
         models_with.update(set(cmds))
-        feats = [c for c in cmds if c.lower() not in SKETCH]
+        feats = [c for c in cmds if is_feature(c)]
         n_feat.append(len(feats))
         combos[tuple(sorted(set(feats)))] += 1
     n = len(files) - bad
     lengths = np.array(n_feat) if n_feat else np.zeros(1)
+    vocab, coverage = set(), []
+    for label, add in COVERAGE_STEPS:
+        vocab |= add
+        covered = sum(v for k, v in combos.items() if set(k) <= vocab)
+        coverage.append({"vocabulary": label, "models": covered, "share": round(covered / max(n, 1), 4)})
+    other = collections.Counter()
+    for k, v in combos.items():
+        for c in set(k) - vocab:
+            other[c] += v
     return {
+        "coverage": coverage, "beyond_all_steps": dict(other.most_common()),
         "models": n, "unreadable": bad,
         "features_per_model": {"median": float(np.median(lengths)), "p90": float(np.percentile(lengths, 90)),
                                "max": int(lengths.max())},
@@ -110,6 +135,11 @@ def main() -> None:
         print(f"{'command':16s} {'models':>8s} {'share':>7s} {'uses':>8s}")
         for c, v in r["commands"].items():
             print(f"{c:16s} {v['models']:8d} {v['share']:7.1%} {v['uses']:8d}")
+        print("parts whose every feature is expressible, as the vocabulary grows:")
+        for row in r["coverage"]:
+            print(f"  {row['share']:6.1%}  ({row['models']:6d})  {row['vocabulary']}")
+        if r["beyond_all_steps"]:
+            print("  still beyond: " + ", ".join(f"{k} ({v})" for k, v in r["beyond_all_steps"].items()))
         print("most common feature combinations:")
         for row in r["top_combinations"][:10]:
             print(f"  {row['models']:6d}  {' + '.join(row['features']) or '(none)'}")
