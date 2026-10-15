@@ -130,6 +130,8 @@ From 0.52 to 0.96 without a single DeepCAD design in training: patches 0009–00
 
 From 0.956 to 1.000: with DeepCAD training goals the models build all but one or two of the 6,762 test designs. The test split is DeepCAD's own and the converter removed duplicates within each split, but DeepCAD is known to hold near-identical designs across its splits, so part of this could be recall of designs seen in training. The check: 1,257 of the 6,762 test goals (18.6 %) are identical to a training goal (features and dimensions to 0.01 mm); on the other 5,505 every seed scores **1.000** as well. It is generalization to unseen designs, not recall.
 
+**1.2M model, `dc1`** (patch 0014, `mcb119a`, DeepCAD training goals at 25 %, 3 seeds; Spark1, 2026-10-15): **1.000 on every bucket and every seed** (1–5, 6–10, 11–20; one build of the 20,286 hit the scoring time limit). The small model generalizes to real designs as well as the 7M, which settles the model size for real parts too (`../../docs/README_production_plan.md`, item 10).
+
 **Train split** (Spark2, `SUBSET=train LIMIT=0`, FreeCAD 1.1.3, patches 0001–0009, 2026-10-08 to 2026-10-11): 117,855 designs converted, 117,550 built by the teacher, **116,688 match their original** (IoU ≥ 0.99; 99.0 % of the converted designs). Verified goals by number of features:
 
 | Features | 1 | 2 | 3 | 4 | 5 | 6–10 | 11–15 | 16–21 |
