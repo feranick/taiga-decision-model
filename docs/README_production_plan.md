@@ -15,6 +15,8 @@ All three are generalization. So the production measure is how well the model ha
 - **Composition regresses with budget.** At 2× data and 8 epochs, four of five seeds fail one of the held-out compositions (comp 0.53 ± 0.09), as the original model does when trained longer (`../taiga-expanded/README.md`, step 3).
 - **Spurious Undo on unfamiliar geometry.** The bearings (one revolve far from the origin) and the impeller's spline blade were built correctly and then undone by the model. The loop guard now blocks that Undo (`../build/taiga_build_part.py` 2026.10.08.1), but the model itself still makes the mistake.
 
+**Guided progress for complete goals** (2026-10-15): with the active intent supplied by the runtime's progress tracking (`taiga_build_part.py --guided-progress`), the 4.8M model builds the whole S 80 exactly (0.9987, the teacher's score; the casing 0.9983 against 0.974 without). For complete goals, which is every production request, the runtime uses it; the model's own pointer remains for continuing from an existing or edited document.
+
 **Proposed runtime: teacher first, then the right model, checker always.** If the teacher can build a goal, use its build; otherwise a router picks the model suited to the goal (section 2); every result is checked against the goal's target before it is returned.
 
 ## 2. Several models and a router, not one model for everything
