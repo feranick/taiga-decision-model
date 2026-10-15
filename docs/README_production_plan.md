@@ -238,8 +238,8 @@ The spurious Undo after a correct but unfamiliar step is a training issue that t
 | 2 | **v1 on real designs:** DeepCAD test of a v1 seed (and the 1.2M dc1 model for comparison) | Spark1 | dc1 scoring; v1 after item 1 |
 | 3 | **Register v1:** `build/registry.json` with v1 as `small-v1` and the 7M (Spark2 scaling run) as `long-v1` fallback | building machine | after 1–2 |
 | 4 | **Harness end to end:** install `mcp` in the work folder's venv, connect an MCP client (over ssh from the Mac, or HTTP), let it design and build a simple bracket from a text request; then a multi-part request | mochi or Spark2, Mac | after 3 |
-| 5 | **Patch 0019 supplement data:** `points` goals only, ~1.5M states (`TAIGA_TRAIN_ONLY=points`, `DATA_SCALE=3`) | mochi (`taiga-expanded-0019`) | next |
-| 6 | **v2:** 0019 setup on Spark1; pool the 8× shards of seeds 101 and 103 with the supplement (~11M states); train v2 like v1 (3 seeds); `points` suite, S 80, DeepCAD test; replace v1 in the registry if it passes the gates | Spark1 | after 5 |
+| 5 | **Patch 0019 supplement data:** `points` goals only, ~1.5M states (`TAIGA_TRAIN_ONLY=points`, `DATA_SCALE=3`) | mochi (`taiga-expanded-0019`) | done: 1,731,876 states in 36 shards (`gen_train_seed201_x3_ext1_kh_onlypoints`); 0019 setup on mochi 116 passed |
+| 6 | **v2:** 0019 setup on Spark1; pool the 8× shards of seeds 101 and 103 with the supplement (~11M states); train v2 like v1 (3 seeds); `points` suite, S 80, DeepCAD test; replace v1 in the registry if it passes the gates | Spark1 (`~/v2.sh`, pool `~/pool_v2`, run `…_mcb119a_dpool_v2`) | setting up; training starts when `dc1test` ends |
 | 7 | **Converter:** split DeepCAD designs with several separate solids into one goal per solid (~8 % more real designs for training and test) | `taiga-expanded/datasets/convert_deepcad.py` | to write |
 | 8 | **Next vocabulary:** sketches on angled planes, then draft (4.4 ranking) | patch series | after 6 |
 | 9 | **Pass criteria:** fix them per test set and length bucket (item 11 above) with the v1 and v2 results | this plan | after 6 |
