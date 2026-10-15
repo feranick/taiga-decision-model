@@ -91,6 +91,9 @@ From the Claude desktop app over ssh to mochi (0017 folder, the 1.2M and 7M `dsc
 |---|---|---|---|---|
 | Bracket: plate, central boss with bore, four corner holes (two mirrors), vertical fillets | 1 | model | 1.0 | 6.2 s |
 | Motor flange (boss, bore, 6 bolt holes polar, chamfer), spacer (ring with cross bore), cover plate (outline with an arc, pocket, 4 holes linear, fillets) | 3 | model 2, teacher 1 (the spacer's cross bore with `ny: -1`; fixed by the normalization above) | 1.0 | 4–7 s each |
+| The same four parts with **v1 seed 2** (`small-v1` = `~/v1_s2/seed2/hf`) and harness 2026.10.15.2, `model_first=true` | 4 | **model 4** (the spacer with `ny: -1` included) | 1.0 | 3.7–6.4 s each; the three in one `start_build` 6.5 s |
+
+A `build_parts` call with all four parts timed out in the client once, right after the connector restarted, although the build itself finished on mochi in 6 s (all four by the model, `runtime_log.jsonl`): the reply was lost on the client side. `start_build` + `build_status` avoids depending on one long call when a request has several parts. All eight STEP files of these runs match the build123d translator's parts of the same goals (IoU ≥ 0.99999), an independent check of the geometry.
 
 ## Writing goals (summary; `goal_format` has the full list)
 
