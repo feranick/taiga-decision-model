@@ -151,6 +151,22 @@ Sizes are in mm. `x`/`y` are positions on the top face, measured from the centre
 
 ---
 
+## The production runtime
+
+`taiga_runtime.py` builds a set of goals the way production does: each goal goes through a chain of attempts until one passes the checker, and every attempt is logged.
+
+```bash
+cd ~/taiga-expanded-0017/taiga-s1 && source ../freecad.env
+.venv/bin/python <repo>/build/taiga_runtime.py --registry <repo>/build/registry.json \
+    --goals my_goals.json --out parts --workers 8
+```
+
+- **Chain** (`--chain`, default `teacher,main:guided,main,fallback:guided`): `teacher` is the scripted teacher; `main` and `fallback` are the models with those roles in the registry; `:guided` adds `--guided-progress`. With the teacher first, a model builds a goal only when the teacher cannot; put a model first (e.g. `--chain main:guided,teacher`) to use or evaluate it.
+- **Accepted** when the builder reports SUCCESS and the IoU with the goal's target is at least `--min-iou` (0.999). A goal whose target cannot be built (INFEASIBLE) stops at once.
+- **Parallel:** `--workers` goals at a time, each in its own `taiga_build_part.py` process (one FreeCAD worker, with its step timeout and memory limit).
+- **Output:** accepted parts as `<out>/<name>.FCStd` and `.step`; every attempt in `<out>/attempts/<name>/<attempt>/` with its log; one line per goal in `<out>/runtime_log.jsonl` (attempts, results, times, which one was accepted).
+- **Registry:** `registry.example.json` (copy to `registry.json` and set the paths): each model with its role, path, size, FreeCAD version, patch series, training data and measured results. Models are tied to a FreeCAD version: after an update, retrain and re-run the pass criteria before changing the registry.
+
 ## Assembling parts
 
 Each goal produces its own part file. `taiga_assemble.py` places built parts into one document according to an assembly spec (rotations and a translation per part, plus color and transparency), and writes a single `.FCStd` and a combined `.step`. It runs in FreeCAD's Python; no model is involved. `engine/assembly_engine.json` assembles the engine kit: crank axis along Y, shown at top dead center, with the crankcase, cylinder block and valve cover semi-transparent so the piston, rod and crank stay visible.
@@ -209,3 +225,4 @@ It saves a screenshot and the `.FCStd` to `runs/gui_demo/`. `--delay` sets the p
 |---|---|
 | `taiga_build_part.py` | 2026.10.15.2 |
 | `taiga_assemble.py` | 2026.10.05.2 |
+| `taiga_runtime.py` | 2026.10.15.1 |

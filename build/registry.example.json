@@ -1,0 +1,26 @@
+{
+  "models": [
+    {
+      "name": "small-v1",
+      "role": "main",
+      "path": "~/taiga-expanded-0017/taiga-s1/runs/gdeepcad_goalsf0.25_kh_pt0.2_mcb119a_dscale10m/seed2/hf",
+      "params": "1.2M",
+      "model_args": "--max-nodes 160 --max-goal 64 --max-ord 72 --max-pos 256 --ord-table 28 --pos-table 96 --newest-nodes",
+      "freecad": "1.1.3",
+      "patches": "0001-0017 (taiga-expanded)",
+      "trained_on": "9.7M states, DeepCAD goals 25 %, TAIGA_KEEP_HELDOUT=1, DAGGER_PERTURB=0.2, 4 epochs",
+      "measured": "fill in from the aggregate, the S 80 (plain and guided, feature check) and the DeepCAD test"
+    },
+    {
+      "name": "long-v1",
+      "role": "fallback",
+      "path": "~/taiga-expanded-0017/taiga-s1/runs/gdeepcad_goalsf0.25_kh_pt0.2_meebb25_dscale10m/seed2/hf",
+      "params": "7M",
+      "model_args": "--width 256 --ff 768 --enc-layers 4 --max-nodes 160 --max-goal 64 --max-ord 72 --max-pos 256 --ord-table 28 --pos-table 96 --newest-nodes",
+      "freecad": "1.1.3",
+      "patches": "0001-0017 (taiga-expanded)",
+      "trained_on": "9.7M states, same settings (Spark2 scaling run, 2026-10-15)",
+      "measured": "len6 1.00 clean, 0.86 perturbed; S 80 whole pump 0.9971 plain"
+    }
+  ]
+}

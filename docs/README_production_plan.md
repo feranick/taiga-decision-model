@@ -17,9 +17,11 @@ All three are generalization. So the production measure is how well the model ha
 
 **Guided progress for complete goals** (2026-10-15): with the active intent supplied by the runtime's progress tracking (`taiga_build_part.py --guided-progress`), the 4.8M model builds the whole S 80 exactly (0.9987, the teacher's score; the casing 0.9983 against 0.974 without). For complete goals, which is every production request, the runtime uses it; the model's own pointer remains for continuing from an existing or edited document.
 
-**Proposed runtime: teacher first, then the right model, checker always.** If the teacher can build a goal, use its build; otherwise a router picks the model suited to the goal (section 2); every result is checked against the goal's target before it is returned.
+**Runtime: teacher first, then the model (guided), checker always.** If the teacher can build a goal, use its build; otherwise the production model builds it with guided progress; every result is checked against the goal's target (IoU and intent by intent) before it is returned. With one model (decision of 2026-10-15, section 7 item 10) there is nothing to route by size; section 2 keeps the registry and the fallback chain.
 
 ## 2. Several models and a router, not one model for everything
+
+> **Update 2026-10-15:** the scaling runs showed one 1.2M model enough for everything tested (the whole S 80 exact with guided progress, better than the 7M under perturbation), so there is no size-based routing. What remains of this section: the **registry** (each model with its FreeCAD version, patch series, training data and measured results; still one model per platform), the **fallback chain** on checker rejection (the model guided, then unguided, then the 7M kept as a fallback, then "not buildable", every fallback logged), and room for **specialists** later (a new feature family before the main model is retrained, sheet metal, the UI-level model). The text below is the original reasoning.
 
 Production does not need one model that covers every part. Most requests are small parts (a few features), which a small model already builds exactly; long parts need the model this plan proposes, with long-goal training and more steps. Keeping them separate has three advantages:
 
@@ -229,7 +231,7 @@ The spurious Undo after a correct but unfamiliar step is a training issue that t
 | 2 | Architecture change if needed; mid-part start states; curriculum to 20–50 features | The bearing bracket and casing core build on most seeds |
 | 3 | DeepCAD train-split family; own parts as a family and as a test set | DeepCAD test split by length bucket at or near the teacher's verified share |
 | 4 | Scale data and model; fix the gates | Gates met on all frozen test sets, 5 seeds |
-| 4b | Freeze the current small model as `small-v1` in the registry; write `taiga_route.py` once the long-goal model exists | The router picks per goal and falls back on checker rejection; fallbacks are logged |
+| 4b | Register the production 1.2M model (and the 7M as fallback); runtime script `../build/taiga_runtime.py` (written 2026-10-15): teacher first, the model with guided progress, checker, fallback chain | Every request ends in a checked part or a logged "not buildable" with the attempts made |
 | 5 | Production runtime: teacher first, router-selected model, checker always | Pinned FreeCAD, versioned models in the registry, gates re-run on every FreeCAD update |
 | 6 | Goals from shapes (section 9): a goal generator from a target shape (STEP, mesh), sampled candidates built by the teacher and scored; search inside the build where the model is unsure; drawings last | Most DeepCAD test shapes rebuilt from the shape alone to IoU ≥ 0.99 with every intent realized; cost per part in CPU-seconds, no frontier model in the loop |
 

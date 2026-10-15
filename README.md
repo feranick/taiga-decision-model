@@ -48,6 +48,8 @@ taiga-decision-model/
 ├── build/
 │   ├── README_build_part.md      goal format, feature types, output, GUI demo
 │   ├── taiga_build_part.py       builds parts headless and saves .FCStd files
+│   ├── taiga_runtime.py          production runtime: chain of attempts (teacher, model guided, ...), checker, log
+│   ├── registry.example.json     the production models (role, path, FreeCAD version, training, results)
 │   ├── flange/
 │   │   └── example_goals.json        simple example goals (bracket plate, spacer, bolt-circle disc)
 │   ├── engine/
