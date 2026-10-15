@@ -28,7 +28,8 @@ So: **DeepCAD first**, with the `LICENSE`-tab check. Before using either dataset
 5. **Later extrudes.** Every extrude from a plane can be written exactly as a feature on a datum plane extruded both ways: a one-sided extrude of d from offset z0 is the symmetric extrude of d about z0 + d/2; two sides d1, d2 is d1 + d2 about z0 + (d1 − d2)/2. So:
    - `Join` → `profile_boss` (`off`, `h`); inner loops → `profile_pocket` over the same extent.
    - `Cut` → `profile_pocket` (`off`, `depth`); inner loops (islands) → `profile_boss` over the same extent.
-   - `Intersect`, or a second `NewBody` (several bodies) → leave the model out.
+   - `Intersect` → leave the model out. A second `NewBody` is a join (the part must end as one solid).
+   - **Several solids** (`convert_deepcad.py` 2026.10.15.1, with `--refs`): a design whose original ends as several separate solids (several parts in one document; 8.2 % of DeepCAD's unique training designs) becomes one goal per solid, `<name>_s1`, `<name>_s2`, ... (largest first). Each goal keeps the extrudes that make its solid (the joins that overlap it, the cuts that touch their material), in build order and in its own frame; its reference STEP is that solid, and its volume must equal the solid's in the original. `--no-split-solids` leaves such designs out as before. Checked on DeepCAD-format test designs (two plates; two plates with one slot cut through both; a single plate; two plates bridged later, one solid): every goal matches its reference at IoU 1.000 (built with the build123d translator).
 6. **Face form where natural (second pass).** When a sketch plane coincides with a planar face of the part built so far, and the extrude goes outward (join) or inward (cut), write it as a face feature (`nx`/`ny`/`nz`, `at`) instead: closer to how people build, and to our own families. This needs the part built so far, so it runs with the teacher in FreeCAD.
 7. **Keep only verified goals.** The teacher builds each goal (`taiga_build_part.py --check`), and the result must match the original model (rebuilt from the JSON with OpenCASCADE, as `pump_s80.py` does) to IoU ≥ 0.99. Duplicates (DeepCAD has many) are removed by a hash of the converted goal.
 
@@ -150,7 +151,7 @@ As training goals (patch 0011, `TAIGA_GOALS_FILE`) they fall into level 1 (54,77
 
 | File | Version |
 |---|---|
-| `convert_deepcad.py` | 2026.10.06.10 |
+| `convert_deepcad.py` | 2026.10.15.1 (designs with several solids: one goal per solid) |
 | `run_deepcad.sh` | 2026.10.14.2 |
 | `survey_whucad.py` | 2026.10.15.2 |
 | `diagnose_goals.py` | 2026.10.06.2 |

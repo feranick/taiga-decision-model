@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """convert_deepcad.py — DeepCAD build histories (sketch + extrude) as Taiga-S1 goals.
-Version: 2026.10.06.10
+Version: 2026.10.15.1
 
 Reads DeepCAD's JSON files (data/cad_json/<group>/<id>.json, the Fusion 360 Gallery
 reconstruction format) and writes, into --out:
@@ -26,6 +26,12 @@ Build order (with --refs): PartDesign keeps one solid after every feature, while
 join pieces that touch only later. The converter replays the goal in OpenCASCADE, reorders
 consecutive joins so that every step stays one solid (a union doesn't depend on order), and
 leaves the model out if no order works or a cut empties or splits the part.
+
+Several solids (with --refs): a design whose original ends as several separate solids (several
+parts in one document, 8 % of DeepCAD's designs) becomes one goal per solid, named
+<name>_s1, <name>_s2, ... (largest first). Each keeps the extrudes that make its solid (joins
+inside it, cuts that touch its material), in its own frame (its first extrude), and its
+reference is checked against that solid of the original (--no-split-solids: leave them out).
 
 Inner loops of a join/cut are only exact when the slab holds no earlier material inside the
 loop; the --refs + teacher + IoU check (run_deepcad.sh) keeps only goals that match.
@@ -665,6 +671,72 @@ def write_step(shape, path: Path) -> None:
         raise RuntimeError(f"STEP export failed: {path}")
 
 
+# ----------------------------------------------------------------------------- several solids
+
+
+MAX_SOLIDS = 16
+
+
+def _solids(shape) -> list:
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    out, e = [], TopExp_Explorer(shape, TopAbs_SOLID)
+    while e.More():
+        out.append(TopoDS.Solid_s(e.Current()))
+        e.Next()
+    return out
+
+
+def _common_volume(a, b) -> float:
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+
+    return _volume(BRepAlgoAPI_Common(a, b).Shape())
+
+
+def _prism(ex: dict, R, t, unit: float):
+    """The region an extrude adds or removes (outer loop minus its inner loops), as
+    reference_shape builds it."""
+    return reference_shape([{**ex, "op": "NewBody"}], R, t, unit)
+
+
+def split_solids(extrudes: list[dict], unit: float) -> list[tuple[str, list[dict], float]]:
+    """[("", extrudes, volume)] for a design that is one solid; for one that ends as several
+    separate solids, one entry per solid ("_s1", "_s2", ... largest first): the extrudes that make
+    it, in build order, and the solid's volume. A join belongs to the solids it overlaps; a cut to
+    those whose joins it overlaps. Raises Skip when the original has no solid or too many."""
+    eye, zero = np.eye(3), np.zeros(3)
+    world = reference_shape(extrudes, eye, zero, unit)
+    solids = [s for s in _solids(world) if _volume(s) > 1e-9]
+    if len(solids) <= 1:
+        return [("", extrudes, _volume(world))]
+    if len(solids) > MAX_SOLIDS:
+        raise Skip(f"original model has more than {MAX_SOLIDS} solids")
+    solids.sort(key=lambda s: -_volume(s))
+    prisms = [_prism(ex, eye, zero, unit) for ex in extrudes]
+    out = []
+    for i, sol in enumerate(solids):
+        v_sol = _volume(sol)
+        joins = [j for j, ex in enumerate(extrudes) if ex["op"] in ("NewBody", "Join")
+                 and _common_volume(prisms[j], sol) > 1e-6 * min(v_sol, _volume(prisms[j]))]
+        if not joins:
+            continue
+        material = prisms[joins[0]]
+        for j in joins[1:]:
+            from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+
+            material = BRepAlgoAPI_Fuse(material, prisms[j]).Shape()
+        v_mat = _volume(material)
+        cuts = [j for j, ex in enumerate(extrudes) if ex["op"] == "Cut" and j > joins[0]
+                and _common_volume(prisms[j], material) > 1e-9 * v_mat]
+        keep = sorted(joins + cuts)
+        part = [dict(extrudes[j]) for j in keep]
+        part[0]["op"] = "NewBody"
+        out.append((f"_s{i + 1}", part, v_sol))
+    return out
+
+
 # ----------------------------------------------------------------------------- main
 
 
@@ -685,6 +757,8 @@ def main() -> None:
     ap.add_argument("--max-features", type=int, default=60)
     ap.add_argument("--limit", type=int, default=0, help="stop after this many converted models (0: all)")
     ap.add_argument("--refs", action="store_true", help="also write the original models as STEP (needs OCP)")
+    ap.add_argument("--no-split-solids", action="store_true",
+                    help="leave out designs that end as several solids (default with --refs: one goal per solid)")
     args = ap.parse_args()
 
     data, out = Path(args.data).expanduser(), Path(args.out).expanduser()
@@ -697,22 +771,14 @@ def main() -> None:
     reasons, lengths = collections.Counter(), collections.Counter()
     examples = collections.defaultdict(list)  # reason -> first few model ids (to look at)
     files = model_files(data, Path(args.split).expanduser() if args.split else None, args.subset)
+    n_split = n_split_goals = 0
     for n_done, (mid, path) in enumerate(files, 1):
-        name = "dc_" + mid.replace("/", "_")
+        base_name = "dc_" + mid.replace("/", "_")
         try:
             extrudes = read_model(path)
-            groups, (R, t) = convert(extrudes, unit)
-            if args.refs:
-                groups = order_for_partdesign(groups)
-            goal = make_goal(groups, args.max_features)
-            key = hashlib.sha1(json.dumps(goal["features"], sort_keys=True).encode()).hexdigest()
-            if key in seen:
-                raise Skip("duplicate")
-            seen.add(key)
-            if args.refs:
-                ref = reference_shape(extrudes, R, t, unit)
-                check_reference(ref)
-                write_step(ref, out / "refs" / f"{name}.step")
+            pieces = [("", extrudes, None)]
+            if args.refs and not args.no_split_solids:
+                pieces = split_solids(extrudes, unit)
         except Skip as exc:
             reasons[str(exc)] += 1
             if len(examples[str(exc)]) < 5:
@@ -722,14 +788,50 @@ def main() -> None:
             reasons[f"unreadable ({type(exc).__name__})"] += 1
             continue
         except Exception as exc:  # noqa: BLE001  (OCC failures while building the reference)
-            reasons[f"reference build failed ({type(exc).__name__})"] += 1
-            if len(examples[f"reference build failed ({type(exc).__name__})"]) < 5:
-                examples[f"reference build failed ({type(exc).__name__})"].append(mid)
+            why = f"reference build failed ({type(exc).__name__})"
+            reasons[why] += 1
+            if len(examples[why]) < 5:
+                examples[why].append(mid)
             continue
-        goals[name] = goal
-        n = len(goal["features"])
-        lengths["1-5" if n <= 5 else "6-10" if n <= 10 else "11-20" if n <= 20 else "21+"] += 1
-        spec["parts"].append({"part": name, "builds": [{"goal": name, "rotations": [], "translation": [0, 0, 0]}]})
+        split = len(pieces) > 1
+        n_split += split
+        for suffix, exs, v_solid in pieces:
+            name = base_name + suffix
+            try:
+                groups, (R, t) = convert(exs, unit)
+                if args.refs:
+                    groups = order_for_partdesign(groups)
+                goal = make_goal(groups, args.max_features)
+                key = hashlib.sha1(json.dumps(goal["features"], sort_keys=True).encode()).hexdigest()
+                if key in seen:
+                    raise Skip("duplicate")
+                seen.add(key)
+                if args.refs:
+                    ref = reference_shape(exs, R, t, unit)
+                    check_reference(ref)
+                    if v_solid is not None and split and abs(_volume(ref) - v_solid) > 1e-6 * v_solid:
+                        raise Skip("split: the part's extrudes do not rebuild its solid")
+                    write_step(ref, out / "refs" / f"{name}.step")
+            except Skip as exc:
+                why = ("split part: " if split else "") + str(exc)
+                reasons[why] += 1
+                if len(examples[why]) < 5:
+                    examples[why].append(mid + suffix)
+                continue
+            except (KeyError, ValueError, TypeError, IndexError) as exc:
+                reasons[f"unreadable ({type(exc).__name__})"] += 1
+                continue
+            except Exception as exc:  # noqa: BLE001
+                why = f"reference build failed ({type(exc).__name__})"
+                reasons[why] += 1
+                if len(examples[why]) < 5:
+                    examples[why].append(mid + suffix)
+                continue
+            goals[name] = goal
+            n_split_goals += split
+            n = len(goal["features"])
+            lengths["1-5" if n <= 5 else "6-10" if n <= 10 else "11-20" if n <= 20 else "21+"] += 1
+            spec["parts"].append({"part": name, "builds": [{"goal": name, "rotations": [], "translation": [0, 0, 0]}]})
         if args.limit and len(goals) >= args.limit:
             break
         if n_done % 1000 == 0:
@@ -737,7 +839,8 @@ def main() -> None:
     sub = args.subset if args.split else "all"
     (out / f"goals_{sub}.json").write_text(json.dumps(goals, separators=(",", ":")) + "\n")
     (out / f"eval_{sub}.json").write_text(json.dumps(spec, indent=1) + "\n")
-    report = {"read": n_done if files else 0, "converted": len(goals), "left_out": dict(reasons.most_common()),
+    report = {"read": n_done if files else 0, "converted": len(goals),
+              "split_designs": n_split, "goals_from_split_designs": n_split_goals, "left_out": dict(reasons.most_common()),
               "examples": {k: examples[k] for k, _ in reasons.most_common() if examples[k]},
               "features": dict(sorted(lengths.items())), "units": args.units, "max_features": args.max_features}
     (out / f"report_{sub}.json").write_text(json.dumps(report, indent=1) + "\n")
