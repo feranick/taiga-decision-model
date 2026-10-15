@@ -201,6 +201,29 @@ First use (4.8M patch-0017 model, Quadro, 2026-10-15):
 
 IoU 0.974 hid a third of the casing's features; the check names exactly the step the verbose build showed. All 52 intents are measurable at the default grid (none "small" or "hidden").
 
+**1.2M against 7M on the same data** (4.8M states, patch 0017, `DAGGER_PERTURB=0.2`, 4 epochs, 1 seed each, Quadro, 2026-10-15):
+
+| | 1.2M | 7M |
+|---|---|---|
+| S 80 whole pump, plain / guided | 0.9970 / 0.9987 | 0.9803 / 0.9987 |
+| Casing intents, plain / guided | 49/52 / **52/52** | 34/52 / **52/52** |
+| `len6` clean | 0.98 | 1.00 |
+| Perturbed `len6` / `mixed_long` / `mixed_at_long` / `mixed_at` | **0.92 / 0.94 / 0.94** / 0.94 | 0.85 / 0.91 / 0.88 / 0.95 |
+
+The small model is as good on the S 80 and better under perturbation; guided, both build the whole pump exactly.
+
+**Data scaling, 7M** (patch 0017, `DAGGER_PERTURB=0.2`, 4 epochs, 1 seed each; 5060 Ti, Quadro, Spark2; 2026-10-15). Clean suites are 0.99–1.00 at every size:
+
+| 20 % random actions | 2.25M states | 4.8M | 9.7M | 1.2M model at 4.8M |
+|---|---|---|---|---|
+| `len6` | 0.77 | 0.85 | 0.86 | **0.92** |
+| `mixed_long` | 0.90 | 0.91 | **0.97** | 0.94 |
+| `mixed_at_long` | 0.91 | 0.88 | **0.95** | 0.94 |
+| `mixed_at` | 0.92 | 0.95 | **0.96** | 0.94 |
+| S 80 whole pump, plain | 0.986 | 0.980 | 0.997 | 0.997 |
+
+More data still helps the mixed suites from 4.8M to 9.7M (+0.03 to +0.07); `len6` levels off after 4.8M. The 1.2M model at 4.8M is already level with the 7M at 9.7M.
+
 ## Limits of the vocabulary found on the way
 
 - **Patterns only about the origin axes.** The suction flange's 8 bolt holes are on a circle around the port axis (z = 110), not the shaft axis, so they are written as 4 holes, each mirrored. A polar pattern about a feature's own axis would make it one hole and one pattern.
