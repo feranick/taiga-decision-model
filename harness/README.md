@@ -81,7 +81,16 @@ Each prints JSON. `-` reads the goals from stdin. Python callers can also `impor
 
 - `accepted`: which attempt passed the checker (`teacher`, `main:guided`, `main`, `fallback:guided`); none if no attempt did.
 - Each request gets its own folder under `TAIGA_OUT` with the goals, every attempt and its log, and `runtime_log.jsonl` (`../build/README_build_part.md`, production runtime).
-- Goals are normalized before building: an outline feature gets its size (`w`, `d`) and, on the top face, its centre (`x`, `y`) from the outline.
+- Goals are normalized before building into the form the models were trained on, without changing the part: an outline feature gets its size (`w`, `d`) and, on the top face, its centre (`x`, `y`) from the outline; an origin-plane feature (`off`) gets a positive normal and its centre on the plane (`validate_goals` warns when it moves a centre). A cross bore written with `ny: -1, off: 0` made the model lose its way (IoU 0, the teacher built it); with `ny: +1` the model built it exactly.
+
+## Tested (2026-10-15)
+
+From the Claude desktop app over ssh to mochi (0017 folder, the 1.2M and 7M `dscale5m` models in a test registry), `model_first=true`:
+
+| Request | Parts | Built by | IoU | Time |
+|---|---|---|---|---|
+| Bracket: plate, central boss with bore, four corner holes (two mirrors), vertical fillets | 1 | model | 1.0 | 6.2 s |
+| Motor flange (boss, bore, 6 bolt holes polar, chamfer), spacer (ring with cross bore), cover plate (outline with an arc, pocket, 4 holes linear, fillets) | 3 | model 2, teacher 1 (the spacer's cross bore with `ny: -1`; fixed by the normalization above) | 1.0 | 4–7 s each |
 
 ## Writing goals (summary; `goal_format` has the full list)
 
@@ -96,5 +105,5 @@ Each prints JSON. `-` reads the goals from stdin. Python callers can also `impor
 
 | File | Version |
 |---|---|
-| `taiga_harness.py` | 2026.10.15.1 |
+| `taiga_harness.py` | 2026.10.15.2 (origin-plane normals and centres normalized; `pts` left out of the format without patch 0019) |
 | `taiga_mcp.py` | 2026.10.15.1 |

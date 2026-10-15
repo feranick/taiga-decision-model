@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """taiga_harness.py — the interface other tools (LLM agents, scripts) use to build CAD parts
 with the Taiga models: the goal format, validation, a buildability check, builds, results.
-Version: 2026.10.15.1
+Version: 2026.10.15.2
 
 The same functions back the MCP server (taiga_mcp.py) and this command line; everything is
 JSON in, JSON out:
@@ -131,8 +131,9 @@ CONVENTIONS = [
     "Any other face: add the face's outward normal (nx, ny, nz; one of them +1 or -1, the others 0) and the "
     "centre (x, y, z); the coordinate along the normal comes from the face. With several faces of that normal, "
     "add at = [x, y, z], a point on the face you mean (e.g. the top of a boss).",
-    "Origin plane with an offset: add the plane normal (nx, ny, nz) and off (shift along that axis); the "
-    "feature is extruded both ways (cross bores, windows, internal cavities).",
+    "Origin plane with an offset: add the plane normal (nx, ny, nz; +1, the sign does not matter) and off (the "
+    "plane's position along that axis); the centre's coordinate along that axis equals off. The feature is "
+    "extruded both ways (cross bores, windows, internal cavities).",
     "Rectangles: w along the face's first in-plane axis (X, then Y, then Z), d along the second.",
     "Outlines: {'start': [u, v], 'segs': [['L', u, v], ['A', um, vm, u, v], ['S', [[u, v], ...]]]}: lines, arcs "
     "through a middle point, splines through points; closed (the last point is the start). On the top face "
@@ -170,10 +171,12 @@ def goal_format() -> dict:
             o.update({"nx": "face normal", "ny": "", "nz": "", "z": "centre z", "off": "origin-plane offset", "at": "point on the face"})
         if not pts:
             o.pop("pts", None)
+            what = what.replace("by points (pts), ", "by ")
         kinds[k] = {"what": what, "required": list(req), "optional": list(o),
                     "descriptions": {p: d for p, d in {**req, **o}.items() if d}}
+    conv = CONVENTIONS if pts else [c for c in CONVENTIONS if not c.startswith("Selection by points")]
     return {"format": "Taiga goal", "work": str(work()), "selection_by_points": pts,
-            "conventions": CONVENTIONS, "kinds": kinds, "example": EXAMPLE,
+            "conventions": conv, "kinds": kinds, "example": EXAMPLE,
             "limits": "Up to 64 features per goal; lengths of 1 mm to a few metres."}
 
 
@@ -282,18 +285,32 @@ def validate_goal(goal: dict) -> dict:
             warnings.append(f"{where}: no edge selection given; the top face's edge loop is used")
         if "off" in p and _unit(p, ("nx", "ny", "nz")) is None:
             errors.append(f"{where}: 'off' needs the plane normal nx, ny, nz")
+        elif "off" in p and _num(p["off"]) and k in SKETCHED_PLACEABLE and _unit(p, ("nx", "ny", "nz")):
+            axis = next(a for a in "xyz" if p.get("n" + a, 0) != 0)
+            if _num(p.get(axis)) and abs(p[axis] - p["off"]) > 1e-6:
+                warnings.append(f"{where}: the centre's {axis} ({p[axis]}) differs from off ({p['off']}); "
+                                f"the plane is at {axis} = off, so the centre is moved there")
     return {"ok": not errors, "errors": errors, "warnings": warnings}
 
 
 def normalize_goal(goal: dict) -> dict:
-    """Fill in what the builder derives anyway: an outline feature's size (w, d) and, on the
-    top face or an XY plane, its centre (x, y)."""
+    """Put a goal in the form the models were trained on, without changing the part:
+    - an outline feature gets its size (w, d) and, on the top face or an XY plane, its centre (x, y);
+    - an origin-plane feature (off) gets a positive normal (the builder uses only the axis; off is a
+      global position) and its centre on the plane. A negative normal there is outside the training
+      data: the model lost its way on such a cross bore (IoU 0) and built it exactly with +1."""
     sch = _schema()  # noqa: F841  (puts the work folder's code on the path)
     from freecad_s1.ext import profiles
 
     g = json.loads(json.dumps(goal))
     for f in g["features"]:
         p = f.get("params", {})
+        if "off" in p and _unit(p, ("nx", "ny", "nz")):
+            for a in "xyz":
+                if p.get("n" + a, 0) != 0:
+                    p["n" + a] = 1.0
+                    if f.get("kind") in SKETCHED_PLACEABLE and a in p:
+                        p[a] = p["off"]
         if "outline" in p and _closed(p["outline"]) is None:
             cu, cv, w, d = profiles.bbox(p["outline"])
             p.setdefault("w", round(w, 3))
