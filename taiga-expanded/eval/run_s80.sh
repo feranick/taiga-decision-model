@@ -1,6 +1,6 @@
 #!/bin/bash
 # run_s80.sh — S 80 evaluation of taiga-expanded: build the S 80 goals, score them against the reference CAD.
-# Version: 2026.10.13.1
+# Version: 2026.10.15.1
 #
 # Usage:  ./run_s80.sh check             check that every goal can be built (fast, nothing saved)
 #         ./run_s80.sh teacher           build every goal with the scripted teacher   -> $OUT/teacher
@@ -8,8 +8,11 @@
 #                                        (default RUNS: $WORK/taiga-s1/runs/data2)
 #         ./run_s80.sh eval              score every build folder in $OUT against the reference
 #         ./run_s80.sh all [RUNS]        check, teacher, models, eval
+#         ./run_s80.sh features [NAMES]  which goal intents each build realized (feature_check.py; builds
+#                                        the teacher prefixes once, into PREFIXES) -> $OUT/features.json
 # Env:    WORK  (default ~/taiga-expanded: the patched code, venv and FreeCAD paths from train_expanded.sh setup)
 #         OUT   (default $WORK/s80)
+#         PREFIXES teacher prefix builds for "features" (default $WORK/s80_prefixes, shared by every OUT)
 #         REF   reference STEP folder (default ~/taiga/taiga-s1/parts/pump_s80, as written by
 #               build/pump_s80_reference_CAD/build_pump_s80.sh); generated if missing, with REF_PY
 #         BUILD_ARGS extra options for taiga_build_part.py in "models", e.g. "--no-loop-guard"
@@ -102,12 +105,27 @@ stage_eval() {
   done
 }
 
+stage_features() {
+  local pre=${PREFIXES:-$WORK/s80_prefixes} names=("$@")
+  if [[ ! -d $pre ]] || ! compgen -G "$pre/*.prefixes" >/dev/null; then
+    log "teacher prefix builds -> $pre (once)"
+    "$PY" "$BUILD" --goals "$GOALS" --teacher --prefixes --quiet --no-step --out "$pre" 2>&1 | tee "$pre.log"
+  fi
+  local built=()
+  for d in "$OUT"/seed*/; do [[ -d $d ]] && built+=("$(basename "$d")=${d%/}"); done
+  (( ${#built[@]} > 0 )) || die "no model builds in $OUT"
+  log "features: ${built[*]}"
+  "$FREECAD_PYTHON" "$HERE/feature_check.py" --goals "$GOALS" --prefixes "$pre" --built "${built[@]}" \
+    ${names[@]:+--names "${names[@]}"} --out "$OUT/features.json" 2>&1 | tee "$OUT/features.log"
+}
+
 stage=${1:-}; shift || true
 case $stage in
   check) stage_check ;;
   teacher) stage_teacher ;;
   models) stage_models "$@" ;;
   eval) stage_eval ;;
+  features) stage_features "$@" ;;
   all) stage_check; stage_teacher; stage_models "$@"; stage_eval ;;
-  *) sed -n '3,20p' "$0"; exit 1 ;;
+  *) sed -n '3,21p' "$0"; exit 1 ;;
 esac

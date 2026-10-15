@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.15.1
+Version: 2026.10.15.2
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -54,6 +54,10 @@ flange went onto Plane:XY); this writes them the way those models learned.
 A FreeCAD step that never returns (OpenCASCADE stuck in one operation: an S 80 casing build sat
 6 hours on one step, 2026-10-13) is stopped after --step-timeout seconds (default 900): the
 worker is killed, the part counts as CRASH and the remaining goals are built.
+
+--prefixes (with --teacher): also save the part after each goal intent is finished, as
+<out>/<name>.prefixes/p<k>.FCStd (k intents done). ../taiga-expanded/eval/feature_check.py
+uses them to say which intents a model build realized.
 
 --guided-progress: the runtime tells the model which goal intent is next (the teacher's
 progress tracking, which compares the document with the goal), instead of the model's own
@@ -334,6 +338,8 @@ def main() -> None:
     ap.add_argument("--step-timeout", type=float, default=900,
                     help="seconds one FreeCAD request (step, check, save; 3x for the reset, which builds the target) "
                          "may take before the worker is killed and the part counts as CRASH (default 900; 0: no limit)")
+    ap.add_argument("--prefixes", action="store_true",
+                    help="with --teacher: save the part after each finished goal intent (for feature_check.py)")
     ap.add_argument("--guided-progress", action="store_true",
                     help="the runtime gives the model the next goal intent (teacher's progress tracking); "
                          "the model still picks every command (see above)")
@@ -404,6 +410,10 @@ def main() -> None:
                 raw = r["state"]
                 state, actions, expert = State.from_json(raw), r["actions"], r["expert"]
                 prog = r.get("progress", -1)
+                pre_dir = out / f"{name}.prefixes" if (args.prefixes and args.teacher) else None
+                if pre_dir is not None:
+                    pre_dir.mkdir(parents=True, exist_ok=True)
+                saved_prog = prog
                 steps = agree = guarded = 0
                 tried: dict[str, set[str]] = {}  # loop guard: actions already taken from each state
                 went: dict[tuple[str, str], tuple[str, bool]] = {}  # (state, action) -> (next state, error)
@@ -468,6 +478,12 @@ def main() -> None:
                     raw = s["state"]
                     state, actions, expert = State.from_json(raw), s["actions"], s["expert"]
                     prog = s.get("progress", -1)
+                    if pre_dir is not None and prog > saved_prog >= 0:  # an intent was just finished
+                        call_limited(env, {"op": "save", "fcstd": str(pre_dir / f"p{prog:03d}.FCStd")}, args.step_timeout)
+                        saved_prog = prog
+                if pre_dir is not None and done and saved_prog < len(goal.features):  # the last intent, if
+                    call_limited(env, {"op": "save", "fcstd": str(pre_dir / f"p{len(goal.features):03d}.FCStd")},
+                                 args.step_timeout)  # it finished with the step that ended the episode
                 t_built = time.perf_counter()
                 sc = call_limited(env, {"op": "score"}, args.step_timeout)
                 t_score = time.perf_counter() - t_built

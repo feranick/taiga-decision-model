@@ -16,6 +16,7 @@ Two questions, answered separately:
 | `s80_eval.json` | Which goal(s) build each reference part, and where they go in pump coordinates (generated) |
 | `eval_s80.py` | Scores build folders against the reference (FreeCAD's Python) |
 | `voxel_iou.py` | IoU on a voxel grid (numpy), used by `eval_s80.py` |
+| `feature_check.py` | Which goal intents each build realized (a feature-level check next to IoU) |
 | `run_s80.sh` | Runs everything: check, teacher builds, model builds, scoring |
 
 ## Run
@@ -187,6 +188,8 @@ The default-budget models (5060 Ti, 1× data, 4 epochs, 2026-10-10) give the sam
 
 **Patch-0017 model, 4.8M states** (Quadro, 4 epochs, 1 seed, 2026-10-15): casing 0.974, every other part exact. The verbose build skips the suction port's second mirror (step 187, after 5 mirrors and 17 pockets), where the 0016 pilot had mirrored once too often after the first pair. More rim-pair training did not fix it: the model's own "already built?" pointer miscounts runs of near-identical intents deep in a long goal. `taiga_build_part.py --guided-progress` (2026.10.15.1) lets the runtime supply the active intent from the teacher's progress tracking, for complete goals; the model still picks every command.
 
+**Feature-level check** (`feature_check.py`, `./run_s80.sh features`, 2026-10-15). IoU hides missing features: the 0.97 casing lacks about 15 intents. The teacher builds each goal once more and saves the part after every finished intent (`taiga_build_part.py --teacher --prefixes`); each intent's contribution to the final part is the region it added or removed that survives in the target, and a build realizes the intent if it agrees with the target on at least 90 % of that region (voxels, any build order). The result names the missing intents per build, e.g. `intents 37/52 … missing 35:mirror, 36:boss_cyl, …`, plus material outside the target ("excess"). Intents too small for the grid (e.g. 0.5 mm chamfers) are reported as "small", ones cut away later as "hidden".
+
 ## Limits of the vocabulary found on the way
 
 - **Patterns only about the origin axes.** The suction flange's 8 bolt holes are on a circle around the port axis (z = 110), not the shaft axis, so they are written as 4 holes, each mirrored. A polar pattern about a feature's own axis would make it one hole and one pattern.
@@ -203,4 +206,5 @@ The default-budget models (5060 Ti, 1× data, 4 epochs, 2026-10-10) give the sam
 | `make_s80_goals.py` | 2026.10.05.2 |
 | `eval_s80.py` | 2026.10.14.1 |
 | `voxel_iou.py` | 2026.10.06.1 |
-| `run_s80.sh` | 2026.10.13.1 |
+| `run_s80.sh` | 2026.10.15.1 |
+| `feature_check.py` | 2026.10.15.1 |
