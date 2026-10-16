@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """convert_deepcad.py — DeepCAD build histories (sketch + extrude) as Taiga-S1 goals.
-Version: 2026.10.15.1
+Version: 2026.10.16.1
 
 Reads DeepCAD's JSON files (data/cad_json/<group>/<id>.json, the Fusion 360 Gallery
 reconstruction format) and writes, into --out:
@@ -29,7 +29,8 @@ leaves the model out if no order works or a cut empties or splits the part.
 
 Several solids (with --refs): a design whose original ends as several separate solids (several
 parts in one document, 8 % of DeepCAD's designs) becomes one goal per solid, named
-<name>_s1, <name>_s2, ... (largest first). Each keeps the extrudes that make its solid (joins
+<name>_s1, <name>_s2, ... (largest first). Only designs that fail as one part because of several
+solids are split; every other design converts exactly as before. Each keeps the extrudes that make its solid (joins
 inside it, cuts that touch its material), in its own frame (its first extrude), and its
 reference is checked against that solid of the original (--no-split-solids: leave them out).
 
@@ -772,70 +773,91 @@ def main() -> None:
     examples = collections.defaultdict(list)  # reason -> first few model ids (to look at)
     files = model_files(data, Path(args.split).expanduser() if args.split else None, args.subset)
     n_split = n_split_goals = 0
+    # crash guard: OpenCASCADE can crash the process on a degenerate design (no Python exception).
+    # The design being converted is noted in converting.txt; a rerun skips it (crashed.txt), and
+    # run_deepcad.sh restarts the converter after such a crash.
+    guard, crashed_file = out / "converting.txt", out / "crashed.txt"
+    if guard.is_file():
+        with crashed_file.open("a") as fh:
+            fh.write(guard.read_text().strip() + "\n")
+        guard.unlink()
+    crashed = set(crashed_file.read_text().split()) if crashed_file.is_file() else set()
+
+    def one(name, exs, v_solid, split):
+        """Goal and reference of one part (raises Skip)."""
+        groups, (R, t) = convert(exs, unit)
+        if args.refs:
+            groups = order_for_partdesign(groups)
+        goal = make_goal(groups, args.max_features)
+        ref = None
+        if args.refs:
+            ref = reference_shape(exs, R, t, unit)
+            check_reference(ref)
+            if split and abs(_volume(ref) - v_solid) > 1e-6 * v_solid:
+                raise Skip("split: the part's extrudes do not rebuild its solid")
+        return goal, ref
+
+    def keep(name, goal, ref, split):
+        nonlocal n_split_goals
+        key = hashlib.sha1(json.dumps(goal["features"], sort_keys=True).encode()).hexdigest()
+        if key in seen:
+            raise Skip("duplicate")
+        seen.add(key)
+        if ref is not None:
+            write_step(ref, out / "refs" / f"{name}.step")
+        goals[name] = goal
+        n_split_goals += split
+        n = len(goal["features"])
+        lengths["1-5" if n <= 5 else "6-10" if n <= 10 else "11-20" if n <= 20 else "21+"] += 1
+        spec["parts"].append({"part": name, "builds": [{"goal": name, "rotations": [], "translation": [0, 0, 0]}]})
+
+    def note(why, mid):
+        reasons[why] += 1
+        if len(examples[why]) < 5:
+            examples[why].append(mid)
+
+    multi_solid = ("a join stays apart", "original model has several solids", "base is not one solid")
+    n_done = 0
     for n_done, (mid, path) in enumerate(files, 1):
         base_name = "dc_" + mid.replace("/", "_")
+        if mid in crashed:
+            note("crashed the converter before (skipped)", mid)
+            continue
+        guard.write_text(mid + "\n")
         try:
             extrudes = read_model(path)
-            pieces = [("", extrudes, None)]
-            if args.refs and not args.no_split_solids:
-                pieces = split_solids(extrudes, unit)
+            try:
+                goal, ref = one(base_name, extrudes, None, False)
+                keep(base_name, goal, ref, False)
+                continue
+            except Skip as exc:
+                if not (args.refs and not args.no_split_solids and str(exc).startswith(multi_solid)):
+                    raise
+                whole_why = str(exc)
+            pieces = split_solids(extrudes, unit)
+            if len(pieces) < 2:
+                raise Skip(whole_why)
+            n_split += 1
+            for suffix, exs, v_solid in pieces:
+                try:
+                    goal, ref = one(base_name + suffix, exs, v_solid, True)
+                    keep(base_name + suffix, goal, ref, True)
+                except Skip as exc:
+                    note("split part: " + str(exc), mid + suffix)
+                except Exception as exc:  # noqa: BLE001  (OCC failures)
+                    note(f"split part: reference build failed ({type(exc).__name__})", mid + suffix)
         except Skip as exc:
-            reasons[str(exc)] += 1
-            if len(examples[str(exc)]) < 5:
-                examples[str(exc)].append(mid)
-            continue
+            note(str(exc), mid)
         except (KeyError, ValueError, TypeError, IndexError, FileNotFoundError, json.JSONDecodeError) as exc:
             reasons[f"unreadable ({type(exc).__name__})"] += 1
-            continue
         except Exception as exc:  # noqa: BLE001  (OCC failures while building the reference)
-            why = f"reference build failed ({type(exc).__name__})"
-            reasons[why] += 1
-            if len(examples[why]) < 5:
-                examples[why].append(mid)
-            continue
-        split = len(pieces) > 1
-        n_split += split
-        for suffix, exs, v_solid in pieces:
-            name = base_name + suffix
-            try:
-                groups, (R, t) = convert(exs, unit)
-                if args.refs:
-                    groups = order_for_partdesign(groups)
-                goal = make_goal(groups, args.max_features)
-                key = hashlib.sha1(json.dumps(goal["features"], sort_keys=True).encode()).hexdigest()
-                if key in seen:
-                    raise Skip("duplicate")
-                seen.add(key)
-                if args.refs:
-                    ref = reference_shape(exs, R, t, unit)
-                    check_reference(ref)
-                    if v_solid is not None and split and abs(_volume(ref) - v_solid) > 1e-6 * v_solid:
-                        raise Skip("split: the part's extrudes do not rebuild its solid")
-                    write_step(ref, out / "refs" / f"{name}.step")
-            except Skip as exc:
-                why = ("split part: " if split else "") + str(exc)
-                reasons[why] += 1
-                if len(examples[why]) < 5:
-                    examples[why].append(mid + suffix)
-                continue
-            except (KeyError, ValueError, TypeError, IndexError) as exc:
-                reasons[f"unreadable ({type(exc).__name__})"] += 1
-                continue
-            except Exception as exc:  # noqa: BLE001
-                why = f"reference build failed ({type(exc).__name__})"
-                reasons[why] += 1
-                if len(examples[why]) < 5:
-                    examples[why].append(mid + suffix)
-                continue
-            goals[name] = goal
-            n_split_goals += split
-            n = len(goal["features"])
-            lengths["1-5" if n <= 5 else "6-10" if n <= 10 else "11-20" if n <= 20 else "21+"] += 1
-            spec["parts"].append({"part": name, "builds": [{"goal": name, "rotations": [], "translation": [0, 0, 0]}]})
+            note(f"reference build failed ({type(exc).__name__})", mid)
         if args.limit and len(goals) >= args.limit:
             break
         if n_done % 1000 == 0:
             print(f"  {n_done} read, {len(goals)} converted", flush=True)
+    if guard.is_file():
+        guard.unlink()
     sub = args.subset if args.split else "all"
     (out / f"goals_{sub}.json").write_text(json.dumps(goals, separators=(",", ":")) + "\n")
     (out / f"eval_{sub}.json").write_text(json.dumps(spec, indent=1) + "\n")

@@ -151,7 +151,7 @@ As training goals (patch 0011, `TAIGA_GOALS_FILE`) they fall into level 1 (54,77
 
 | File | Version |
 |---|---|
-| `convert_deepcad.py` | 2026.10.15.1 (designs with several solids: one goal per solid) |
-| `run_deepcad.sh` | 2026.10.14.2 |
+| `convert_deepcad.py` | 2026.10.16.1 (designs with several solids: one goal per solid, tried only when the whole design fails for that reason; crash guard) |
+| `run_deepcad.sh` | 2026.10.16.1 (`convert` restarts the converter after an OpenCASCADE crash, skipping that design: `crashed.txt`) |
 | `survey_whucad.py` | 2026.10.15.2 |
 | `diagnose_goals.py` | 2026.10.06.2 |

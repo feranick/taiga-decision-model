@@ -1,6 +1,6 @@
 #!/bin/bash
 # run_deepcad.sh — DeepCAD build histories as Taiga goals: download, convert, verify, score models.
-# Version: 2026.10.14.2
+# Version: 2026.10.16.1
 #
 # Usage:  ./run_deepcad.sh download          DeepCAD's data (cad_json + split) into $DATA
 #         ./run_deepcad.sh convert           JSON -> goals + reference STEP files        -> $OUT
@@ -82,9 +82,22 @@ stage_convert() {
   find_data
   [[ -n $CAD_JSON && -n $SPLIT ]] || die "no DeepCAD data in $DATA (run: $0 download)"
   log "convert $SUBSET (limit $LIMIT, at most $MAX_FEATURES features) -> $OUT"
-  "$REF_PY" "$HERE/convert_deepcad.py" --data "$CAD_JSON" --split "$SPLIT" \
-    --subset "$SUBSET" --out "$OUT" --refs --max-features "$MAX_FEATURES" --limit "$LIMIT" 2>&1 \
-    | clean | tee "$OUT/convert.log"
+  mkdir -p "$OUT"
+  rm -f "$OUT/crashed.txt" "$OUT/converting.txt" "$OUT/report_$SUBSET.json"
+  # OpenCASCADE can crash the converter on a degenerate design: it notes the design it works on,
+  # and a rerun skips the designs that crashed it (crashed.txt); up to 50 restarts
+  local tries=0
+  : > "$OUT/convert.log"
+  while (( tries < 50 )); do
+    "$REF_PY" "$HERE/convert_deepcad.py" --data "$CAD_JSON" --split "$SPLIT" \
+      --subset "$SUBSET" --out "$OUT" --refs --max-features "$MAX_FEATURES" --limit "$LIMIT" 2>&1 \
+      | clean | tee -a "$OUT/convert.log"
+    [[ -f $OUT/report_$SUBSET.json && ! -f $OUT/converting.txt ]] && break
+    tries=$((tries + 1))
+    log "the converter stopped on $(cat "$OUT/converting.txt" 2>/dev/null || echo '?'); restart $tries (it skips that design)"
+  done
+  [[ -f $OUT/crashed.txt ]] && log "designs that crashed the converter: $(wc -l < "$OUT/crashed.txt") (in crashed.txt)"
+  [[ -f $OUT/report_$SUBSET.json ]] || die "the converter did not finish"
 }
 
 stage_teacher() {
