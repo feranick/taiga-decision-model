@@ -235,7 +235,7 @@ The spurious Undo after a correct but unfamiliar step is a training issue that t
 | # | Item | Where | Status |
 |---|---|---|---|
 | 1 | **v1:** finish the 1.2M production run on ~10M states (3 seeds), aggregate, S 80 plain and guided, feature check | Spark2 (`~/prod.sh`) | seed 2 done, seed 12 training (2026-10-15 evening) |
-| 2 | **v1 on real designs:** DeepCAD test of a v1 seed (and the 1.2M dc1 model for comparison) | carbonio (`v1dc`) | dc1 done: 1.000 on every bucket and seed (1 build over the time limit); v1 seed 2 next, on carbonio |
+| 2 | **v1 on real designs:** DeepCAD test of a v1 seed (and the 1.2M dc1 model for comparison) | carbonio (`v1dc`) | **done:** dc1 1.000 (3 seeds); v1 seed 2 **1.000** on every bucket (6,762 designs) |
 | 3 | **Register v1:** `build/registry.json` with v1 as `small-v1` and the 7M (Spark2 scaling run) as `long-v1` fallback | building machine | after 1–2 |
 | 4 | **Harness end to end:** install `mcp` in the work folder's venv, connect an MCP client (over ssh from the Mac, or HTTP), let it design and build a simple bracket from a text request; then a multi-part request | mochi or Spark2, Mac | done with the `dscale5m` models (`../harness/README.md`, Tested): 4 of 4 parts built at IoU 1.0, 3 by the model; harness 2026.10.15.2 fixes the one fallback. Repeat with v1 after 3 |
 | 5 | **Patch 0019 supplement data:** `points` goals only, ~1.5M states (`TAIGA_TRAIN_ONLY=points`, `DATA_SCALE=3`) | mochi (`taiga-expanded-0019`) | done: 1,731,876 states in 36 shards (`gen_train_seed201_x3_ext1_kh_onlypoints`); 0019 setup on mochi 116 passed |

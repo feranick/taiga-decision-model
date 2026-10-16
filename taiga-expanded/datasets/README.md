@@ -133,6 +133,8 @@ From 0.956 to 1.000: with DeepCAD training goals the models build all but one or
 
 **1.2M model, `dc1`** (patch 0014, `mcb119a`, DeepCAD training goals at 25 %, 3 seeds; Spark1, 2026-10-15): **1.000 on every bucket and every seed** (1–5, 6–10, 11–20; one build of the 20,286 hit the scoring time limit). The small model generalizes to real designs as well as the 7M, which settles the model size for real parts too (`../../docs/README_production_plan.md`, item 10).
 
+**v1, the production model** (1.2M, 9.7M states, DeepCAD goals 25 %, `DAGGER_PERTURB=0.2`, seed 2; carbonio, 2026-10-16): **1.000 on every bucket** (all 6,762 designs, no scoring timeouts). The larger, perturbed training lost nothing on real designs.
+
 **Train split** (Spark2, `SUBSET=train LIMIT=0`, FreeCAD 1.1.3, patches 0001–0009, 2026-10-08 to 2026-10-11): 117,855 designs converted, 117,550 built by the teacher, **116,688 match their original** (IoU ≥ 0.99; 99.0 % of the converted designs). Verified goals by number of features:
 
 | Features | 1 | 2 | 3 | 4 | 5 | 6–10 | 11–15 | 16–21 |
