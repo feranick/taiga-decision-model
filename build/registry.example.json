@@ -9,7 +9,7 @@
       "freecad": "1.1.3",
       "patches": "0001-0017 (taiga-expanded)",
       "trained_on": "9.7M states, DeepCAD goals 25 %, TAIGA_KEEP_HELDOUT=1, DAGGER_PERTURB=0.2, 4 epochs",
-      "measured": "fill in from the aggregate, the S 80 (plain and guided, feature check) and the DeepCAD test"
+      "measured": "v1 seed 2 (2026-10-16): clean suites 1.00 except comp2 0.93; perturbed len6 0.96; S 80 guided whole pump 0.9983, casing 51/52 intents, core and the ten other parts exact; DeepCAD test 1.000 (6,762 designs)"
     },
     {
       "name": "long-v1",

@@ -224,6 +224,31 @@ The small model is as good on the S 80 and better under perturbation; guided, bo
 
 More data still helps the mixed suites from 4.8M to 9.7M (+0.03 to +0.07); `len6` levels off after 4.8M. The 1.2M model at 4.8M is already level with the 7M at 9.7M.
 
+**v1, the production candidate** (1.2M, 9.7M states, patch 0017, DeepCAD goals 25 %, `TAIGA_KEEP_HELDOUT=1`, `DAGGER_PERTURB=0.2`, 4 epochs, 3 seeds; Spark2, 2026-10-16; `~/agg_prod_small10m.txt`):
+
+| | seed 2 | seed 12 | seed 22 |
+|---|---|---|---|
+| Clean suites below 1.00 | `comp2` 0.93 | `comp3` 0.99, `len5` 0.96, `len6` 0.99 | `len4` 0.98, `len5` 0.99, `len6` 0.94 (0.75 without detours) |
+| Perturbed `len6` / `mixed_long` / `mixed_at_long` | 0.96 / 0.91 / 0.97 | **0.97 / 0.94 / 0.98** | 0.90 / 0.92 / 0.96 |
+| S 80 whole pump, plain / guided | 0.9724 / 0.9983 | 0.9886 / 0.9983 | 0.9987 / 0.9987 |
+| Casing intents, plain / guided | 48/52 / 51/52 | 47/52 / 51/52 | **52/52 / 52/52** |
+| Casing core, other ten parts | exact | exact | exact |
+| DeepCAD test (6,762 designs) | **1.000** | – | – |
+
+Every seed: the ten S 80 parts other than the casing exact, the casing core 24/24, guided whole pump 0.998–0.999, perturbed `len6` 0.90–0.97 (the 1.2M at 4.8M states: 0.92; the 7M at 9.7M: 0.86). Against the proposed gates (`../../docs/README_production_plan.md`, item 11): perturbed `len6` ≥ 0.85, DeepCAD, S 80 ten parts and core pass; clean ≥ 0.99 on every suite up to `len6` passes on the mean only for 26 of 29 suites (`comp2`, `len5`, `len6` at 0.98), each time from one seed. Registered as `small-v1`: seed 2 (the one tested on DeepCAD).
+
+**v2** (the same with patch 0019: v1's 9.7M states plus 1.7M `points` states, 11.4M; 3 seeds; Spark1, 2026-10-16; `~/agg_v2.txt`): the new `points` suite (fillets, chamfers, shells on edges and faces named by points) is **1.00 clean on every seed** (perturbed 0.99). Elsewhere v2 is a little weaker than v1 on the clean suites and a little stronger perturbed:
+
+| Clean, mean of 3 seeds | v1 | v2 |
+|---|---|---|
+| `iid-L3` / `len-L4` / `len2-L5` | 1.00 / 1.00 / 1.00 | 0.97 / 0.96 / 0.94 |
+| `len6-L9` / `mixed_long-L4` | 0.98 / 1.00 | 0.98 / 0.94 |
+| `comp2-L3` | 0.98 | 0.67 (seed 12: **0.00**) |
+| Perturbed `len6` / `mixed_long` | 0.94 / 0.92 | **0.95 / 0.94** |
+| S 80 whole pump, plain | 0.9724 / 0.9886 / 0.9987 | 0.9983 / 0.9987 / 0.9337 |
+
+Seed 12 fails one held-out composition completely (`comp2` 0.00 clean, 0.34 perturbed) and is the weakest elsewhere (`iid-L3` 0.95, `len2` 0.88); seed 2 is level with v1 seed 2 (clean ≥ 0.97 everywhere, `comp2` 1.00, `points` 1.00; perturbed `len6` 0.95, `mixed_long` 0.96). v2 seed 2 is the candidate to replace v1, after its S 80 guided run and the DeepCAD test.
+
 ## Limits of the vocabulary found on the way
 
 - **Patterns only about the origin axes.** The suction flange's 8 bolt holes are on a circle around the port axis (z = 110), not the shaft axis, so they are written as 4 holes, each mirrored. A polar pattern about a feature's own axis would make it one hole and one pattern.

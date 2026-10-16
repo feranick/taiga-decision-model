@@ -234,13 +234,13 @@ The spurious Undo after a correct but unfamiliar step is a training issue that t
 
 | # | Item | Where | Status |
 |---|---|---|---|
-| 1 | **v1:** finish the 1.2M production run on ~10M states (3 seeds), aggregate, S 80 plain and guided, feature check | Spark2 (`~/prod.sh`) | seed 2 done, seed 12 training (2026-10-15 evening) |
+| 1 | **v1:** finish the 1.2M production run on ~10M states (3 seeds), aggregate, S 80 plain and guided, feature check | Spark2 (`~/prod.sh`) | **done** (2026-10-16): clean 1.00 on 26 of 29 suites (mean), perturbed `len6` 0.94, S 80 guided 0.998–0.999 with the core and ten parts exact on every seed (`../taiga-expanded/eval/README.md`) |
 | 2 | **v1 on real designs:** DeepCAD test of a v1 seed (and the 1.2M dc1 model for comparison) | carbonio (`v1dc`) | **done:** dc1 1.000 (3 seeds); v1 seed 2 **1.000** on every bucket (6,762 designs) |
-| 3 | **Register v1:** `build/registry.json` with v1 as `small-v1` and the 7M (Spark2 scaling run) as `long-v1` fallback | building machine | after 1–2 |
+| 3 | **Register v1:** `build/registry.json` with v1 as `small-v1` and the 7M (Spark2 scaling run) as `long-v1` fallback | building machine | next: seed 2 as `small-v1` (DeepCAD 1.000); `long-v1` = the 7M `meebb25_dscale10m` seed 2 |
 | 4 | **Harness end to end:** install `mcp` in the work folder's venv, connect an MCP client (over ssh from the Mac, or HTTP), let it design and build a simple bracket from a text request; then a multi-part request | mochi or Spark2, Mac | done with the `dscale5m` models (`../harness/README.md`, Tested): 4 of 4 parts built at IoU 1.0, 3 by the model; harness 2026.10.15.2 fixes the one fallback. Repeat with v1 after 3 |
 | 5 | **Patch 0019 supplement data:** `points` goals only, ~1.5M states (`TAIGA_TRAIN_ONLY=points`, `DATA_SCALE=3`) | mochi (`taiga-expanded-0019`) | done: 1,731,876 states in 36 shards (`gen_train_seed201_x3_ext1_kh_onlypoints`); 0019 setup on mochi 116 passed |
 | 6 | **v2:** 0019 setup on Spark1; pool the 8× shards of seeds 101 and 103 with the supplement (~11M states); train v2 like v1 (3 seeds); `points` suite, S 80, DeepCAD test; replace v1 in the registry if it passes the gates | Spark1 (`~/v2.sh`, pool `~/pool_v2`, run `…_mcb119a_dpool_v2`) | training: seed 2 in its last supervised epoch (2026-10-15 evening) |
-| 7 | **Converter:** split DeepCAD designs with several separate solids into one goal per solid (~8 % more real designs for training and test) | `taiga-expanded/datasets/convert_deepcad.py` | written (`convert_deepcad.py` 2026.10.15.1, tested on DeepCAD-format designs); test split on mochi next, then the train split for the next data |
+| 7 | **Converter:** split DeepCAD designs with several separate solids into one goal per solid (~8 % more real designs for training and test) | `taiga-expanded/datasets/convert_deepcad.py` | **test split done** (2026-10-16): 7,742 verified goals (before 6,762, +14.5 %); train split next, for the data after v2 |
 | 8 | **Next vocabulary:** sketches on angled planes, then draft (4.4 ranking) | patch series | after 6 |
 | 9 | **Pass criteria:** fix them per test set and length bucket (item 11 above) with the v1 and v2 results | this plan | after 6 |
 | 10 | **Phase 6:** goals from shapes (section 9) | | later |
