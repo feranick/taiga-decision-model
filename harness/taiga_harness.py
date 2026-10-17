@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """taiga_harness.py — the interface other tools (LLM agents, scripts) use to build CAD parts
 with the Taiga models: the goal format, validation, a buildability check, builds, results.
-Version: 2026.10.15.2
+Version: 2026.10.17.1
 
 The same functions back the MCP server (taiga_mcp.py) and this command line; everything is
 JSON in, JSON out:
@@ -70,6 +70,19 @@ def _has_points() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _has_angled() -> bool:
+    """The work folder has patch 0020 (sketches on planes at any angle)."""
+    try:
+        _schema()
+        import freecad_s1.ext.angled  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+ANGLED_KINDS = ("boss_cyl", "boss_box", "hole", "pocket_rect", "profile_boss", "profile_pocket")
 
 
 def fc_env() -> dict:
@@ -145,6 +158,11 @@ CONVENTIONS = [
     "Fillets, chamfers and shells must fit the material around them; holes and pockets need material around them.",
     "Selection by points (pts): a point on each edge (its midpoint is safest) or on each face; the nearest edge or "
     "face is used. Avoid points where several edges meet.",
+    "Angled planes (patch 0020): a sketch plane at any angle through the origin x, y, z (the feature's "
+    "centre), with its unit normal nx, ny, nz (any direction) and its in-plane x direction ux, uy, uz; the "
+    "profile is drawn in the plane's own frame (circles and rectangles centred on the origin, w along u, d "
+    "along v = n x u; outlines in (u, v) about the origin) and extruded both ways, h or depth the total, "
+    "holes and pockets without depth through all both ways. Only bosses, holes and pockets.",
     "One goal is one solid part; several separate solids are several goals.",
 ]
 
@@ -162,6 +180,7 @@ def goal_format() -> dict:
     sch = _schema()
     known = set(sch.GOAL_KINDS)
     pts = _has_points()
+    ang = _has_angled()
     kinds = {}
     for k, (req, opt, what) in KINDS.items():
         if k not in known:
@@ -172,10 +191,13 @@ def goal_format() -> dict:
         if not pts:
             o.pop("pts", None)
             what = what.replace("by points (pts), ", "by ")
+        if ang and k in ANGLED_KINDS:
+            o.update({"ux": "angled plane: in-plane x direction (with nx, ny, nz any unit normal)", "uy": "", "uz": ""})
         kinds[k] = {"what": what, "required": list(req), "optional": list(o),
                     "descriptions": {p: d for p, d in {**req, **o}.items() if d}}
-    conv = CONVENTIONS if pts else [c for c in CONVENTIONS if not c.startswith("Selection by points")]
-    return {"format": "Taiga goal", "work": str(work()), "selection_by_points": pts,
+    conv = [c for c in CONVENTIONS if (pts or not c.startswith("Selection by points"))
+            and (ang or not c.startswith("Angled planes"))]
+    return {"format": "Taiga goal", "work": str(work()), "selection_by_points": pts, "angled_planes": ang,
             "conventions": conv, "kinds": kinds, "example": EXAMPLE,
             "limits": "Up to 64 features per goal; lengths of 1 mm to a few metres."}
 
@@ -264,7 +286,23 @@ def validate_goal(goal: dict) -> dict:
             bad = _closed(p["outline"])
             if bad:
                 errors.append(f"{where}: {bad}")
-        if _unit(p, ("nx", "ny", "nz")) is False:
+        angled = all(key in p for key in ("ux", "uy", "uz"))
+        if angled:
+            if not _has_angled():
+                errors.append(f"{where}: angled planes (ux, uy, uz) need a work folder with patch 0020 (TAIGA_WORK)")
+            elif k not in ANGLED_KINDS:
+                errors.append(f"{where}: only {', '.join(ANGLED_KINDS)} can be on an angled plane")
+            nv = [p.get(key, 0) for key in ("nx", "ny", "nz")]
+            uv = [p.get(key, 0) for key in ("ux", "uy", "uz")]
+            if not all(_num(x) for x in nv + uv) or sum(x * x for x in nv) < 1e-12:
+                errors.append(f"{where}: an angled plane needs a non-zero normal nx, ny, nz and numbers ux, uy, uz")
+            else:
+                nn = sum(x * x for x in nv) ** 0.5
+                if abs(sum(a * b for a, b in zip(nv, uv))) / nn > 0.999 * max(sum(x * x for x in uv) ** 0.5, 1e-12):
+                    errors.append(f"{where}: ux, uy, uz must not be parallel to the normal")
+            if "off" in p:
+                errors.append(f"{where}: an angled plane takes its position from x, y, z, not 'off'")
+        elif _unit(p, ("nx", "ny", "nz")) is False:
             errors.append(f"{where}: nx, ny, nz must be one of +-1 and the others 0")
         if _unit(p, ("ax", "ay", "az")) is False:
             errors.append(f"{where}: ax, ay, az must be one of +-1 and the others 0")

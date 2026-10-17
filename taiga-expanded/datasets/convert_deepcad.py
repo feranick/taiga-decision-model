@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """convert_deepcad.py — DeepCAD build histories (sketch + extrude) as Taiga-S1 goals.
-Version: 2026.10.16.1
+Version: 2026.10.17.1
 
 Reads DeepCAD's JSON files (data/cad_json/<group>/<id>.json, the Fusion 360 Gallery
 reconstruction format) and writes, into --out:
@@ -13,7 +13,9 @@ reconstruction format) and writes, into --out:
 
 Rules (see README.md in this folder):
   frame     the first sketch becomes the XY plane, its extrude starts at z = 0 and goes up
-  planes    every other sketch must then be normal to X, Y or Z (else the model is left out)
+  planes    other sketches normal to X, Y or Z become datum-plane features; sketches at any other
+            angle (with --angled, default on) features on an angled plane (patch 0020: origin,
+            normal, in-plane u; outline in the sketch's own coordinates)
   outlines  loops of lines, arcs and circles -> Taiga outlines (circles as two arcs)
   extrudes  first: profile_base (outer loop, height); inner loops: pockets through the base.
             later: the exact equivalent on a datum plane, extruded both ways: one side of d
@@ -285,6 +287,40 @@ def feature(kind: str, o: dict, k: int, off: float, size: float) -> dict:
     return {"kind": kind, "params": p}
 
 
+def outline_local(curves, unit: float) -> dict:
+    """Outline in the sketch's own (u, v) coordinates (mm), for a feature on an angled plane."""
+    def uv(p2):
+        return [r3(p2[0] * unit), r3(p2[1] * unit)]
+
+    if curves[0][0] == "C":
+        _, c, rad = curves[0]
+        cu, cv = uv(c)
+        r = rad * unit
+        return {"start": [r3(cu + r), cv],
+                "segs": [["A", cu, r3(cv + r), r3(cu - r), cv], ["A", cu, r3(cv - r), r3(cu + r), cv]]}
+    start = uv(curves[0][1])
+    segs = [["L", *uv(c[2])] if c[0] == "L" else ["A", *uv(c[2]), *uv(c[3])] for c in curves]
+    segs[-1][-2:] = start
+    return {"start": start, "segs": segs}
+
+
+def angled_feature(kind: str, o: dict, origin, u, n, size: float) -> dict:
+    """Profile feature on an angled plane through `origin` (goal frame), extruded `size` both ways."""
+    _, _, w, d = bbox(o)
+    p = {"outline": o, "w": r3(w), "d": r3(d), "x": r3(origin[0]), "y": r3(origin[1]), "z": r3(origin[2]),
+         "nx": round(float(n[0]), 6) + 0.0, "ny": round(float(n[1]), 6) + 0.0, "nz": round(float(n[2]), 6) + 0.0,
+         "ux": round(float(u[0]), 6) + 0.0, "uy": round(float(u[1]), 6) + 0.0, "uz": round(float(u[2]), 6) + 0.0}
+    p["h" if kind == "profile_boss" else "depth"] = r3(size)
+    return {"kind": kind, "params": p}
+
+
+def is_angled(f: dict) -> bool:
+    return "ux" in f["params"]
+
+
+ANGLED = True  # main() sets it from --no-angled
+
+
 def convert(extrudes: list[dict], unit: float) -> tuple[list[tuple[str, list[dict]]], tuple]:
     """Feature groups in build order, one per extrude profile: ("base" | "join" | "cut", features)
     (the outer loop's feature, then its inner loops), and the goal frame (R, t)."""
@@ -295,7 +331,22 @@ def convert(extrudes: list[dict], unit: float) -> tuple[list[tuple[str, list[dic
         ng = R @ (n / np.linalg.norm(n))
         k = int(np.argmax(np.abs(ng)))
         if abs(abs(ng[k]) - 1) > 1e-6:
-            raise Skip("sketch plane not normal to X, Y or Z")
+            if not ANGLED or i == 0:
+                raise Skip("sketch plane not normal to X, Y or Z")
+            # patch 0020: a feature on an angled plane through the slab's middle, in the sketch's frame
+            x, y = ex["frame"][1], ex["frame"][2]
+            ug, vg = R @ (x / np.linalg.norm(x)), R @ (y / np.linalg.norm(y))
+            a, b = ex["extent"][0] * unit, ex["extent"][1] * unit
+            if np.dot(np.cross(ng, ug), vg) < 0:  # a left-handed sketch frame: flip the normal
+                ng, (a, b) = -ng, (-b, -a)
+            origin = to_goal(np.zeros(2), ex["frame"], R, t, unit) + ng * (a + b) / 2
+            join = ex["op"] in ("Join", "NewBody")
+            main, other = ("profile_boss", "profile_pocket") if join else ("profile_pocket", "profile_boss")
+            outer, inner = ex["loops"][0], ex["loops"][1:]
+            feats = [angled_feature(main, outline_local(outer, unit), origin, ug, ng, b - a)]
+            feats += [angled_feature(other, outline_local(lp, unit), origin, ug, ng, b - a) for lp in inner]
+            groups.append(("join" if join else "cut", feats))
+            continue
         s = 1.0 if ng[k] > 0 else -1.0
         c = to_goal(np.zeros(2), ex["frame"], R, t, unit)[k]  # plane coordinate along axis k
         a, b = ex["extent"][0] * unit, ex["extent"][1] * unit
@@ -336,6 +387,29 @@ def feature_solid(f: dict):
     from OCP.gp import gp_Pnt, gp_Vec
 
     p = f["params"]
+    if is_angled(f):  # patch 0020: the outline in the plane's frame, extruded both ways
+        n = np.array([p["nx"], p["ny"], p["nz"]], float)
+        n /= np.linalg.norm(n)
+        u = np.array([p["ux"], p["uy"], p["uz"]], float)
+        u = u - n * (u @ n)
+        u /= np.linalg.norm(u)
+        v = np.cross(n, u)
+        size = p.get("h") if f["kind"] == "profile_boss" else p["depth"]
+        o0 = np.array([p["x"], p["y"], p["z"]], float) - n * size / 2
+
+        def Q(a, b):
+            q = o0 + a * u + b * v
+            return gp_Pnt(*map(float, q))
+
+        o, mw, cur = p["outline"], BRepBuilderAPI_MakeWire(), p["outline"]["start"]
+        for seg in o["segs"]:
+            if seg[0] == "L":
+                mw.Add(BRepBuilderAPI_MakeEdge(Q(*cur), Q(*seg[1:3])).Edge())
+                cur = seg[1:3]
+            else:
+                mw.Add(BRepBuilderAPI_MakeEdge(GC_MakeArcOfCircle(Q(*cur), Q(*seg[1:3]), Q(*seg[3:5])).Value()).Edge())
+                cur = seg[3:5]
+        return BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(mw.Wire(), True).Face(), gp_Vec(*map(float, n * size))).Shape()
     if f["kind"] == "profile_base":
         k, lo, hi = 2, 0.0, p["h"]
     else:
@@ -484,6 +558,8 @@ def resolve_inner(before, f: dict) -> list[dict]:
     the feature stays as written and the IoU check against the original decides."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
 
+    if is_angled(f):  # the prism-outline resolution is axis-aligned; the IoU check decides
+        return [f]
     hole = f["kind"] == "profile_pocket"
     tool = feature_solid(f)
     v_tool = _volume(tool)
@@ -758,10 +834,14 @@ def main() -> None:
     ap.add_argument("--max-features", type=int, default=60)
     ap.add_argument("--limit", type=int, default=0, help="stop after this many converted models (0: all)")
     ap.add_argument("--refs", action="store_true", help="also write the original models as STEP (needs OCP)")
+    ap.add_argument("--no-angled", action="store_true",
+                    help="leave out designs with sketch planes not normal to X, Y or Z (before patch 0020)")
     ap.add_argument("--no-split-solids", action="store_true",
                     help="leave out designs that end as several solids (default with --refs: one goal per solid)")
     args = ap.parse_args()
 
+    global ANGLED
+    ANGLED = not args.no_angled
     data, out = Path(args.data).expanduser(), Path(args.out).expanduser()
     out.mkdir(parents=True, exist_ok=True)
     if args.refs:

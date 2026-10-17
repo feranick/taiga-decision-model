@@ -226,6 +226,20 @@ Fixed before the production training starts:
     | S 80 casing core / casing | core ≥ 0.98 | core ≥ 0.98; casing ≥ 0.95 on 3 of 5 seeds |
 
     The DeepCAD rows are the ones the DeepCAD training goals should move; the pilot models are scored on the test split to check that before the gates are fixed. Result (2026-10-15): the perturbed 7M pilots build 1.000 / 0.999 / 1.000 of the three buckets (0.965 / 0.858 / 0.73 without DeepCAD training goals), above every proposed gate; 18.6 % of the test goals also occur in the training split, and on the other 5,505 every seed still scores 1.000, so the DeepCAD gate can be raised to 0.99 in every bucket.
+
+    **Fixed (2026-10-17), from the v1 and v2 sweeps.** Every sweep so far had one weak seed (v1 seed 22: clean `len6` 0.94; v2 seed 12: `comp2` 0.00), while production runs one registered seed. So the gates apply to **the registered seed**, measured on its own runs, and the sweep it comes from must have no collapsed seed:
+
+    | Gate (registered seed) | Threshold | v1 seed 2 | v2 seed 2 |
+    |---|---|---|---|
+    | Clean synthetic suites up to `len6`, every suite | ≥ 0.97 | pass (lowest `comp2` 0.93: **fail**) | **pass** (lowest 0.97) |
+    | Clean `points` (patch 0019 on) | ≥ 0.99 | – | **pass** (1.00) |
+    | Perturbed (20 %) `len6` / `mixed_long` | ≥ 0.90 / ≥ 0.90 | pass (0.96 / 0.91) | **pass** (0.95 / 0.96) |
+    | DeepCAD test (verified goals incl. split designs), 1–5 / 6–10 / 11–20 features | ≥ 0.99 / 0.98 / 0.95 | pass (1.000, 6,762 set) | **pass** (1.000, 7,742 set) |
+    | S 80: ten parts other than the casing, casing core | exact | pass | **pass** |
+    | S 80 casing, guided (the production mode) | ≥ 51/52 intents | pass (51/52) | **pass** (52/52) |
+    | The sweep: no seed below 0.50 on any clean suite | – | pass | **fail** (seed 12 `comp2` 0.00) |
+
+    A sweep that fails the last row can still give a registered seed, but the collapse is a training-stability warning to look into before the next run (v2: `comp2` is one held-out composition; check whether the `points` weighting crowds it out). Gates are re-run on every FreeCAD update and every new patch series.
 12. **Pinned platform:** FreeCAD 1.1.3–1.1.4 (decided 2026-10-12), and which machines generate data and which train.
 
 The spurious Undo after a correct but unfamiliar step is a training issue that the loop guard covers at run time; with item 5 and the real designs (comp recovered in `long1`) it may not need its own fix, so it waits for the results above.
@@ -241,8 +255,8 @@ The spurious Undo after a correct but unfamiliar step is a training issue that t
 | 5 | **Patch 0019 supplement data:** `points` goals only, ~1.5M states (`TAIGA_TRAIN_ONLY=points`, `DATA_SCALE=3`) | mochi (`taiga-expanded-0019`) | done: 1,731,876 states in 36 shards (`gen_train_seed201_x3_ext1_kh_onlypoints`); 0019 setup on mochi 116 passed |
 | 6 | **v2:** 0019 setup on Spark1; pool the 8× shards of seeds 101 and 103 with the supplement (~11M states); train v2 like v1 (3 seeds); `points` suite, S 80, DeepCAD test; replace v1 in the registry if it passes the gates | Spark1 (`~/v2.sh`, pool `~/pool_v2`, run `…_mcb119a_dpool_v2`) | training: seed 2 in its last supervised epoch (2026-10-15 evening) |
 | 7 | **Converter:** split DeepCAD designs with several separate solids into one goal per solid (~8 % more real designs for training and test) | `taiga-expanded/datasets/convert_deepcad.py` | **test split done** (2026-10-16): 7,742 verified goals (before 6,762, +14.5 %); train split next, for the data after v2 |
-| 8 | **Next vocabulary:** sketches on angled planes, then draft (4.4 ranking) | patch series | after 6 |
-| 9 | **Pass criteria:** fix them per test set and length bucket (item 11 above) with the v1 and v2 results | this plan | after 6 |
+| 8 | **Next vocabulary:** sketches on angled planes, then draft (4.4 ranking) | patch series | **0020 written** (2026-10-17): angled planes (family and suite `angled`, converter, harness); 118 tests pass; next: FreeCAD check on Spark1, supplement data; then draft |
+| 9 | **Pass criteria:** fix them per test set and length bucket (item 11 above) with the v1 and v2 results | this plan | **done** (2026-10-17): gates per registered seed (item 11); v2 seed 2 passes them |
 | 10 | **Phase 6:** goals from shapes (section 9) | | later |
 | 11 | **Timing benchmark:** a fixed goal set (short parts to the S 80 casing) through the harness; every stage logged per attempt in `runtime_log.jsonl` (process start, target build, model, FreeCAD, check, save); run on each machine, CPU and GPU; also the agent side (goal writing, MCP and ssh round trips). First numbers (mochi, 4 test parts): model 22–30 ms/step, FreeCAD 13–43 ms/step growing with the part, ~2 s process start per attempt (30–60 % of a small part) | `harness/`, `build/taiga_runtime.py` | to write |
 | 12 | **Persistent worker:** keep FreeCAD and the model loaded in the MCP server (a worker pool) instead of a new process per attempt; removes the ~2 s start per attempt and per fallback; measure with item 11 | `harness/`, `build/` | after 11 |

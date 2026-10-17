@@ -108,5 +108,6 @@ A `build_parts` call with all four parts timed out in the client once, right aft
 
 | File | Version |
 |---|---|
-| `taiga_harness.py` | 2026.10.15.2 (origin-plane normals and centres normalized; `pts` left out of the format without patch 0019) |
+| `taiga_harness.py` | 2026.10.17.1 (angled planes, patch 0020: validated and described in `goal_format` when the work folder has the patch) |
+| `taiga_harness.py` (before) | 2026.10.15.2 (origin-plane normals and centres normalized; `pts` left out of the format without patch 0019) |
 | `taiga_mcp.py` | 2026.10.15.1 |

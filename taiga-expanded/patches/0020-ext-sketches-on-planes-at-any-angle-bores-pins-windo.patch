@@ -1,0 +1,499 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Sat, 17 Oct 2026 00:02:02 -0400
+Subject: [PATCH] ext: sketches on planes at any angle (bores, pins, windows;
+ family and suite "angled")
+
+An intent may lie on a plane at any orientation: its in-plane x direction (ux, uy, uz) marks it,
+with the plane's unit normal (nx, ny, nz) and origin (x, y, z). The profile is drawn in the
+plane's own frame (circles and rectangles centred on the origin, outlines in (u, v) about it) and
+extruded both ways, as on an origin plane with an offset. The model issues the same commands as
+for an origin plane: the runtime attaches the sketch to the XY plane with an AttachmentOffset that
+carries the frame, and the sketch's normal is in the state the model sees. New family and suite
+"angled" (box or cylinder with bores, pins and windows tilted 15-60 degrees). The goal encoding
+gains u and a flag (EXT_NUM_DIM 31; rows stay 64 wide). Earlier suites keep their goals.
+---
+ freecad_s1/evaluate.py     |   7 +-
+ freecad_s1/ext/angled.py   | 190 +++++++++++++++++++++++++++++++++++++
+ freecad_s1/ext/faces.py    |  29 +++++-
+ freecad_s1/ext/profiles.py |   7 +-
+ freecad_s1/ext/sampler.py  |  12 ++-
+ freecad_s1/goals.py        |   2 +-
+ tests/test_ext_angled.py   |  90 ++++++++++++++++++
+ tests/test_ext_mixed.py    |   2 +-
+ 8 files changed, 326 insertions(+), 13 deletions(-)
+ create mode 100644 freecad_s1/ext/angled.py
+ create mode 100644 tests/test_ext_angled.py
+
+diff --git a/freecad_s1/evaluate.py b/freecad_s1/evaluate.py
+index 3a29b26..7e18a74 100644
+--- a/freecad_s1/evaluate.py
++++ b/freecad_s1/evaluate.py
+@@ -69,7 +69,7 @@ def offline_metrics(model: S1Model, ds: Dataset, device: torch.device, batch_siz
+ 
+ 
+ # Seed offsets keep suites that share a level (iid-L3, comp, comp2, comp3) on disjoint seeds.
+-SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000, "edges": 90_000, "large": 0, "large_ext": 95_000, "datum_z": 96_000, "overhang": 97_000, "turned": 98_000, "mixed": 99_000, "mixed_at": 99_500, "points": 99_800}  # large: the iid seeds
++SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000, "edges": 90_000, "large": 0, "large_ext": 95_000, "datum_z": 96_000, "overhang": 97_000, "turned": 98_000, "mixed": 99_000, "mixed_at": 99_500, "points": 99_800, "angled": 99_900}  # large: the iid seeds
+ 
+ SUITES = {
+     "iid": [(1, "iid"), (2, "iid"), (3, "iid")],  # training distribution, fresh goals
+@@ -92,8 +92,9 @@ SUITES = {
+     "mixed": [(3, "mixed")],  # taiga-expanded: several families on one part, 3-11 intents
+     "mixed_long": [(4, "mixed")],  # taiga-expanded: mixed goals of 8-14 intents (longer than training)
+     "mixed_at": [(3, "mixed_at")],  # taiga-expanded (0016): mixed goals with a stack picked by "at", top features nz=+1
+-    "mixed_at_long": [(4, "mixed_at")],
+-    "points": [(3, "points")],  # taiga-expanded (0019): fillets, chamfers, shells on edges / faces named by points  # taiga-expanded (0016): the same, longer
++    "mixed_at_long": [(4, "mixed_at")],  # taiga-expanded (0016): the same, longer
++    "points": [(3, "points")],  # taiga-expanded (0019): fillets, chamfers, shells on edges / faces named by points
++    "angled": [(3, "angled")],  # taiga-expanded (0020): bores, pins, windows on planes at any angle
+     "len3": [(6, "len")],  # held-out length: 11 intents (2.2x the training maximum)
+     "len4": [(7, "len")],  # stress: 13 intents
+     "len5": [(8, "len")],  # stress: 15 intents
+diff --git a/freecad_s1/ext/angled.py b/freecad_s1/ext/angled.py
+new file mode 100644
+index 0000000..73ac518
+--- /dev/null
++++ b/freecad_s1/ext/angled.py
+@@ -0,0 +1,190 @@
++"""Sketches on planes at any angle (taiga-expanded, patch 0020).
++
++A sketched intent may lie on a plane at any orientation: params "ux", "uy", "uz" (the plane's
++in-plane x direction) mark it, next to the plane's unit normal (nx, ny, nz; any direction) and
++its origin (x, y, z), the feature's centre. The profile is drawn in the plane's own frame: u
++along (ux, uy, uz), v = n x u; a circle or rectangle is centred on the origin (rectangles: w along
++u, d along v), an outline is written in (u, v) relative to the origin. As on an origin plane with
++an offset (ext.faces), the pad or pocket is extruded symmetrically: h or depth is the total, and
++holes and pockets without depth go through all, both ways. Inclined bores, angled bosses and
++pins, slanted windows and cuts.
++
++The model issues the same commands as for an origin plane (Select:Plane:XY, NewSketch, ...): the
++runtime attaches the sketch to the XY plane with an AttachmentOffset that carries the frame, and
++the sketch's normal is part of the state the model sees. In real parts these sketches are 2 % of
++WHUCAD's hand-built parts and 0.4 % of DeepCAD's designs (docs/README_production_plan.md, 4.4).
++
++Pure stdlib except placement(), which receives FreeCAD's App module.
++"""
++from __future__ import annotations
++
++import math
++import random
++
++from ..schema import Goal, GoalFeature
++
++U_KEYS = ("ux", "uy", "uz")
++N_KEYS = ("nx", "ny", "nz")
++KINDS = ("boss_cyl", "boss_box", "hole", "pocket_rect", "profile_boss", "profile_pocket")
++
++
++def is_angled(f) -> bool:
++    return f is not None and all(k in f.params for k in U_KEYS)
++
++
++def _norm(v):
++    n = math.sqrt(sum(c * c for c in v))
++    return [c / n for c in v] if n > 1e-12 else None
++
++
++def _cross(a, b):
++    return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
++
++
++def frame(f) -> tuple[list[float], list[float], list[float], list[float]]:
++    """(origin, u, v, n) of an angled plane, orthonormal: n as given (normalised), u made
++    perpendicular to n, v = n x u. Raises ValueError for a degenerate frame."""
++    p = f.params
++    n = _norm([float(p.get(k, 0.0)) for k in N_KEYS])
++    u = [float(p[k]) for k in U_KEYS]
++    if n is None:
++        raise ValueError("angled plane: zero normal")
++    d = sum(a * b for a, b in zip(u, n))
++    u = _norm([a - d * b for a, b in zip(u, n)])
++    if u is None:
++        raise ValueError("angled plane: u is parallel to the normal")
++    v = _cross(n, u)
++    o = [float(p.get("x", 0.0)), float(p.get("y", 0.0)), float(p.get("z", 0.0))]
++    return o, u, v, n
++
++
++def placement(f, plane_placement, app):
++    """AttachmentOffset for a sketch attached (FlatFace) to `plane_placement`'s plane so that its
++    frame is the intent's: origin at (x, y, z), x along u, normal n."""
++    o, u, v, n = frame(f)
++    m = app.Matrix(u[0], v[0], n[0], 0, u[1], v[1], n[1], 0, u[2], v[2], n[2], 0, 0, 0, 0, 1)
++    target = app.Placement(app.Vector(*o), app.Rotation(m))
++    return plane_placement.inverse().multiply(target)
++
++
++def extra_goal_num(f) -> list[float]:
++    """u (3 numbers) and a flag for the goal encoding; zeros without an angled plane. The normal
++    is already in the encoding (nx, ny, nz), the origin too (x, y, z)."""
++    if not is_angled(f):
++        return [0.0, 0.0, 0.0, 0.0]
++    try:
++        _, u, _, _ = frame(f)
++    except ValueError:
++        return [0.0, 0.0, 0.0, 0.0]
++    return [round(c, 6) for c in u] + [1.0]
++
++
++def validate(f) -> list[str]:
++    """Errors of an angled intent (empty when well formed)."""
++    if not is_angled(f):
++        return []
++    errs = []
++    if f.kind not in KINDS:
++        errs.append(f"{f.kind} cannot be on an angled plane (only {', '.join(KINDS)})")
++    try:
++        frame(f)
++    except ValueError as exc:
++        errs.append(str(exc))
++    if "off" in f.params:
++        errs.append("an angled plane takes its position from x, y, z, not 'off'")
++    return errs
++
++
++# ----------------------------------------------------------------------------- the "angled" family
++
++
++def _r(v: float, k: int = 4) -> float:
++    return round(v, k) + 0.0
++
++
++def _u(rng: random.Random, lo: float, hi: float) -> float:
++    return round(rng.uniform(lo, hi), 1)
++
++
++def _rot(v, axis, deg):
++    """v rotated about the unit `axis` by `deg` degrees (Rodrigues)."""
++    a = math.radians(deg)
++    c, s = math.cos(a), math.sin(a)
++    k = axis
++    kv = sum(x * y for x, y in zip(k, v))
++    kxv = _cross(k, v)
++    return [v[i] * c + kxv[i] * s + k[i] * kv * (1 - c) for i in range(3)]
++
++
++def tilted(rng: random.Random, base_axis: int) -> tuple[list[float], list[float]]:
++    """A normal tilted 15-60 degrees from the base axis about one of the two perpendicular axes,
++    and an in-plane u: the tilt axis (perpendicular to the normal by construction)."""
++    e = [0.0, 0.0, 0.0]
++    e[base_axis] = 1.0
++    t_axis = rng.choice([i for i in range(3) if i != base_axis])
++    t = [0.0, 0.0, 0.0]
++    t[t_axis] = 1.0
++    deg = rng.choice([-1, 1]) * _u(rng, 15, 60)
++    n = _rot(e, t, deg)
++    return [_r(c) for c in n], t
++
++
++def angled_feature(rng: random.Random, kind: str, base: GoalFeature) -> GoalFeature | None:
++    """An angled bore, pin, boss or window through a box or cylinder base: a plane through a point
++    inside the part, tilted 15-60 degrees, the feature extruded both ways."""
++    p = base.params
++    if base.kind == "base_box":
++        hx, hy, h = p["w"] / 2, p["d"] / 2, p["h"]
++    else:
++        hx = hy = p["r"] * 0.7
++        h = p["h"]
++    small = min(2 * hx, 2 * hy, h)
++    if small < 12:
++        return None
++    base_axis = rng.choice([0, 1, 2])
++    n, u = tilted(rng, base_axis)
++    o = [_u(rng, -0.25 * hx, 0.25 * hx), _u(rng, -0.25 * hy, 0.25 * hy), _u(rng, 0.4 * h, 0.6 * h)]
++    through = round(2 * math.sqrt(hx * hx + hy * hy + h * h) + 10, 1)  # longer than the part, both ways
++    params = {"nx": n[0], "ny": n[1], "nz": n[2], "ux": u[0], "uy": u[1], "uz": u[2], "x": o[0], "y": o[1], "z": o[2]}
++    if kind == "hole":
++        params["r"] = _u(rng, 1.5, max(1.6, small * 0.15))
++    elif kind == "boss_cyl":
++        params["r"] = _u(rng, 2.0, max(2.1, small * 0.18))
++        params["h"] = round(through + _u(rng, 4, 20), 1)  # a pin sticking out on both sides
++    elif kind == "pocket_rect":
++        params.update(w=_u(rng, 3, max(3.1, small * 0.35)), d=_u(rng, 2, max(2.1, small * 0.25)), depth=through)
++    else:
++        return None
++    return GoalFeature(kind, params)
++
++
++def sample_angled_goal(level: int, rng: random.Random) -> Goal:
++    """Box or cylinder base, 1-2 features on angled planes (bores, pins, windows), at level 3
++    optionally a top feature group first and a top dressup last."""
++    from ..goals import _base, _cut_group, _dressup, _scale
++
++    for _ in range(100):
++        if rng.random() < 0.7:
++            base = GoalFeature("base_box", {"w": _u(rng, 30, 80), "d": _u(rng, 24, 70), "h": _u(rng, 16, 50)})
++        else:
++            base = _base(rng, ["base_cyl"])
++            base.params["h"] = _u(rng, 16, 45)
++        feats = [base]
++        budget = 1 if level <= 2 else 4
++        if level >= 3 and rng.random() < 0.4:
++            group, _ = _cut_group(rng, base)
++            if len(group) <= budget - 1:
++                feats += group
++        n = 1 if level <= 2 else rng.choice([1, 2])
++        for _ in range(n):
++            if len(feats) - 1 >= budget:
++                break
++            f = angled_feature(rng, rng.choice(["hole", "hole", "boss_cyl", "pocket_rect"]), base)
++            if f is not None:
++                feats.append(f)
++        if not any(is_angled(f) for f in feats):
++            continue
++        if level >= 3 and len(feats) - 1 < budget and rng.random() < 0.3:
++            feats.append(_dressup(rng, "chamfer_top", base))
++        return Goal(feats, level=min(level, 3), scale=_scale(base))
++    raise ValueError("could not sample an angled goal")
+diff --git a/freecad_s1/ext/faces.py b/freecad_s1/ext/faces.py
+index bf5dad0..26d798c 100644
+--- a/freecad_s1/ext/faces.py
++++ b/freecad_s1/ext/faces.py
+@@ -43,12 +43,20 @@ PLANE_FOR_AXIS = {0: "Plane:YZ", 1: "Plane:XZ", 2: "Plane:XY"}
+ 
+ 
+ def is_datum(f) -> bool:
+-    return "off" in f.params
++    """Extruded both ways about its sketch plane: an origin plane with an offset, or (patch 0020)
++    a plane at any angle."""
++    from . import angled
++
++    return "off" in f.params or angled.is_angled(f)
+ 
+ 
+ def support_for(f, recipe) -> str | None:
+     """Select argument for the sketch support of goal feature `f` (hook used by the expert).
+     Only top-face recipes (Face+Z) are redirected; origin-plane recipes keep their plane."""
++    from . import angled
++
++    if recipe.support == "Face+Z" and angled.is_angled(f):  # patch 0020: the XY plane, offset and turned
++        return "Plane:XY"
+     if recipe.support == "Face+Z" and has_normal(f):
+         return PLANE_FOR_AXIS[normal(f)[0]] if is_datum(f) else face_arg(f)
+     return recipe.support
+@@ -60,6 +68,11 @@ def apply_plane_offset(sk, f, app) -> None:
+     if f is None or not is_datum(f) or not sk.AttachmentSupport:
+         return
+     plane = sk.AttachmentSupport[0][0]
++    from . import angled
++
++    if angled.is_angled(f):  # patch 0020: the plane's frame (origin, u, normal) as the offset
++        sk.AttachmentOffset = angled.placement(f, plane.Placement, app)
++        return
+     n = plane.Placement.Rotation.multVec(app.Vector(0, 0, 1))  # the plane's own normal (sign varies)
+     k = normal(f)[0]
+     comp = (n.x, n.y, n.z)[k]
+@@ -91,6 +104,10 @@ def local_box(sk, f, sx: float, sy: float, vec_cls):
+     """Sketch-local centre and sizes for a profile on a side face.
+     `sk` is the attached sketch, `sx, sy` the sizes from params.profile_box,
+     `vec_cls` FreeCAD's App.Vector. Returns (centre, size_x, size_y) in sketch coordinates."""
++    from . import angled
++
++    if angled.is_angled(f):  # patch 0020: the sketch's frame is the plane's; centred on its origin
++        return vec_cls(0, 0, 0), sx, sy
+     k, sign = normal(f)
+     ua, va = inplane_axes(k)
+     n = [0.0, 0.0, 0.0]
+@@ -118,8 +135,9 @@ def local_box(sk, f, sx: float, sy: float, vec_cls):
+ # Layout (22 numbers): z/scale, nx, ny, nz, off/scale, outline n_line/10, n_arc/10, n_spline/10,
+ # outline width/scale, height/scale | flags: has z, has normal, has off, has outline |
+ # axis ax, ay, az (signed), angle/360 (ext.revolve, ext.patterns) | at x, y, z /scale, has at (ext.edges) |
+-# points: count/10, centroid x, y, z /scale, has points (ext.pointsel, patch 0019).
+-EXT_NUM_DIM = 27
++# points: count/10, centroid x, y, z /scale, has points (ext.pointsel, patch 0019) |
++# angled plane: u x, y, z, is angled (ext.angled, patch 0020).
++EXT_NUM_DIM = 31
+ GOAL_ROW_DIM = 64  # numbers per token row (upstream: 48), room for the extra block
+ 
+ 
+@@ -144,4 +162,7 @@ def extra_goal_num(f, scale: float) -> list[float]:
+ 
+     from . import pointsel
+ 
+-    return vals + flags + revolve.extra_goal_num(f) + edges.extra_goal_num(f, scale) + pointsel.extra_goal_num(f, scale)
++    from . import angled
++
++    return (vals + flags + revolve.extra_goal_num(f) + edges.extra_goal_num(f, scale) + pointsel.extra_goal_num(f, scale)
++            + angled.extra_goal_num(f))
+diff --git a/freecad_s1/ext/profiles.py b/freecad_s1/ext/profiles.py
+index 36ec5c2..c16b795 100644
+--- a/freecad_s1/ext/profiles.py
++++ b/freecad_s1/ext/profiles.py
+@@ -126,7 +126,12 @@ def default_outline(cx: float, cy: float, sx: float, sy: float) -> dict:
+ 
+ def to_local(sk, f, u: float, v: float, vec_cls):
+     """Global in-plane (u, v) -> sketch-local point, for any support (top face, side face,
+-    origin plane with offset). Uses the sketch placement, like ext.faces.local_box."""
++    origin plane with offset). Uses the sketch placement, like ext.faces.local_box. On an angled
++    plane (patch 0020) the outline is written in the plane's own (u, v) about its origin."""
++    from . import angled
++
++    if angled.is_angled(f):
++        return vec_cls(u, v, 0)
+     k, sign = faces.normal(f)
+     ua, va = faces.inplane_axes(k)
+     n = [0.0, 0.0, 0.0]
+diff --git a/freecad_s1/ext/sampler.py b/freecad_s1/ext/sampler.py
+index 45c40e7..035bef7 100644
+--- a/freecad_s1/ext/sampler.py
++++ b/freecad_s1/ext/sampler.py
+@@ -20,12 +20,12 @@ TRAIN_FRACTION = float(os.environ.get("TAIGA_EXT_FRACTION", "0.35"))
+ TRAIN_ONLY = tuple(s.strip() for s in os.environ.get("TAIGA_TRAIN_ONLY", "").split(",") if s.strip())
+ 
+ # new evaluation splits (each also feeds training through sample_train)
+-SPLITS = ("side", "plane", "outline", "revolve", "pattern", "edges", "datum_z", "overhang", "turned", "mixed", "points")
++SPLITS = ("side", "plane", "outline", "revolve", "pattern", "edges", "datum_z", "overhang", "turned", "mixed", "points", "angled")
+ # the families large_ext draws from (ext.sizes): those before patch 0019, so the suite keeps its goals
+ LARGE_EXT_SPLITS = ("side", "plane", "outline", "revolve", "pattern", "edges", "datum_z", "overhang", "turned", "mixed")
+ # how often each split is drawn for training (patch 0010: mixed goals carry the long-goal and
+ # composition load, so they are drawn more often)
+-TRAIN_WEIGHTS = {"mixed": 3.0, "points": 2.0}  # 0019: fillets / chamfers / shells on chosen edges and faces
++TRAIN_WEIGHTS = {"mixed": 3.0, "points": 2.0, "angled": 1.5}  # 0019: fillets / chamfers / shells on chosen edges and faces; 0020: angled planes
+ # level-1 training goals from the expanded families: a lone base that only these families make
+ LEVEL1_SPLITS = ("outline", "revolve", "turned")
+ 
+@@ -1024,6 +1024,12 @@ def _points(level: int, rng: random.Random) -> Goal:
+     return sample_points_goal(level, rng)
+ 
+ 
++def _angled(level: int, rng: random.Random) -> Goal:
++    from .angled import sample_angled_goal
++
++    return sample_angled_goal(level, rng)
++
++
+ def _mixed_at(level: int, rng: random.Random) -> Goal:
+     """Suites mixed_at / mixed_at_long (patch 0016): mixed goals with a stack picked by "at" and
+     top-face features written with nz=+1 (the S 80 casing's form)."""
+@@ -1036,7 +1042,7 @@ SAMPLERS = {"side": sample_side_goal, "plane": sample_plane_goal, "outline": _ou
+             "revolve": sample_revolve_goal, "pattern": sample_pattern_goal,
+             "edges": sample_edges_goal,
+             "datum_z": sample_datum_z_goal, "overhang": sample_overhang_goal,
+-            "turned": _turned, "mixed": _mixed, "mixed_at": _mixed_at, "points": _points}
++            "turned": _turned, "mixed": _mixed, "mixed_at": _mixed_at, "points": _points, "angled": _angled}
+ # evaluation-only splits (patch 0016): not drawn for training (sample_train uses SPLITS) and not
+ # part of large_ext (ext.sizes), so the earlier suites keep their goals
+ EVAL_SPLITS = ("mixed_at",)
+diff --git a/freecad_s1/goals.py b/freecad_s1/goals.py
+index 355495f..86ef302 100644
+--- a/freecad_s1/goals.py
++++ b/freecad_s1/goals.py
+@@ -260,7 +260,7 @@ def heldout_composition(goal: Goal) -> str | None:
+     return None
+ 
+ 
+-SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext", "datum_z", "overhang", "turned", "mixed", "mixed_at", "points")  # side .. points: taiga-expanded
++SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext", "datum_z", "overhang", "turned", "mixed", "mixed_at", "points", "angled")  # side .. angled: taiga-expanded
+ 
+ 
+ def keep_heldout() -> bool:
+diff --git a/tests/test_ext_angled.py b/tests/test_ext_angled.py
+new file mode 100644
+index 0000000..7a8c70d
+--- /dev/null
++++ b/tests/test_ext_angled.py
+@@ -0,0 +1,90 @@
++"""taiga-expanded: sketches on planes at any angle (patch 0020)."""
++import math
++import random
++
++from freecad_s1.evaluate import SUITES
++from freecad_s1.expert import Meta, ObjMeta, expert_actions
++from freecad_s1.ext import angled, faces, profiles, sampler, sizes
++from freecad_s1.goals import RECIPES, SPLITS, sample_split_goal
++from freecad_s1.model.featurize import NUM_DIM, SEG_GOAL, encode_state
++from freecad_s1.schema import Goal, GoalFeature, ShapeInfo, State
++
++BOX = GoalFeature("base_box", {"w": 60, "d": 40, "h": 30})
++C, S = math.cos(math.radians(30)), math.sin(math.radians(30))
++BORE = GoalFeature("hole", {"r": 3.0, "x": 0.0, "y": 0.0, "z": 15.0,
++                            "nx": 0.0, "ny": -S, "nz": C, "ux": 1.0, "uy": 0.0, "uz": 0.0})
++
++
++def _dot(a, b):
++    return sum(x * y for x, y in zip(a, b))
++
++
++def test_frame_is_orthonormal_and_u_is_projected():
++    f = GoalFeature("hole", dict(BORE.params, ux=1.0, uy=0.3, uz=0.2))  # u not perpendicular: projected
++    o, u, v, n = angled.frame(f)
++    assert o == [0.0, 0.0, 15.0]
++    for a in (u, v, n):
++        assert abs(_dot(a, a) - 1) < 1e-9
++    assert abs(_dot(u, n)) < 1e-9 and abs(_dot(v, n)) < 1e-9 and abs(_dot(u, v)) < 1e-9
++    assert angled.validate(f) == []
++    assert angled.validate(GoalFeature("hole", dict(BORE.params, ux=0.0, uy=-S, uz=C)))  # u along n
++    assert angled.validate(GoalFeature("fillet_edges", dict(BORE.params)))                 # not sketched
++    assert not angled.is_angled(GoalFeature("hole", {"r": 1, "x": 0, "y": 0, "nx": 1, "ny": 0, "nz": 0}))
++
++
++def test_expert_sketches_on_the_xy_plane_and_extrudes_both_ways():
++    assert faces.support_for(BORE, RECIPES["hole"]) == "Plane:XY"
++    assert faces.is_datum(BORE)
++    meta = Meta(doc_open=True, workbench="PartDesignWorkbench", body="Body")
++    meta.objects["Body"] = ObjMeta("Body", "body")
++    meta.objects["Pad"] = ObjMeta("Pad", "feature", goal_ref=0)
++    goal = Goal([BOX, BORE], level=2, scale=60)
++    assert expert_actions(goal, meta) == ["Select:Plane:XY"]
++
++
++class _V:  # minimal App.Vector for the sketch-coordinate hooks
++    def __init__(self, x, y, z):
++        self.x, self.y, self.z = x, y, z
++
++
++def test_sketch_coordinates_are_the_planes_own():
++    c, sx, sy = faces.local_box(None, GoalFeature("pocket_rect", dict(BORE.params, w=8.0, d=4.0)), 8.0, 4.0, _V)
++    assert (c.x, c.y, sx, sy) == (0, 0, 8.0, 4.0)
++    q = profiles.to_local(None, BORE, 3.0, -2.0, _V)
++    assert (q.x, q.y) == (3.0, -2.0)
++
++
++def test_goal_encoding_carries_u():
++    assert len(angled.extra_goal_num(BORE)) == 4 and angled.extra_goal_num(BORE)[-1] == 1.0
++    assert angled.extra_goal_num(BOX) == [0.0, 0.0, 0.0, 0.0]
++    assert len(faces.extra_goal_num(BORE, 60.0)) == faces.EXT_NUM_DIM == 31
++    st = State(doc_open=True, workbench="PartDesignWorkbench")
++    enc = encode_state(st, Goal([BOX, BORE], level=2, scale=60, target=ShapeInfo()))
++    rows = [i for i in range(len(enc.seg)) if enc.seg[i] == SEG_GOAL]
++    assert NUM_DIM == 64 and enc.num.shape[1] == 64
++    row = enc.num[rows[1]].tolist()
++    assert any(abs(x - 1.0) < 1e-3 for x in row[-12:])  # the angled flag is in the row
++
++
++def test_family_suite_and_scaling():
++    assert "angled" in sampler.SPLITS and "angled" in SPLITS and SUITES["angled"] == [(3, "angled")]
++    assert "angled" not in sampler.LARGE_EXT_SPLITS  # large_ext keeps its goals
++    rng = random.Random(7)
++    n_angled = 0
++    for level in (2, 3, 3, 3):
++        for _ in range(20):
++            g = sample_split_goal("angled", level, rng)
++            assert g.features[0].kind in ("base_box", "base_cyl")
++            for f in g.features:
++                if angled.is_angled(f):
++                    n_angled += 1
++                    assert angled.validate(f) == [] and f.kind in ("hole", "boss_cyl", "pocket_rect")
++                    n = [f.params[k] for k in ("nx", "ny", "nz")]
++                    u = [f.params[k] for k in ("ux", "uy", "uz")]
++                    assert abs(_dot(n, n) - 1) < 1e-3 and abs(_dot(n, u)) < 1e-3
++                    tilt = math.degrees(math.acos(max(abs(c) for c in n)))
++                    assert 14.9 <= tilt <= 60.1
++    assert n_angled >= 80
++    g = Goal([BOX, BORE], level=2, scale=60)
++    big = sizes.scale_goal(g, 4.0).features[1].params
++    assert big["z"] == 60.0 and big["r"] == 12.0 and big["ux"] == 1.0 and big["nz"] == round(C, 6) or abs(big["nz"] - C) < 1e-9
+diff --git a/tests/test_ext_mixed.py b/tests/test_ext_mixed.py
+index ae46f32..cf9c598 100644
+--- a/tests/test_ext_mixed.py
++++ b/tests/test_ext_mixed.py
+@@ -18,7 +18,7 @@ def _lathe(base):
+ 
+ 
+ def test_new_splits_are_registered():
+-    assert sampler.SPLITS[-3:-1] == ("turned", "mixed")  # patch 0019 appends "points"
++    assert sampler.SPLITS[sampler.SPLITS.index("turned"):][:2] == ("turned", "mixed")  # later patches append
+     assert {"turned", "mixed"} <= set(SPLITS)
+ 
+ 

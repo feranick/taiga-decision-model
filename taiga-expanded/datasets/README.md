@@ -29,6 +29,7 @@ So: **DeepCAD first**, with the `LICENSE`-tab check. Before using either dataset
    - `Join` → `profile_boss` (`off`, `h`); inner loops → `profile_pocket` over the same extent.
    - `Cut` → `profile_pocket` (`off`, `depth`); inner loops (islands) → `profile_boss` over the same extent.
    - `Intersect` → leave the model out. A second `NewBody` is a join (the part must end as one solid).
+   - **Sketches at any angle** (`convert_deepcad.py` 2026.10.17.1, patch 0020; `--no-angled` for older work folders): a later extrude whose sketch is not normal to X, Y or Z becomes a feature on an angled plane: origin at the slab's middle, the sketch's normal and x axis, the outline in the sketch's own coordinates, extruded both ways. Checked on DeepCAD-format test designs (a boss and a slot on a plane tilted 30° about X, a bore tilted 30° about Y): the goals rebuild the originals at IoU 1.000.
    - **Several solids** (`convert_deepcad.py` 2026.10.15.1, with `--refs`): a design whose original ends as several separate solids (several parts in one document; 8.2 % of DeepCAD's unique training designs) becomes one goal per solid, `<name>_s1`, `<name>_s2`, ... (largest first). Each goal keeps the extrudes that make its solid (the joins that overlap it, the cuts that touch their material), in build order and in its own frame; its reference STEP is that solid, and its volume must equal the solid's in the original. `--no-split-solids` leaves such designs out as before. **Test split** (mochi, 2026-10-16): 7,819 goals converted (before: 6,836), of which 988 from 395 split designs; the teacher builds 7,805; **7,742 match their original** (before: 6,762; +980, +14.5 %), median 2 features, at most 18. No design crashed the converter. Checked on DeepCAD-format test designs (two plates; two plates with one slot cut through both; a single plate; two plates bridged later, one solid): every goal matches its reference at IoU 1.000 (built with the build123d translator).
 6. **Face form where natural (second pass).** When a sketch plane coincides with a planar face of the part built so far, and the extrude goes outward (join) or inward (cut), write it as a face feature (`nx`/`ny`/`nz`, `at`) instead: closer to how people build, and to our own families. This needs the part built so far, so it runs with the teacher in FreeCAD.
 7. **Keep only verified goals.** The teacher builds each goal (`taiga_build_part.py --check`), and the result must match the original model (rebuilt from the JSON with OpenCASCADE, as `pump_s80.py` does) to IoU ≥ 0.99. Duplicates (DeepCAD has many) are removed by a hash of the converted goal.
@@ -155,7 +156,8 @@ As training goals (patch 0011, `TAIGA_GOALS_FILE`) they fall into level 1 (54,77
 
 | File | Version |
 |---|---|
-| `convert_deepcad.py` | 2026.10.16.1 (designs with several solids: one goal per solid, tried only when the whole design fails for that reason; crash guard) |
+| `convert_deepcad.py` | 2026.10.17.1 (sketches at any angle as angled-plane features, patch 0020) |
+| `convert_deepcad.py` (before) | 2026.10.16.1 (designs with several solids: one goal per solid, tried only when the whole design fails for that reason; crash guard) |
 | `run_deepcad.sh` | 2026.10.16.1 (`convert` restarts the converter after an OpenCASCADE crash, skipping that design: `crashed.txt`) |
 | `survey_whucad.py` | 2026.10.15.2 |
 | `diagnose_goals.py` | 2026.10.06.2 |
