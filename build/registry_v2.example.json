@@ -1,0 +1,16 @@
+{
+  "models": [
+    {
+      "name": "small-v2",
+      "role": "main",
+      "path": "~/taiga-expanded-0019/taiga-s1/runs/gdeepcad_goalsf0.25_kh_pt0.2_mcb119a_dpool_v2/seed2/hf",
+      "params": "1.2M",
+      "model_args": "--max-nodes 160 --max-goal 64 --max-ord 72 --max-pos 256 --ord-table 28 --pos-table 96 --newest-nodes",
+      "freecad": "1.1.3",
+      "patches": "0001-0019 (taiga-expanded); run with TAIGA_WORK set to a 0019 work folder",
+      "trained_on": "11.4M states: v1's 9.7M (DeepCAD goals 25 %, TAIGA_KEEP_HELDOUT=1, DAGGER_PERTURB=0.2) plus 1.7M points-only states (TAIGA_TRAIN_ONLY=points), 4 epochs",
+      "measured": "v2 seed 2 (2026-10-17): passes every registered-seed gate: clean suites >= 0.97 (comp2 1.00), points 1.00; perturbed len6 0.95, mixed_long 0.96; S 80 guided whole pump 0.9987, casing 52/52 intents in both modes; DeepCAD test 1.000 on every bucket (7,742 goals incl. split designs; v1 seed 2 also 1.000)"
+    }
+  ],
+  "_note": "Models of the 0017 series (small-v1, long-v1) cannot run in a 0019 work folder (goal encoding 22 -> 27 numbers), so they are not fallbacks here; the chain falls back to the teacher. A second v2 seed (seed 22) can be added with role fallback."
+}

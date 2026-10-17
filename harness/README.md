@@ -18,7 +18,7 @@ cp <repo>/build/registry.example.json <repo>/build/registry.json   # set small-v
 export TAIGA_WORK=$W                         # also: TAIGA_REGISTRY, TAIGA_OUT (default ~/taiga_parts)
 ```
 
-`TAIGA_WORK` decides which code reads the goals: a model must run with the code it was trained with (v1: 0017; v2: 0019). Selection by points (`pts`) needs a 0019 folder; `goal_format` says whether it is available (`selection_by_points`).
+`TAIGA_WORK` decides which code reads the goals: a model must run with the code it was trained with (v1: 0017; v2: 0019). The production model is v2 (`small-v2`): `TAIGA_WORK=~/taiga-expanded-0019` with `TAIGA_REGISTRY` pointing at a copy of `build/registry_v2.example.json`. Models of different patch series cannot share a registry (the goal encoding grows with the series). Selection by points (`pts`) needs a 0019 folder; `goal_format` says whether it is available (`selection_by_points`).
 
 ## For LLM tools: the MCP server
 
@@ -93,6 +93,8 @@ From the Claude desktop app over ssh to mochi (0017 folder, the 1.2M and 7M `dsc
 | Motor flange (boss, bore, 6 bolt holes polar, chamfer), spacer (ring with cross bore), cover plate (outline with an arc, pocket, 4 holes linear, fillets) | 3 | model 2, teacher 1 (the spacer's cross bore with `ny: -1`; fixed by the normalization above) | 1.0 | 4–7 s each |
 | The same four parts with **v1 seed 2** (`small-v1` = `~/v1_s2/seed2/hf`) and harness 2026.10.15.2, `model_first=true` | 4 | **model 4** (the spacer with `ny: -1` included) | 1.0 | 3.7–6.4 s each; the three in one `start_build` 6.5 s |
 
+**v2** (2026-10-17, mochi, command line: `TAIGA_WORK=~/taiga-expanded-0019`, registry with `small-v2` only, `--chain main:guided,teacher`): the three goals of `build/flange/example_goals.json` (bracket plate, spacer, bolt-circle disc) all built by the model (`main:guided`). Then from the Claude desktop app over ssh: a bracket (plate, boss with bore, four corner holes as two mirrored holes, vertical fillets), `model_first=true`: built by `small-v2` at IoU 1.0 in 5.8 s.
+
 A `build_parts` call with all four parts timed out in the client once, right after the connector restarted, although the build itself finished on mochi in 6 s (all four by the model, `runtime_log.jsonl`): the reply was lost on the client side. `start_build` + `build_status` avoids depending on one long call when a request has several parts. All eight STEP files of these runs match the build123d translator's parts of the same goals (IoU ≥ 0.99999), an independent check of the geometry.
 
 ## Writing goals (summary; `goal_format` has the full list)
@@ -108,6 +110,7 @@ A `build_parts` call with all four parts timed out in the client once, right aft
 
 | File | Version |
 |---|---|
-| `taiga_harness.py` | 2026.10.17.1 (angled planes, patch 0020: validated and described in `goal_format` when the work folder has the patch) |
+| `taiga_harness.py` | 2026.10.17.2 (`build` with `--no-step` / `step=false` passed the option so the runtime rejected it: every part came back "no result"; fixed) |
+| `taiga_harness.py` (before) | 2026.10.17.1 (angled planes, patch 0020: validated and described in `goal_format` when the work folder has the patch) |
 | `taiga_harness.py` (before) | 2026.10.15.2 (origin-plane normals and centres normalized; `pts` left out of the format without patch 0019) |
 | `taiga_mcp.py` | 2026.10.15.1 |

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """taiga_harness.py — the interface other tools (LLM agents, scripts) use to build CAD parts
 with the Taiga models: the goal format, validation, a buildability check, builds, results.
-Version: 2026.10.17.1
+Version: 2026.10.17.2
 
 The same functions back the MCP server (taiga_mcp.py) and this command line; everything is
 JSON in, JSON out:
@@ -420,7 +420,7 @@ def build(goals: dict, chain: str = "teacher,main:guided,main,fallback:guided", 
     if registry_path().is_file():
         cmd += ["--registry", str(registry_path())]
     if not step:
-        cmd += ["--build-args", "--no-step"]
+        cmd += ["--build-args=--no-step"]  # one token: argparse reads a separate "--no-step" as an option
     p = subprocess.run(cmd, cwd=work() / "taiga-s1", env=fc_env(), capture_output=True, text=True, timeout=timeout_s)
     (folder / "runtime.log").write_text(p.stdout + p.stderr)
     log = folder / "runtime_log.jsonl"
