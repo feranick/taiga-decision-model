@@ -246,8 +246,10 @@ Every seed: the ten S 80 parts other than the casing exact, the casing core 24/2
 | `comp2-L3` | 0.98 | 0.67 (seed 12: **0.00**) |
 | Perturbed `len6` / `mixed_long` | 0.94 / 0.92 | **0.95 / 0.94** |
 | S 80 whole pump, plain | 0.9724 / 0.9886 / 0.9987 | 0.9983 / 0.9987 / 0.9337 |
+| S 80 whole pump, guided | 0.9983 / 0.9983 / 0.9987 | 0.9983 / 0.9987 / 0.9987 |
+| Casing intents, plain / guided (seeds 12, 2, 22) | 47, 48, 52 / 51, 51, 52 | 51, **52**, 50 / 51, **52**, **52** |
 
-Seed 12 fails one held-out composition completely (`comp2` 0.00 clean, 0.34 perturbed) and is the weakest elsewhere (`iid-L3` 0.95, `len2` 0.88); seed 2 is level with v1 seed 2 (clean ≥ 0.97 everywhere, `comp2` 1.00, `points` 1.00; perturbed `len6` 0.95, `mixed_long` 0.96). v2 seed 2 is the candidate to replace v1, after its S 80 guided run and the DeepCAD test.
+Seed 12 fails one held-out composition completely (`comp2` 0.00 clean, 0.34 perturbed) and is the weakest elsewhere (`iid-L3` 0.95, `len2` 0.88); seed 2 is level with v1 seed 2 (clean ≥ 0.97 everywhere, `comp2` 1.00, `points` 1.00; perturbed `len6` 0.95, `mixed_long` 0.96) and builds the whole casing in both modes (52/52, where v1 seed 2 has 51/52 guided). v2 seed 2 is the candidate to replace v1; its DeepCAD test (7,742 goals with the split designs) is 1.000 on every bucket (`../datasets/README.md`).
 
 ## Limits of the vocabulary found on the way
 

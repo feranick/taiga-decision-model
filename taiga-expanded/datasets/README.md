@@ -135,6 +135,8 @@ From 0.956 to 1.000: with DeepCAD training goals the models build all but one or
 
 **v1, the production model** (1.2M, 9.7M states, DeepCAD goals 25 %, `DAGGER_PERTURB=0.2`, seed 2; carbonio, 2026-10-16): **1.000 on every bucket** (all 6,762 designs, no scoring timeouts). The larger, perturbed training lost nothing on real designs.
 
+**v2** (patch 0019, 11.4M states, seed 2; mochi, 2026-10-17) on the larger test set with split designs (7,742 verified goals; 7,143 / 568 / 31 with 1–5 / 6–10 / 11–20 features): **1.000 on every bucket** (7,741 of 7,742 built; mean IoU 1.000). v1 seed 2 on the same set: running.
+
 **Train split** (Spark2, `SUBSET=train LIMIT=0`, FreeCAD 1.1.3, patches 0001–0009, 2026-10-08 to 2026-10-11): 117,855 designs converted, 117,550 built by the teacher, **116,688 match their original** (IoU ≥ 0.99; 99.0 % of the converted designs). Verified goals by number of features:
 
 | Features | 1 | 2 | 3 | 4 | 5 | 6–10 | 11–15 | 16–21 |
