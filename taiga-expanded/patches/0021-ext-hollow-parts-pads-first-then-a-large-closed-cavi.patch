@@ -1,0 +1,375 @@
+From 4e207cd644d9ebf74032a8c8a831254b13060e10 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Sun, 18 Oct 2026 18:23:37 -0400
+Subject: [PATCH] ext: hollow parts, pads first then a large closed cavity
+ (family and suite "hollow")
+
+A pump casing is built outside in: the body, flanges and bosses, then a cavity that removes a large
+share of the material, so until it is cut the part is far heavier than its target (the S 80
+casing core: about 1.5 times after its flange pads). Synthetic cavities remove about 12 % of the
+body on average, and v3 read "far over the target volume right after a pad" as a wrong pad and
+undid it. New family and suite "hollow": a box or cylinder base, one to three pad groups (flange
+pads on an origin plane with an offset that stick out of one side only, alone, patterned along Z
+or mirrored, and top bosses), then one or two large closed cavities on XY datum planes (25-75 %
+of the body; rectangles, outlines, round in cylinders), optionally a bore from the top. Goals stay
+at least 1.25 times over their target after the pads. No new goal keys; earlier suites keep their
+goals.
+---
+ freecad_s1/evaluate.py    |   3 +-
+ freecad_s1/ext/hollow.py  | 195 ++++++++++++++++++++++++++++++++++++++
+ freecad_s1/ext/sampler.py |  12 ++-
+ freecad_s1/goals.py       |   2 +-
+ tests/test_ext_hollow.py  |  64 +++++++++++++
+ 5 files changed, 271 insertions(+), 5 deletions(-)
+ create mode 100644 freecad_s1/ext/hollow.py
+ create mode 100644 tests/test_ext_hollow.py
+
+diff --git a/freecad_s1/evaluate.py b/freecad_s1/evaluate.py
+index 7e18a74..9e1d19f 100644
+--- a/freecad_s1/evaluate.py
++++ b/freecad_s1/evaluate.py
+@@ -69,7 +69,7 @@ def offline_metrics(model: S1Model, ds: Dataset, device: torch.device, batch_siz
+ 
+ 
+ # Seed offsets keep suites that share a level (iid-L3, comp, comp2, comp3) on disjoint seeds.
+-SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000, "edges": 90_000, "large": 0, "large_ext": 95_000, "datum_z": 96_000, "overhang": 97_000, "turned": 98_000, "mixed": 99_000, "mixed_at": 99_500, "points": 99_800, "angled": 99_900}  # large: the iid seeds
++SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000, "edges": 90_000, "large": 0, "large_ext": 95_000, "datum_z": 96_000, "overhang": 97_000, "turned": 98_000, "mixed": 99_000, "mixed_at": 99_500, "points": 99_800, "angled": 99_900, "hollow": 99_950}  # large: the iid seeds
+ 
+ SUITES = {
+     "iid": [(1, "iid"), (2, "iid"), (3, "iid")],  # training distribution, fresh goals
+@@ -95,6 +95,7 @@ SUITES = {
+     "mixed_at_long": [(4, "mixed_at")],  # taiga-expanded (0016): the same, longer
+     "points": [(3, "points")],  # taiga-expanded (0019): fillets, chamfers, shells on edges / faces named by points
+     "angled": [(3, "angled")],  # taiga-expanded (0020): bores, pins, windows on planes at any angle
++    "hollow": [(3, "hollow")],  # taiga-expanded (0021): pads, then large closed cavities (the part far over its target)
+     "len3": [(6, "len")],  # held-out length: 11 intents (2.2x the training maximum)
+     "len4": [(7, "len")],  # stress: 13 intents
+     "len5": [(8, "len")],  # stress: 15 intents
+diff --git a/freecad_s1/ext/hollow.py b/freecad_s1/ext/hollow.py
+new file mode 100644
+index 0000000..20c0ac3
+--- /dev/null
++++ b/freecad_s1/ext/hollow.py
+@@ -0,0 +1,195 @@
++"""Hollow parts: pads first, then a large closed cavity (taiga-expanded, patch 0021).
++
++A pump casing is built outside in: the body, its flanges and bosses, then a cavity that removes a
++large share of the material. Until the cavity is cut, the part is far heavier than its target (the
++S 80 casing core: about 1.5 times after the flange pads). Synthetic goals rarely show that (their
++cavities remove about 12 % of the body on average), and a model trained on them may read "far
++over the target volume right after a pad" as a wrong pad and undo it (v3, 2026-10-18).
++
++The family "hollow": a box or cylinder base; one to three pad groups (flange pads on an origin
++plane with an offset that stick out of one side only, optionally patterned along Z or mirrored to
++the opposite side, and top bosses); then one or two large closed cavities on XY datum planes
++(rectangles or outlines, 25-75 % of the body), optionally a second, stepped cavity and a bore
++from the top into it. Goals whose part stays below 1.25 times its target volume after the pads are
++drawn again. No new goal keys: every feature is from the existing vocabulary.
++
++Pure stdlib.
++"""
++from __future__ import annotations
++
++import math
++import random
++
++from ..schema import Goal, GoalFeature
++
++MIN_RATIO = 1.25  # volume after the pads / target volume
++
++
++def _u(rng: random.Random, lo: float, hi: float) -> float:
++    return round(rng.uniform(lo, hi), 1)
++
++
++def _base(rng: random.Random) -> GoalFeature:
++    if rng.random() < 0.65:
++        return GoalFeature("base_box", {"w": _u(rng, 30, 90), "d": _u(rng, 30, 90), "h": _u(rng, 20, 60)})
++    return GoalFeature("base_cyl", {"r": _u(rng, 16, 45), "h": _u(rng, 20, 55)})
++
++
++def _extent(base: GoalFeature, axis: int) -> float:
++    """Half extent of the base along X (0) or Y (1)."""
++    p = base.params
++    return (p["w"] / 2, p["d"] / 2)[axis] if base.kind == "base_box" else p["r"]
++
++
++def _volume(base: GoalFeature) -> float:
++    p = base.params
++    return p["w"] * p["d"] * p["h"] if base.kind == "base_box" else math.pi * p["r"] ** 2 * p["h"]
++
++
++def flange_pad(rng: random.Random, base: GoalFeature, axis: int, side: float):
++    """A pad on the origin plane normal to `axis` (0: YZ, 1: XZ), shifted by "off", extruded both
++    ways, sticking out of the side `side` (+1 / -1) only: its inner end stays inside the body.
++    Returns (feature, added volume outside the body) or None."""
++    h = base.params["h"]
++    along = _extent(base, axis)
++    across = _extent(base, 1 - axis)
++    if base.kind == "base_cyl":
++        across *= 0.35  # stay near the axis: the round side is close to `along` there
++    length = _u(rng, 6, max(6.1, along * 0.6))
++    out = _u(rng, 2, max(2.1, length * 0.45))
++    centre = round(side * (along + out - length / 2), 1)
++    params: dict[str, float] = {"nx": 0.0, "ny": 0.0, "nz": 0.0}
++    params["nx" if axis == 0 else "ny"] = 1.0
++    if rng.random() < 0.6:
++        kind = "boss_box"
++        a = _u(rng, 4, max(4.1, 2 * across * (1.2 if base.kind == "base_box" else 1.0)))
++        b = _u(rng, 3, max(3.1, (h - 6) * 0.4))
++        if b + 4 > h:
++            return None
++        v = _u(rng, b / 2 + 2, h - b / 2 - 2)
++        params.update(w=a, d=b, h=length)
++        area = a * b
++    else:
++        kind = "boss_cyl"
++        r = _u(rng, 2, max(2.1, min(across, h / 2) * 0.6))
++        if 2 * r + 4 > h:
++            return None
++        v = _u(rng, r + 2, h - r - 2)
++        params.update(r=r, h=length)
++        area = math.pi * r * r
++    params["off"] = centre
++    if axis == 0:
++        params.update(x=centre, y=0.0, z=v)
++    else:
++        params.update(x=0.0, y=centre, z=v)
++    return GoalFeature(kind, params), area * out
++
++
++def _pad_group(rng: random.Random, base: GoalFeature, used: set):
++    """A flange pad (alone, patterned along Z, or mirrored), or a top boss. (features, volume)."""
++    from . import patterns as pt
++
++    if rng.random() < 0.75:
++        free = [(k, s) for k in (0, 1) for s in (-1.0, 1.0) if (k, s) not in used]
++        if not free:
++            return None
++        k, s = rng.choice(free)
++        out = flange_pad(rng, base, k, s)
++        if out is None:
++            return None
++        f, vol = out
++        used.add((k, s))
++        feats = [f]
++        h = base.params["h"]
++        size = f.params["d"] if f.kind == "boss_box" else 2 * f.params["r"]
++        z = f.params["z"]
++        room = h - size / 2 - 2 - z  # from this pad's centre to the highest centre that fits
++        r = rng.random()
++        if r < 0.3 and room >= size + 1.5:
++            feats.append(GoalFeature("linear_pattern", pt.pattern_params(
++                "linear_pattern", 2, 1.0, n=2.0, length=_u(rng, size + 1.5, room))))
++            vol *= 2
++        elif r < 0.6 and (k, -s) not in used:
++            used.add((k, -s))
++            feats.append(GoalFeature("mirror", pt.pattern_params("mirror", k)))
++            vol *= 2
++        return feats, vol
++    p = base.params
++    half = (p["w"] / 2, p["d"] / 2) if base.kind == "base_box" else (p["r"] * 0.6, p["r"] * 0.6)
++    r = _u(rng, 2, max(2.1, min(half) * 0.4))
++    hb = _u(rng, 3, 20)
++    f = GoalFeature("boss_cyl", {"r": r, "x": _u(rng, -(half[0] - r - 1), half[0] - r - 1),
++                                 "y": _u(rng, -(half[1] - r - 1), half[1] - r - 1), "h": hb})
++    return [f], math.pi * r * r * hb
++
++
++def large_cavity(rng: random.Random, base: GoalFeature, z_lo: float = None, z_hi: float = None,
++                 scale_xy: float = 1.0):
++    """A closed cavity on an XY datum plane, both ways: 60-95 % of the inner footprint, 50-85 % of
++    the height (or within z_lo .. z_hi). Returns (feature, volume) or None."""
++    from .sampler import _inner_half, _shape, _xy_datum, _xy_outline
++
++    hx, hy = _inner_half(base)
++    hx, hy = (hx - 3) * scale_xy, (hy - 3) * scale_xy
++    h = base.params["h"]
++    if hx < 4 or hy < 4:
++        return None
++    lo, hi = (3.0, h - 3.0) if z_lo is None else (z_lo, z_hi)
++    if hi - lo < 4:
++        return None
++    depth = _u(rng, (hi - lo) * 0.5, (hi - lo) * 0.85)
++    off = _u(rng, lo + depth / 2, hi - depth / 2)
++    rx, ry = _u(rng, 0.6 * hx, 0.95 * hx), _u(rng, 0.6 * hy, 0.95 * hy)
++    if base.kind == "base_cyl" and rng.random() < 0.6:  # a round cavity, as in a casing's bore
++        from .sampler import _circle
++
++        rc = _u(rng, 0.6, 0.9) * (base.params["r"] - 3) * scale_xy
++        return _xy_outline("profile_pocket", _circle(0.0, 0.0, rc), off, depth=depth), math.pi * rc * rc * depth
++    if rng.random() < 0.5:
++        return _xy_datum("pocket_rect", 0.0, 0.0, off, w=round(2 * rx, 1), d=round(2 * ry, 1), depth=depth), \
++            4 * rx * ry * depth
++    from . import profiles as pr
++
++    outline = _shape(rng, 0.0, 0.0, rx, ry)
++    return _xy_outline("profile_pocket", outline, off, depth=depth), abs(pr.area(outline)) * depth
++
++
++def sample_hollow_goal(level: int, rng: random.Random) -> Goal:
++    from ..goals import _scale
++
++    for _ in range(200):
++        base = _base(rng)
++        h = base.params["h"]
++        feats, added, used = [base], 0.0, set()
++        n_groups = 1 if level <= 2 else rng.randint(1, 3)
++        for _g in range(n_groups * 3):
++            if sum(1 for f in feats[1:] if f.kind not in ("linear_pattern", "mirror")) >= n_groups:
++                break
++            out = _pad_group(rng, base, used)
++            if out:
++                feats += out[0]
++                added += out[1]
++        if len(feats) == 1:
++            continue
++        cav = large_cavity(rng, base)
++        if cav is None:
++            continue
++        f, removed = cav
++        feats.append(f)
++        if level >= 3 and rng.random() < 0.35:  # a stepped cavity above or below the first, overlapping it
++            top = f.params["off"] + f.params["depth"] / 2
++            bottom = f.params["off"] - f.params["depth"] / 2
++            above = rng.random() < 0.5 and h - 3 - top > 4
++            z_lo, z_hi = (top - 2, h - 3.0) if above else (3.0, bottom + 2)
++            c2 = large_cavity(rng, base, z_lo, z_hi, scale_xy=rng.uniform(0.5, 0.9))
++            if c2 is not None:
++                feats.append(c2[0])
++                removed += c2[1] * 0.9
++        if level >= 3 and rng.random() < 0.3:  # a bore from the top into the cavity
++            r = _u(rng, 1.5, max(1.6, min(f.params["w"], f.params["d"]) * 0.15))
++            feats.append(GoalFeature("hole", {"r": r, "x": 0.0, "y": 0.0}))
++        body = _volume(base) + added
++        if body / max(body - removed, 1e-6) < MIN_RATIO:
++            continue
++        return Goal(feats, level=min(level, 3), scale=_scale(base))
++    raise ValueError("could not sample a hollow goal")
+diff --git a/freecad_s1/ext/sampler.py b/freecad_s1/ext/sampler.py
+index 035bef7..f1f9292 100644
+--- a/freecad_s1/ext/sampler.py
++++ b/freecad_s1/ext/sampler.py
+@@ -20,12 +20,12 @@ TRAIN_FRACTION = float(os.environ.get("TAIGA_EXT_FRACTION", "0.35"))
+ TRAIN_ONLY = tuple(s.strip() for s in os.environ.get("TAIGA_TRAIN_ONLY", "").split(",") if s.strip())
+ 
+ # new evaluation splits (each also feeds training through sample_train)
+-SPLITS = ("side", "plane", "outline", "revolve", "pattern", "edges", "datum_z", "overhang", "turned", "mixed", "points", "angled")
++SPLITS = ("side", "plane", "outline", "revolve", "pattern", "edges", "datum_z", "overhang", "turned", "mixed", "points", "angled", "hollow")
+ # the families large_ext draws from (ext.sizes): those before patch 0019, so the suite keeps its goals
+ LARGE_EXT_SPLITS = ("side", "plane", "outline", "revolve", "pattern", "edges", "datum_z", "overhang", "turned", "mixed")
+ # how often each split is drawn for training (patch 0010: mixed goals carry the long-goal and
+ # composition load, so they are drawn more often)
+-TRAIN_WEIGHTS = {"mixed": 3.0, "points": 2.0, "angled": 1.5}  # 0019: fillets / chamfers / shells on chosen edges and faces; 0020: angled planes
++TRAIN_WEIGHTS = {"mixed": 3.0, "points": 2.0, "angled": 1.5, "hollow": 1.5}  # 0019: fillets / chamfers / shells on chosen edges and faces; 0020: angled planes; 0021: pads, then large cavities
+ # level-1 training goals from the expanded families: a lone base that only these families make
+ LEVEL1_SPLITS = ("outline", "revolve", "turned")
+ 
+@@ -1030,6 +1030,12 @@ def _angled(level: int, rng: random.Random) -> Goal:
+     return sample_angled_goal(level, rng)
+ 
+ 
++def _hollow(level: int, rng: random.Random) -> Goal:
++    from .hollow import sample_hollow_goal
++
++    return sample_hollow_goal(level, rng)
++
++
+ def _mixed_at(level: int, rng: random.Random) -> Goal:
+     """Suites mixed_at / mixed_at_long (patch 0016): mixed goals with a stack picked by "at" and
+     top-face features written with nz=+1 (the S 80 casing's form)."""
+@@ -1042,7 +1048,7 @@ SAMPLERS = {"side": sample_side_goal, "plane": sample_plane_goal, "outline": _ou
+             "revolve": sample_revolve_goal, "pattern": sample_pattern_goal,
+             "edges": sample_edges_goal,
+             "datum_z": sample_datum_z_goal, "overhang": sample_overhang_goal,
+-            "turned": _turned, "mixed": _mixed, "mixed_at": _mixed_at, "points": _points, "angled": _angled}
++            "turned": _turned, "mixed": _mixed, "mixed_at": _mixed_at, "points": _points, "angled": _angled, "hollow": _hollow}
+ # evaluation-only splits (patch 0016): not drawn for training (sample_train uses SPLITS) and not
+ # part of large_ext (ext.sizes), so the earlier suites keep their goals
+ EVAL_SPLITS = ("mixed_at",)
+diff --git a/freecad_s1/goals.py b/freecad_s1/goals.py
+index 86ef302..de83dc1 100644
+--- a/freecad_s1/goals.py
++++ b/freecad_s1/goals.py
+@@ -260,7 +260,7 @@ def heldout_composition(goal: Goal) -> str | None:
+     return None
+ 
+ 
+-SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext", "datum_z", "overhang", "turned", "mixed", "mixed_at", "points", "angled")  # side .. angled: taiga-expanded
++SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext", "datum_z", "overhang", "turned", "mixed", "mixed_at", "points", "angled", "hollow")  # side .. hollow: taiga-expanded
+ 
+ 
+ def keep_heldout() -> bool:
+diff --git a/tests/test_ext_hollow.py b/tests/test_ext_hollow.py
+new file mode 100644
+index 0000000..087468a
+--- /dev/null
++++ b/tests/test_ext_hollow.py
+@@ -0,0 +1,64 @@
++"""taiga-expanded: hollow parts, pads first, then a large cavity (patch 0021)."""
++import random
++
++from freecad_s1.evaluate import SPLIT_SEED_OFFSET, SUITES
++from freecad_s1.ext import faces, hollow, profiles, sampler
++from freecad_s1.goals import SPLITS, sample_split_goal
++from freecad_s1.schema import GOAL_KINDS
++
++PADS = ("boss_box", "boss_cyl")
++CUTS = ("pocket_rect", "profile_pocket")
++
++
++def _goals(n=60, seed=5):
++    rng = random.Random(seed)
++    return [sample_split_goal("hollow", level, rng) for level in (2, 3, 3) for _ in range(n)]
++
++
++def test_family_and_suite_are_registered():
++    assert "hollow" in sampler.SPLITS and "hollow" in SPLITS and SUITES["hollow"] == [(3, "hollow")]
++    assert "hollow" not in sampler.LARGE_EXT_SPLITS  # large_ext keeps its goals
++    assert sampler.TRAIN_WEIGHTS["hollow"] == 1.5
++    assert len(set(SPLIT_SEED_OFFSET.values())) == len(SPLIT_SEED_OFFSET) - 2  # only len and large share iid's 0
++
++
++def test_pads_come_first_then_a_closed_cavity():
++    for g in _goals():
++        kinds = [f.kind for f in g.features]
++        assert kinds[0] in ("base_box", "base_cyl") and all(k in GOAL_KINDS for k in kinds)
++        first_cut = next(i for i, f in enumerate(g.features) if f.kind in CUTS)
++        assert any(k in PADS for k in kinds[1:first_cut])  # at least one pad before the cavity
++        h = g.features[0].params["h"]
++        for f in g.features:
++            if f.kind in CUTS:
++                p = f.params
++                assert faces.is_datum(f) and p["nz"] == 1.0
++                assert p["off"] - p["depth"] / 2 >= 0.9 and p["off"] + p["depth"] / 2 <= h - 0.9  # closed
++
++
++def test_flange_pads_stick_out_of_one_side_only():
++    n = 0
++    for g in _goals():
++        base = g.features[0]
++        for f in g.features[1:]:
++            if f.kind in PADS and faces.is_datum(f):
++                n += 1
++                k = 0 if f.params["nx"] == 1.0 else 1
++                along = hollow._extent(base, k)
++                c, L = f.params["off"], f.params["h"]
++                inner, outer = sorted((abs(c) - L / 2, abs(c) + L / 2))
++                assert outer > along and -along < inner < along  # out on one side, inner end inside
++    assert n >= 60
++
++
++def test_the_part_stays_well_over_its_target_after_the_pads():
++    for g in _goals(30):
++        base = g.features[0]
++        body = hollow._volume(base)
++        removed = 0.0
++        for f in g.features[1:]:
++            if f.kind in CUTS:
++                p = f.params
++                area = p["w"] * p["d"] if f.kind == "pocket_rect" else abs(profiles.area(p["outline"]))
++                removed += area * p["depth"]
++        assert body / (body - min(removed, 0.95 * body)) >= hollow.MIN_RATIO  # the cavities remove a large share
+-- 
+2.34.1
+

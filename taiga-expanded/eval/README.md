@@ -251,6 +251,18 @@ Every seed: the ten S 80 parts other than the casing exact, the casing core 24/2
 
 Seed 12 fails one held-out composition completely (`comp2` 0.00 clean, 0.34 perturbed) and is the weakest elsewhere (`iid-L3` 0.95, `len2` 0.88); seed 2 is level with v1 seed 2 (clean ≥ 0.97 everywhere, `comp2` 1.00, `points` 1.00; perturbed `len6` 0.95, `mixed_long` 0.96) and builds the whole casing in both modes (52/52, where v1 seed 2 has 51/52 guided). v2 seed 2 is the candidate to replace v1; its DeepCAD test (7,742 goals with the split designs) is 1.000 on every bucket (`../datasets/README.md`).
 
+**v3** (patch 0020: v2's 11.4M states plus 1.25M `angled` states, 12.0M; 3 seeds; Spark1, 2026-10-18; `~/agg_v3.txt`): every clean suite is at or above v2 (`len6` 1.00, `angled` 1.00 on every seed, `plane` 1.00, `comp2` 0.97 with no collapsed seed; perturbed `len6` 0.93), and the ten S 80 parts other than the casing are exact. **But the casing fails on every seed and in both modes** (whole pump 0.36; casing 18/52 intents, core 2/24): v3 builds the first flange pad (a datum `boss_box` on XZ sticking out of one side) and then undoes it. Diagnosis (seed 2, prefixes and variants of the casing core):
+
+| Goal | v3 | v2 |
+|---|---|---|
+| core, first 3 features; box with the same pad, alone or patterned, one-sided or through, at 1/5 scale | exact | exact |
+| core, first 5 features | exact | exact |
+| core, first 6 features (feature 5: the volute cavity, ~40 % of the body) | **fails** (IoU 0.57) | exact |
+| the same with the cavity 20 deep | exact | exact |
+| the same with the cavity before the pads | exact | exact |
+
+The state carries the part's volume over the target volume; with the cavity in the goal it is ~1.5 right after the pads, a value synthetic goals show almost only after a wrong pad (their cavities remove ~12 % of the body on average), and v3 learned to undo there. Fix: patch 0021 (family `hollow`: pads, then large cavities); v4 = v3's pool plus a `hollow` supplement. v3 is not registered.
+
 ## Limits of the vocabulary found on the way
 
 - **Patterns only about the origin axes.** The suction flange's 8 bolt holes are on a circle around the port axis (z = 110), not the shaft axis, so they are written as 4 holes, each mirrored. A polar pattern about a feature's own axis would make it one hole and one pattern.

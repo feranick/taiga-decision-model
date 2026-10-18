@@ -3,7 +3,7 @@
 # the patches' BASE commit with the patch series applied, in its own WORK folder, with the
 # expanded evaluation suites added. BASELINE=1 runs the same upstream commit unpatched
 # (the reference for "no regression on the original suites").
-# Version: 2026.10.17.1
+# Version: 2026.10.18.1
 #
 # Usage:   ./train_expanded.sh <dgx|5060ti|quadro> <stages...>
 #   e.g.   ./train_expanded.sh 5060ti setup
@@ -60,6 +60,9 @@ if [[ ${BASELINE:-0} != 1 ]] && { [[ ! -f $ev ]] || grep -q '"points"' "$ev"; };
 fi
 if [[ ${BASELINE:-0} != 1 ]] && { [[ ! -f $ev ]] || grep -q '"angled"' "$ev"; }; then
   EXT_SUITES+=" angled"   # patch 0020
+fi
+if [[ ${BASELINE:-0} != 1 ]] && { [[ ! -f $ev ]] || grep -q '"hollow"' "$ev"; }; then
+  EXT_SUITES+=" hollow"   # patch 0021
 fi
 export SUITES=${SUITES:-"iid comp comp2 comp3 len len2 len3 len4 len5 len6"}
 [[ ${BASELINE:-0} == 1 ]] || SUITES="$SUITES $EXT_SUITES"
