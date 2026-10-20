@@ -263,6 +263,21 @@ Seed 12 fails one held-out composition completely (`comp2` 0.00 clean, 0.34 pert
 
 The state carries the part's volume over the target volume; with the cavity in the goal it is ~1.5 right after the pads, a value synthetic goals show almost only after a wrong pad (their cavities remove ~12 % of the body on average), and v3 learned to undo there. Fix: patch 0021 (family `hollow`: pads, then large cavities); v4 = v3's pool plus a `hollow` supplement. v3 is not registered.
 
+**v4 seed 2, first check** (2026-10-19, patch 0021, before the aggregate): `k06`, `k06_shallow` and `k06_cavity_first` exact, and the whole casing core exact, every one of its 155 steps the teacher's (v3 seed 2: 2 of 24 intents).
+
+**v4** (patch 0021: v3's pool plus 1.2M `hollow` states; 3 seeds; Spark1, 2026-10-20; `~/agg_v4.txt`). Registered-seed gates for seed 2:
+
+| Gate | Threshold | v4 seed 2 | v4 seed 22 |
+|---|---|---|---|
+| Clean suites up to `len6` | ≥ 0.97 | **fail: `comp2` 0.85** (`mixed_at_long` 0.93, `mixed_long` 0.97; all others ≥ 0.98) | `comp2` 0.97; `mixed_long` 0.91, `mixed_at_long` 0.94 |
+| `points` / `angled` / `hollow` clean | ≥ 0.99 | 1.00 / 1.00 / 1.00 | 1.00 / 1.00 / 1.00 |
+| Perturbed `len6` / `mixed_long` | ≥ 0.90 | 0.92 / 0.94 | 0.93 / 0.90 |
+| DeepCAD test (7,742), 1-5 / 6-10 / 11-20 | ≥ 0.99 / 0.98 / 0.95 | 1.000 / 0.996 / 1.000 (carbonio) | not run |
+| S 80 casing guided; core and ten parts | ≥ 51/52; exact | 52/52 (whole pump 0.9987); exact | 51/52 (0.9983); exact |
+| Sweep: no seed below 0.50 | | pass (lowest: seed 12 `comp2` 0.81) | |
+
+Seed 12 is the weak seed again (`len6` 0.87, casing 25/52). `comp2` (a `boss_box` then a `mirror`, the held-out pair) dropped on every seed (0.85 / 0.81 / 0.97; v3 0.97 / 0.99 / 0.95): `hollow` mirrors `boss_box` flange pads about an origin plane, a related but different form, a likely cause (being checked).
+
 ## Limits of the vocabulary found on the way
 
 - **Patterns only about the origin axes.** The suction flange's 8 bolt holes are on a circle around the port axis (z = 110), not the shaft axis, so they are written as 4 holes, each mirrored. A polar pattern about a feature's own axis would make it one hole and one pattern.
