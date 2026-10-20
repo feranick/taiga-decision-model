@@ -1,0 +1,545 @@
+From c2c6e6eddfbf49abad185c808d7d1324b941d964 Mon Sep 17 00:00:00 2001
+From: Nicola Ferralis <ferralis@generalflash.com>
+Date: Tue, 20 Oct 2026 01:24:33 -0400
+Subject: [PATCH] ext: draft angles on side faces (family and suite "draft")
+
+Cast and moulded parts taper their side faces so they leave the mould. An intent "draft" tapers
+faces by "angle" (degrees, 0.5-20) about the XY plane (z = 0), pulled along +Z, so outer faces lean
+inward going up: every side face by default (planar faces parallel to Z and cylinders about Z; the
+model issues the new Select:Faces|Z), or the faces named by points ("pts", Select:Face@Point). The
+model then issues PartDesign_Draft, an upstream command that was only a distractor with a fixed
+3 degrees; the runtime sets the angle, the neutral plane and the pull direction. New goal kind
+"draft" (appended), the angle in the goal encoding's axis / angle block (no new numbers), the
+Draft feature's angle in the state. New family and suite "draft": a box, cylinder, hexagon or
+outline base, optional bosses on top, the draft (all side faces, or one or two faces of a box by
+points), optionally a bore after it; angles stay small enough that every boss keeps half its size.
+Earlier suites keep their goals.
+---
+ freecad_s1/actions.py         |   6 +-
+ freecad_s1/evaluate.py        |   3 +-
+ freecad_s1/ext/draft.py       | 170 ++++++++++++++++++++++++++++++++++
+ freecad_s1/ext/pointsel.py    |   2 +-
+ freecad_s1/ext/revolve.py     |   6 +-
+ freecad_s1/ext/sampler.py     |  12 ++-
+ freecad_s1/goals.py           |   3 +-
+ freecad_s1/runtime/params.py  |   2 +-
+ freecad_s1/runtime/session.py |   7 +-
+ freecad_s1/schema.py          |   1 +
+ tests/test_ext_draft.py       |  86 +++++++++++++++++
+ tests/test_ext_edges.py       |   5 +-
+ tests/test_ext_pointsel.py    |   3 +-
+ 13 files changed, 293 insertions(+), 13 deletions(-)
+ create mode 100644 freecad_s1/ext/draft.py
+ create mode 100644 tests/test_ext_draft.py
+
+diff --git a/freecad_s1/actions.py b/freecad_s1/actions.py
+index ee4e631..80a0723 100644
+--- a/freecad_s1/actions.py
++++ b/freecad_s1/actions.py
+@@ -84,6 +84,8 @@ CATALOGUE: dict[str, ActionSpec] = {
+         *[_spec(f"Select:{a}", "select", "doc", False) for a in ext_edges.EXTRA_SELECTS],
+         # taiga-expanded (patch 0019): edges / faces named by points in the intent (ext.pointsel)
+         *[_spec(f"Select:{a}", "select", "doc", False) for a in ext_pointsel.POINT_SELECTS],
++        # taiga-expanded (patch 0022): the side faces, for a draft (ext.draft)
++        _spec("Select:Faces|Z", "select", "doc", False),
+     ]
+ }
+ 
+@@ -131,7 +133,7 @@ def action_vector(action_id: str) -> list[float]:
+     elif arg.startswith("Plane:"):
+         normal = {"XY": "Z", "XZ": "Y", "YZ": "X"}[arg.split(":")[1]]
+         vec[:3] = list(_AXES[normal])
+-    elif arg.startswith("Edges|"):  # taiga-expanded: Edges|X, Edges|Y too
++    elif arg.startswith(("Edges|", "Faces|")):  # taiga-expanded: Edges|X, Edges|Y too; Faces|Z (0022)
+         vec[:3] = list(_AXES[arg[-1]])
+     vec[3] = float(arg.startswith("Plane:"))
+     vec[4] = float(arg.startswith("Face"))
+@@ -177,6 +179,8 @@ def enumerate_actions(state: State) -> list[str]:
+         out.append("Select:Edges|Z")
+     out += ext_edges.extra_selects(state.shape.face_dirs)  # taiga-expanded: edges of any face, |X, |Y
+     out += ext_pointsel.extra_selects(has_solid)  # taiga-expanded (0019): edges / faces by points
++    if "|Z" in state.shape.face_dirs:
++        out.append("Select:Faces|Z")  # taiga-expanded (0022): side faces, for a draft
+     if any(n.type in SOLID_FEATURE_TYPES for n in state.tree):
+         out.append("Select:Tip")
+     if state.selection:
+diff --git a/freecad_s1/evaluate.py b/freecad_s1/evaluate.py
+index 9e1d19f..0fefc8f 100644
+--- a/freecad_s1/evaluate.py
++++ b/freecad_s1/evaluate.py
+@@ -69,7 +69,7 @@ def offline_metrics(model: S1Model, ds: Dataset, device: torch.device, batch_siz
+ 
+ 
+ # Seed offsets keep suites that share a level (iid-L3, comp, comp2, comp3) on disjoint seeds.
+-SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000, "edges": 90_000, "large": 0, "large_ext": 95_000, "datum_z": 96_000, "overhang": 97_000, "turned": 98_000, "mixed": 99_000, "mixed_at": 99_500, "points": 99_800, "angled": 99_900, "hollow": 99_950}  # large: the iid seeds
++SPLIT_SEED_OFFSET = {"iid": 0, "comp": 10_000, "comp2": 20_000, "comp3": 30_000, "len": 0, "side": 40_000, "plane": 50_000, "outline": 60_000, "revolve": 70_000, "pattern": 80_000, "edges": 90_000, "large": 0, "large_ext": 95_000, "datum_z": 96_000, "overhang": 97_000, "turned": 98_000, "mixed": 99_000, "mixed_at": 99_500, "points": 99_800, "angled": 99_900, "hollow": 99_950, "draft": 99_975}  # large: the iid seeds
+ 
+ SUITES = {
+     "iid": [(1, "iid"), (2, "iid"), (3, "iid")],  # training distribution, fresh goals
+@@ -95,6 +95,7 @@ SUITES = {
+     "mixed_at_long": [(4, "mixed_at")],  # taiga-expanded (0016): the same, longer
+     "points": [(3, "points")],  # taiga-expanded (0019): fillets, chamfers, shells on edges / faces named by points
+     "angled": [(3, "angled")],  # taiga-expanded (0020): bores, pins, windows on planes at any angle
++    "draft": [(3, "draft")],  # taiga-expanded (0022): draft angles on side faces, all or named by points
+     "hollow": [(3, "hollow")],  # taiga-expanded (0021): pads, then large closed cavities (the part far over its target)
+     "len3": [(6, "len")],  # held-out length: 11 intents (2.2x the training maximum)
+     "len4": [(7, "len")],  # stress: 13 intents
+diff --git a/freecad_s1/ext/draft.py b/freecad_s1/ext/draft.py
+new file mode 100644
+index 0000000..bbfc82a
+--- /dev/null
++++ b/freecad_s1/ext/draft.py
+@@ -0,0 +1,170 @@
++"""Draft angles (taiga-expanded, patch 0022).
++
++Cast and moulded parts taper their side faces so they leave the mould: the S 80 casing, covers
++and brackets are castings. An intent "draft" tapers faces by "angle" (degrees, 0.5-20) about the
++XY plane (z = 0, the part's base), pulled along +Z: an outer face leans inward going up, so the
++part narrows towards its top, as build123d-translator's draft does. Which faces:
++  - all side faces (planar faces parallel to Z, and cylinders about Z) by default: the model
++    issues Select:Faces|Z;
++  - or the faces named by points, "pts": [[x, y, z], ...], one point on each (Select:Face@Point,
++    patch 0019).
++The model then issues PartDesign_Draft (an upstream command, until now only a distractor with a
++fixed 3 degrees); the runtime sets the angle, the neutral plane and the pull direction.
++
++The family "draft": a box, cylinder, hexagon or outline base, optionally bosses on top, the draft
++(all side faces, or one or two faces of a box by points) and optionally a bore through it after.
++Pure stdlib except faces_parallel_z() and configure(), which receive FreeCAD objects.
++"""
++from __future__ import annotations
++
++import math
++import random
++
++from ..schema import Goal, GoalFeature
++
++KIND = "draft"
++SELECT = "Faces|Z"  # appended to the action catalogue
++MIN_ANGLE, MAX_ANGLE = 0.5, 20.0
++
++
++def is_draft(f) -> bool:
++    return f is not None and f.kind == KIND
++
++
++def angle(f) -> float:
++    return float(f.params.get("angle", 3.0))
++
++
++def extra_goal_num(f) -> list[float]:
++    """For the goal encoding, in the axis / angle block (ext.revolve): the pull direction (+Z)
++    and angle / 360."""
++    return [0.0, 0.0, 1.0, angle(f) / 360.0]
++
++
++def validate(f) -> list[str]:
++    if not is_draft(f):
++        return []
++    a = f.params.get("angle")
++    if not isinstance(a, (int, float)) or not (MIN_ANGLE <= a <= MAX_ANGLE):
++        return [f"draft: 'angle' must be a number of degrees in [{MIN_ANGLE}, {MAX_ANGLE}]"]
++    return []
++
++
++def faces_parallel_z(shape, tol: float = 1e-6) -> list[str]:
++    """Names of the side faces for Select:Faces|Z: planar faces whose normal is horizontal and
++    cylinders whose axis is vertical (runtime hook)."""
++    out = []
++    for i, face in enumerate(shape.Faces):
++        s = face.Surface
++        kind = type(s).__name__
++        if kind == "Plane":
++            u0, u1, v0, v1 = face.ParameterRange
++            n = face.normalAt((u0 + u1) / 2, (v0 + v1) / 2)
++            if abs(n.z) < tol:
++                out.append(f"Face{i + 1}")
++        elif kind == "Cylinder" and abs(abs(s.Axis.z) - 1) < tol:
++            out.append(f"Face{i + 1}")
++    return out
++
++
++def configure(feat, f, origin_feature) -> None:
++    """Hook in the dressup executor for PartDesign_Draft: angle, neutral plane (XY) and pull
++    direction (+Z) from a draft intent. Other intents keep upstream's behaviour."""
++    if not is_draft(f):
++        return
++    feat.Angle = angle(f)
++    feat.NeutralPlane = (origin_feature("XY_Plane"), [""])
++    feat.PullDirection = (origin_feature("Z_Axis"), [""])
++    feat.Reversed = False
++
++
++# ----------------------------------------------------------------------------- the "draft" family
++
++
++def _u(rng: random.Random, lo: float, hi: float) -> float:
++    return round(rng.uniform(lo, hi), 1)
++
++
++def _base(rng: random.Random):
++    """(base feature, half extents of its footprint (hx, hy), height)."""
++    from . import profiles as pr
++    from .sampler import _outline_feature
++
++    r = rng.random()
++    h = _u(rng, 10, 40)
++    if r < 0.4:
++        w, d = _u(rng, 24, 80), _u(rng, 24, 80)
++        return GoalFeature("base_box", {"w": w, "d": d, "h": h}), (w / 2, d / 2), h
++    if r < 0.6:
++        rad = _u(rng, 12, 40)
++        return GoalFeature("base_cyl", {"r": rad, "h": h}), (rad * 0.7, rad * 0.7), h
++    if r < 0.75:
++        rad = _u(rng, 12, 40)
++        return GoalFeature("base_hex", {"r": rad, "h": h}), (rad * 0.6, rad * 0.6), h
++    w, d = _u(rng, 24, 80), _u(rng, 24, 70)
++    kind = rng.choice(["rounded_rect", "slot", "polygon", "d_shape"])  # no splines: draft needs planes / cylinders
++    m = min(w, d)
++    if kind == "rounded_rect":
++        outline = pr.rounded_rect(0.0, 0.0, w, d, _u(rng, 0.1, 0.4) * m / 2)
++        half = (w / 2 * 0.8, d / 2 * 0.8)
++    elif kind == "slot":
++        outline = pr.slot(0.0, 0.0, max(w, d), m * 0.6)
++        half = (max(w, d) / 2 * 0.5, m * 0.3 * 0.6)
++    elif kind == "polygon":
++        outline = pr.polygon(0.0, 0.0, m / 2, rng.choice([5, 6, 8]))
++        half = (m / 2 * 0.55, m / 2 * 0.55)
++    else:
++        outline = pr.d_shape(0.0, 0.0, m / 2, _u(rng, 0.3, 0.7) * m / 2)
++        half = (m / 2 * 0.45, m / 2 * 0.45)
++    return _outline_feature("profile_base", outline, h=h), half, h
++
++
++def _boss(rng: random.Random, xr, yr):
++    """A boss on top inside x in xr, y in yr: (feature, half size)."""
++    span = min(xr[1] - xr[0], yr[1] - yr[0])
++    if span < 6:
++        return None
++    hb = _u(rng, 3, 15)
++    if rng.random() < 0.5:
++        r = _u(rng, 3, max(3.1, span * 0.35))
++        return GoalFeature("boss_cyl", {"r": r, "x": _u(rng, xr[0] + r, max(xr[0] + r + 0.1, xr[1] - r)),
++                                        "y": _u(rng, yr[0] + r, max(yr[0] + r + 0.1, yr[1] - r)), "h": hb}), r
++    w, d = _u(rng, 6, max(6.1, (xr[1] - xr[0]) * 0.7)), _u(rng, 6, max(6.1, (yr[1] - yr[0]) * 0.7))
++    return GoalFeature("boss_box", {"w": w, "d": d, "x": round((xr[0] + xr[1]) / 2, 1),
++                                    "y": round((yr[0] + yr[1]) / 2, 1), "h": hb}), min(w, d) / 2
++
++
++def sample_draft_goal(level: int, rng: random.Random) -> Goal:
++    from .goalsfile import goal_scale
++
++    for _ in range(200):
++        base, (hx, hy), h = _base(rng)
++        feats = [base]
++        limits = [0.35 * min(hx, hy) / h]  # tan of the largest angle the base takes
++        if level >= 3 and rng.random() < 0.6:
++            regions = [((-hx * 0.55, -1.5), (-hy * 0.55, hy * 0.55)), ((1.5, hx * 0.55), (-hy * 0.55, hy * 0.55))]  # inside the narrowed top
++            rng.shuffle(regions)
++            for xr, yr in regions[:rng.choice([1, 2])]:
++                b = _boss(rng, xr, yr)
++                if b is None:
++                    continue
++                f, half = b
++                feats.append(f)
++                limits.append(0.5 * half / (h + f.params["h"]))  # the boss narrows over its full height
++        tmax = math.degrees(math.atan(min(limits)))
++        if tmax < 1.0:
++            continue
++        params = {"angle": _u(rng, 1.0, min(tmax, 10.0))}
++        if base.kind == "base_box" and rng.random() < 0.3:  # one or two faces of the box, named by points
++            p = base.params
++            sides = [[p["w"] / 2, 0.0, h / 2], [-p["w"] / 2, 0.0, h / 2], [0.0, p["d"] / 2, h / 2], [0.0, -p["d"] / 2, h / 2]]
++            rng.shuffle(sides)
++            params["pts"] = [[round(c, 3) for c in q] for q in sides[:rng.choice([1, 2])]]
++        feats.append(GoalFeature(KIND, params))
++        if level >= 3 and rng.random() < 0.4:  # a bore through the drafted part
++            r = _u(rng, 1.5, max(1.6, min(hx, hy) * 0.25))
++            if not any(f.kind in ("boss_cyl", "boss_box") and abs(f.params["x"]) < r + 8 and abs(f.params["y"]) < r + 8
++                       for f in feats):
++                feats.append(GoalFeature("hole", {"r": r, "x": 0.0, "y": 0.0}))
++        return Goal(feats, level=min(level, 3), scale=goal_scale([base]))
++    raise ValueError("could not sample a draft goal")
+diff --git a/freecad_s1/ext/pointsel.py b/freecad_s1/ext/pointsel.py
+index 678ffe4..8d83cec 100644
+--- a/freecad_s1/ext/pointsel.py
++++ b/freecad_s1/ext/pointsel.py
+@@ -25,7 +25,7 @@ from ..schema import Goal, GoalFeature
+ 
+ POINT_SELECTS = ["Edges@Point", "Face@Point"]  # appended to the action catalogue
+ EDGE_KINDS = ("fillet_edges", "chamfer_edges")
+-FACE_KINDS = ("shell",)
++FACE_KINDS = ("shell", "draft")  # patch 0022: draft on faces named by points
+ 
+ 
+ def has_pts(f) -> bool:
+diff --git a/freecad_s1/ext/revolve.py b/freecad_s1/ext/revolve.py
+index fe66a8f..2dacc97 100644
+--- a/freecad_s1/ext/revolve.py
++++ b/freecad_s1/ext/revolve.py
+@@ -81,7 +81,11 @@ def set_axis(feat, sk, f, vec_cls) -> None:
+ 
+ def extra_goal_num(f) -> list[float]:
+     """Axis (ax, ay, az, signed) and angle / 360 for the goal encoding (zeros without an axis).
+-    Also used by pattern intents (ext.patterns)."""
++    Also used by pattern intents (ext.patterns) and (patch 0022) draft intents (ext.draft)."""
++    if f is not None and f.kind == "draft":
++        from . import draft
++
++        return draft.extra_goal_num(f)
+     if not has_axis(f):
+         return [0.0, 0.0, 0.0, 0.0]
+     k = axis_index(f)
+diff --git a/freecad_s1/ext/sampler.py b/freecad_s1/ext/sampler.py
+index f1f9292..550fdab 100644
+--- a/freecad_s1/ext/sampler.py
++++ b/freecad_s1/ext/sampler.py
+@@ -20,12 +20,12 @@ TRAIN_FRACTION = float(os.environ.get("TAIGA_EXT_FRACTION", "0.35"))
+ TRAIN_ONLY = tuple(s.strip() for s in os.environ.get("TAIGA_TRAIN_ONLY", "").split(",") if s.strip())
+ 
+ # new evaluation splits (each also feeds training through sample_train)
+-SPLITS = ("side", "plane", "outline", "revolve", "pattern", "edges", "datum_z", "overhang", "turned", "mixed", "points", "angled", "hollow")
++SPLITS = ("side", "plane", "outline", "revolve", "pattern", "edges", "datum_z", "overhang", "turned", "mixed", "points", "angled", "hollow", "draft")
+ # the families large_ext draws from (ext.sizes): those before patch 0019, so the suite keeps its goals
+ LARGE_EXT_SPLITS = ("side", "plane", "outline", "revolve", "pattern", "edges", "datum_z", "overhang", "turned", "mixed")
+ # how often each split is drawn for training (patch 0010: mixed goals carry the long-goal and
+ # composition load, so they are drawn more often)
+-TRAIN_WEIGHTS = {"mixed": 3.0, "points": 2.0, "angled": 1.5, "hollow": 1.5}  # 0019: fillets / chamfers / shells on chosen edges and faces; 0020: angled planes; 0021: pads, then large cavities
++TRAIN_WEIGHTS = {"mixed": 3.0, "points": 2.0, "angled": 1.5, "hollow": 1.5, "draft": 1.5}  # 0019: fillets / chamfers / shells on chosen edges and faces; 0020: angled planes; 0021: pads, then large cavities; 0022: draft angles
+ # level-1 training goals from the expanded families: a lone base that only these families make
+ LEVEL1_SPLITS = ("outline", "revolve", "turned")
+ 
+@@ -1030,6 +1030,12 @@ def _angled(level: int, rng: random.Random) -> Goal:
+     return sample_angled_goal(level, rng)
+ 
+ 
++def _draft(level: int, rng: random.Random) -> Goal:
++    from .draft import sample_draft_goal
++
++    return sample_draft_goal(level, rng)
++
++
+ def _hollow(level: int, rng: random.Random) -> Goal:
+     from .hollow import sample_hollow_goal
+ 
+@@ -1048,7 +1054,7 @@ SAMPLERS = {"side": sample_side_goal, "plane": sample_plane_goal, "outline": _ou
+             "revolve": sample_revolve_goal, "pattern": sample_pattern_goal,
+             "edges": sample_edges_goal,
+             "datum_z": sample_datum_z_goal, "overhang": sample_overhang_goal,
+-            "turned": _turned, "mixed": _mixed, "mixed_at": _mixed_at, "points": _points, "angled": _angled, "hollow": _hollow}
++            "turned": _turned, "mixed": _mixed, "mixed_at": _mixed_at, "points": _points, "angled": _angled, "hollow": _hollow, "draft": _draft}
+ # evaluation-only splits (patch 0016): not drawn for training (sample_train uses SPLITS) and not
+ # part of large_ext (ext.sizes), so the earlier suites keep their goals
+ EVAL_SPLITS = ("mixed_at",)
+diff --git a/freecad_s1/goals.py b/freecad_s1/goals.py
+index de83dc1..6b6c19b 100644
+--- a/freecad_s1/goals.py
++++ b/freecad_s1/goals.py
+@@ -51,6 +51,7 @@ RECIPES: dict[str, Recipe] = {
+     "fillet_vertical": Recipe("PartDesign_Fillet", select="Edges|Z"),
+     "chamfer_top": Recipe("PartDesign_Chamfer", select="Edges@Face+Z"),
+     "shell": Recipe("PartDesign_Thickness", select="Face+Z"),
++    "draft": Recipe("PartDesign_Draft", select="Faces|Z"),  # taiga-expanded (0022): side faces, or Face@Point with pts
+     # taiga-expanded: curved outlines (ext.profiles), one CreateProfile + one Block constraint
+     "profile_base": Recipe("PartDesign_Pad", "Plane:XY", "Sketcher_CreateProfile", ("Sketcher_ConstrainBlock",)),
+     "profile_boss": Recipe("PartDesign_Pad", "Face+Z", "Sketcher_CreateProfile", ("Sketcher_ConstrainBlock",)),
+@@ -260,7 +261,7 @@ def heldout_composition(goal: Goal) -> str | None:
+     return None
+ 
+ 
+-SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext", "datum_z", "overhang", "turned", "mixed", "mixed_at", "points", "angled", "hollow")  # side .. hollow: taiga-expanded
++SPLITS = ("train", "iid", "comp", "comp2", "comp3", "len", "side", "plane", "outline", "revolve", "pattern", "edges", "large", "large_ext", "datum_z", "overhang", "turned", "mixed", "mixed_at", "points", "angled", "hollow", "draft")  # side .. draft: taiga-expanded
+ 
+ 
+ def keep_heldout() -> bool:
+diff --git a/freecad_s1/runtime/params.py b/freecad_s1/runtime/params.py
+index 1057e20..35fc1e3 100644
+--- a/freecad_s1/runtime/params.py
++++ b/freecad_s1/runtime/params.py
+@@ -69,7 +69,7 @@ def dressup_value(f: GoalFeature, command: str) -> float:
+     if command == "PartDesign_Thickness" and f.kind == "shell":
+         return f.params["t"]
+     if command == "PartDesign_Draft":
+-        return 3.0  # degrees
++        return float(f.params.get("angle", 3.0)) if f.kind == "draft" else 3.0  # degrees; taiga-expanded (0022)
+     return 1.0
+ 
+ 
+diff --git a/freecad_s1/runtime/session.py b/freecad_s1/runtime/session.py
+index 5ed5bce..f0f05f2 100644
+--- a/freecad_s1/runtime/session.py
++++ b/freecad_s1/runtime/session.py
+@@ -26,6 +26,7 @@ from ..actions import CATALOGUE, SOLID_FEATURE_TYPES, enumerate_actions
+ from ..expert import Meta, ObjMeta, expert_actions, progress
+ from ..ext import edges as ext_edges
+ from ..ext import pointsel as ext_pointsel
++from ..ext import draft as ext_draft
+ from ..ext import faces as ext_faces
+ from ..ext import profiles as ext_profiles
+ from ..ext import patterns as ext_patterns
+@@ -431,6 +432,9 @@ class HeadlessSession:
+             names = ext_pointsel.resolve_names(shape, arg, f, self.goal.scale if self.goal else 1.0,
+                                                lambda p: Part.Vertex(V(*p)))
+             return (tip.Name, names, arg) if names else None
++        if arg == "Faces|Z":  # taiga-expanded (0022): the side faces, for a draft
++            names = ext_draft.faces_parallel_z(shape)
++            return (tip.Name, names, arg) if names else None
+         if arg.startswith("Face"):
+             hit = self._pick(shape, arg[4:])  # taiga-expanded: nearest to the intent's "at", if any
+             return (tip.Name, [f"Face{hit[0] + 1}"], arg) if hit else None
+@@ -670,6 +674,7 @@ def ex_dressup(s: HeadlessSession, a: str) -> bool:
+         feat.Value = value
+     else:
+         feat.Angle = value
++        ext_draft.configure(feat, f, s.origin_feature)  # taiga-expanded (0022): angle, neutral plane, pull direction
+     s.finish_feature(feat)
+     return True
+ 
+@@ -795,7 +800,7 @@ def _feature_numbers(obj, scale: float) -> dict:
+         num["radius"] = float(obj.Diameter) / 2
+     if hasattr(obj, "Reversed") and t in ("PartDesign::Pad", "PartDesign::Pocket"):
+         num["reversed"] = float(bool(obj.Reversed))
+-    if t in ("PartDesign::Revolution", "PartDesign::Groove", "PartDesign::PolarPattern"):
++    if t in ("PartDesign::Revolution", "PartDesign::Groove", "PartDesign::PolarPattern", "PartDesign::Draft"):  # Draft: 0022
+         num["angle"] = float(obj.Angle) / 360.0
+     if t == "PartDesign::Fillet":
+         num["radius"] = float(obj.Radius)
+diff --git a/freecad_s1/schema.py b/freecad_s1/schema.py
+index 006aa03..2420709 100644
+--- a/freecad_s1/schema.py
++++ b/freecad_s1/schema.py
+@@ -84,6 +84,7 @@ GOAL_KINDS = [
+     "profile_base", "profile_boss", "profile_pocket",  # taiga-expanded: curved outlines (ext.profiles)
+     "profile_revolve", "profile_groove",  # taiga-expanded: revolve / groove with a profile (ext.revolve)
+     "fillet_edges", "chamfer_edges",  # taiga-expanded: dressups on chosen edges (ext.edges)
++    "draft",  # taiga-expanded (0022): draft angle on side faces (ext.draft)
+ ]
+ GOAL_PARAM_KEYS = ["w", "d", "h", "r", "ri", "ro", "x", "y", "depth", "n", "length", "size", "t"]
+ GOAL_LENGTH_KEYS = {"w", "d", "h", "r", "ri", "ro", "x", "y", "depth", "length", "size", "t"}
+diff --git a/tests/test_ext_draft.py b/tests/test_ext_draft.py
+new file mode 100644
+index 0000000..356bcec
+--- /dev/null
++++ b/tests/test_ext_draft.py
+@@ -0,0 +1,86 @@
++"""taiga-expanded: draft angles on side faces (patch 0022)."""
++import math
++import random
++
++from freecad_s1.actions import ACTION_IDS, CATALOGUE, action_vector, enumerate_actions
++from freecad_s1.evaluate import SUITES
++from freecad_s1.expert import Meta, ObjMeta, expert_actions
++from freecad_s1.ext import draft, faces, sampler, sizes
++from freecad_s1.goals import RECIPES, SPLITS, sample_split_goal
++from freecad_s1.runtime import params as P
++from freecad_s1.schema import GOAL_KINDS, Goal, GoalFeature, ShapeInfo, State
++
++BOX = GoalFeature("base_box", {"w": 60, "d": 40, "h": 30})
++DRAFT = GoalFeature("draft", {"angle": 5.0})
++
++
++def _meta(selection=()):
++    meta = Meta(doc_open=True, workbench="PartDesignWorkbench", body="Body")
++    meta.objects["Body"] = ObjMeta("Body", "body")
++    meta.objects["Pad"] = ObjMeta("Pad", "feature", goal_ref=0)
++    meta.selection = list(selection)
++    return meta
++
++
++def test_kind_selection_and_recipe():
++    assert GOAL_KINDS[-1] == "draft" and RECIPES["draft"].feature == "PartDesign_Draft"
++    assert "Select:Faces|Z" in ACTION_IDS and CATALOGUE["Select:Faces|Z"].category == "select"
++    assert action_vector("Select:Faces|Z") == [0.0, 0.0, 1.0, 0.0, 1.0, 0.0]  # Z, a face selection
++    st = State(doc_open=True, workbench="PartDesignWorkbench", has_body=True,
++               shape=ShapeInfo(valid=True, volume=1.0, face_dirs=["+Z", "-Z", "|Z"]))
++    assert "Select:Faces|Z" in enumerate_actions(st)
++
++
++def test_expert_selects_the_side_faces_then_drafts():
++    goal = Goal([BOX, DRAFT], level=2, scale=60)
++    assert expert_actions(goal, _meta()) == ["Select:Faces|Z"]
++    assert expert_actions(goal, _meta(["Faces|Z"]))[0] == "PartDesign_Draft"
++    by_pts = GoalFeature("draft", {"angle": 3.0, "pts": [[30.0, 0.0, 15.0]]})
++    assert expert_actions(Goal([BOX, by_pts], level=2, scale=60), _meta()) == ["Select:Face@Point"]
++
++
++def test_angle_reaches_the_executor_and_the_encoding():
++    assert P.dressup_value(DRAFT, "PartDesign_Draft") == 5.0
++    assert P.dressup_value(BOX, "PartDesign_Draft") == 3.0  # upstream's distractor value, unchanged
++    num = faces.extra_goal_num(DRAFT, 60.0)
++    assert len(num) == faces.EXT_NUM_DIM and abs(num[17] - 5.0 / 360) < 1e-9 and num[16] == 1.0
++    assert draft.validate(DRAFT) == [] and draft.validate(GoalFeature("draft", {"angle": 45.0}))
++    assert sizes.scale_goal(Goal([BOX, DRAFT], level=2, scale=60), 3.0).features[1].params["angle"] == 5.0
++
++
++class _Obj:
++    def __init__(self, **kw):
++        self.__dict__.update(kw)
++
++
++def test_configure_sets_plane_direction_and_angle():
++    feat = _Obj(Angle=3.0)
++    draft.configure(feat, DRAFT, lambda role: role)
++    assert feat.Angle == 5.0 and feat.NeutralPlane == ("XY_Plane", [""]) and feat.PullDirection == ("Z_Axis", [""])
++    other = _Obj(Angle=3.0)
++    draft.configure(other, BOX, lambda role: role)
++    assert other.__dict__ == {"Angle": 3.0}
++
++
++def test_family_suite_and_feasible_angles():
++    assert "draft" in sampler.SPLITS and "draft" in SPLITS and SUITES["draft"] == [(3, "draft")]
++    assert "draft" not in sampler.LARGE_EXT_SPLITS
++    rng = random.Random(3)
++    n_pts = n_boss = 0
++    for level in (2, 3, 3, 3):
++        for _ in range(50):
++            g = sample_split_goal("draft", level, rng)
++            kinds = [f.kind for f in g.features]
++            assert kinds[0] in ("base_box", "base_cyl", "base_hex", "profile_base") and kinds.count("draft") == 1
++            d = g.features[kinds.index("draft")]
++            assert 1.0 <= d.params["angle"] <= 10.0 and draft.validate(d) == []
++            h = g.features[0].params["h"]
++            t = math.tan(math.radians(d.params["angle"]))
++            for f in g.features[1:kinds.index("draft")]:
++                n_boss += 1
++                half = f.params["r"] if f.kind == "boss_cyl" else min(f.params["w"], f.params["d"]) / 2
++                assert (h + f.params["h"]) * t <= 0.5 * half + 0.06  # the boss keeps half its size
++            n_pts += "pts" in d.params
++            if g.features[0].kind == "profile_base":
++                assert all(s[0] in ("L", "A") for s in g.features[0].params["outline"]["segs"])  # no splines
++    assert n_pts >= 5 and n_boss >= 30
+diff --git a/tests/test_ext_edges.py b/tests/test_ext_edges.py
+index d56c3b5..b5a43b1 100644
+--- a/tests/test_ext_edges.py
++++ b/tests/test_ext_edges.py
+@@ -15,10 +15,11 @@ BOX = GoalFeature("base_box", {"w": 40, "d": 30, "h": 20})
+ 
+ 
+ def test_kinds_and_selections_are_appended():
+-    assert GOAL_KINDS[-2:] == ["fillet_edges", "chamfer_edges"]
++    i = GOAL_KINDS.index("fillet_edges")  # later patches append after these
++    assert GOAL_KINDS[i:i + 2] == ["fillet_edges", "chamfer_edges"]
+     from freecad_s1.ext import pointsel
+ 
+-    n = len(pointsel.POINT_SELECTS)  # patch 0019 appends its selections after these
++    n = len(pointsel.POINT_SELECTS) + 1  # patch 0019 appends its selections after these, patch 0022 Faces|Z
+     assert ACTION_IDS[-len(edges.EXTRA_SELECTS) - n:-n] == [f"Select:{a}" for a in edges.EXTRA_SELECTS]
+     assert CATALOGUE["Select:Edges|X"].category == "select"
+     assert action_vector("Select:Edges|X") == [1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+diff --git a/tests/test_ext_pointsel.py b/tests/test_ext_pointsel.py
+index 3a55150..6722d6e 100644
+--- a/tests/test_ext_pointsel.py
++++ b/tests/test_ext_pointsel.py
+@@ -15,7 +15,8 @@ SHELL = GoalFeature("shell", {"t": 1.5, "pts": [[0.0, 0.0, 20.0]]})
+ 
+ 
+ def test_selections_are_appended_and_offered_on_a_solid():
+-    assert ACTION_IDS[-2:] == ["Select:Edges@Point", "Select:Face@Point"]
++    i = ACTION_IDS.index("Select:Edges@Point")  # later patches append after these
++    assert ACTION_IDS[i:i + 2] == ["Select:Edges@Point", "Select:Face@Point"]
+     assert CATALOGUE["Select:Edges@Point"].category == "select"
+     assert action_vector("Select:Edges@Point")[5] == 1.0 and action_vector("Select:Face@Point")[4] == 1.0
+     assert pointsel.extra_selects(True) == ["Select:Edges@Point", "Select:Face@Point"]
+-- 
+2.34.1
+

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """taiga_harness.py — the interface other tools (LLM agents, scripts) use to build CAD parts
 with the Taiga models: the goal format, validation, a buildability check, builds, results.
-Version: 2026.10.17.2
+Version: 2026.10.20.1
 
 The same functions back the MCP server (taiga_mcp.py) and this command line; everything is
 JSON in, JSON out:
@@ -135,6 +135,9 @@ KINDS = {
                      "Fillets chosen edges: by points (pts), a face's edge loop (normal [+at]) or all edges along an axis."),
     "chamfer_edges": ({"size": "size"}, {"pts": "", "nx": "", "ny": "", "nz": "", "at": "", "ax": "", "ay": "", "az": ""},
                       "Chamfers chosen edges, selected like fillet_edges."),
+    "draft": ({"angle": "degrees, 0.5 to 20"}, {"pts": "a point on each face to draft (default: every side face)"},
+              "Draft angle on side faces (patch 0022): about the XY plane (z = 0), pulled along +Z, so outer faces lean "
+              "inward going up and the part narrows towards its top, as a casting does."),
 }
 
 CONVENTIONS = [
@@ -164,6 +167,8 @@ CONVENTIONS = [
     "along v = n x u; outlines in (u, v) about the origin) and extruded both ways, h or depth the total, "
     "holes and pockets without depth through all both ways. Only bosses, holes and pockets.",
     "One goal is one solid part; several separate solids are several goals.",
+    "Draft (patch 0022): draft after the features it tapers; every side face (planar faces parallel to Z, cylinders "
+    "about Z) is drafted unless pts names some. Holes added before the draft are drafted too: add straight bores after it."
 ]
 
 EXAMPLE = {"bracket": {"features": [
@@ -196,7 +201,7 @@ def goal_format() -> dict:
         kinds[k] = {"what": what, "required": list(req), "optional": list(o),
                     "descriptions": {p: d for p, d in {**req, **o}.items() if d}}
     conv = [c for c in CONVENTIONS if (pts or not c.startswith("Selection by points"))
-            and (ang or not c.startswith("Angled planes"))]
+            and (ang or not c.startswith("Angled planes")) and ("draft" in known or not c.startswith("Draft"))]
     return {"format": "Taiga goal", "work": str(work()), "selection_by_points": pts, "angled_planes": ang,
             "conventions": conv, "kinds": kinds, "example": EXAMPLE,
             "limits": "Up to 64 features per goal; lengths of 1 mm to a few metres."}
@@ -319,6 +324,8 @@ def validate_goal(goal: dict) -> dict:
                 errors.append(f"{where}: a pattern of a pattern is not supported; repeat the original feature instead")
             if prev in BASE_KINDS:
                 warnings.append(f"{where}: repeats the base")
+        if k == "draft" and "angle" in p and _num(p["angle"]) and not 0.5 <= p["angle"] <= 20:
+            errors.append(f"{where}: 'angle' must be 0.5 to 20 degrees")
         if k in ("fillet_edges", "chamfer_edges") and not ({"pts", "nx", "ny", "nz", "ax", "ay", "az"} & set(p)):
             warnings.append(f"{where}: no edge selection given; the top face's edge loop is used")
         if "off" in p and _unit(p, ("nx", "ny", "nz")) is None:

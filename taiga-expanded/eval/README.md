@@ -276,7 +276,7 @@ The state carries the part's volume over the target volume; with the cavity in t
 | S 80 casing guided; core and ten parts | ≥ 51/52; exact | 52/52 (whole pump 0.9987); exact | 51/52 (0.9983); exact |
 | Sweep: no seed below 0.50 | | pass (lowest: seed 12 `comp2` 0.81) | |
 
-Seed 12 is the weak seed again (`len6` 0.87, casing 25/52). `comp2` (a `boss_box` then a `mirror`, the held-out pair) dropped on every seed (0.85 / 0.81 / 0.97; v3 0.97 / 0.99 / 0.95): `hollow` mirrors `boss_box` flange pads about an origin plane, a related but different form, a likely cause (being checked).
+Seed 12 is the weak seed again (`len6` 0.87, casing 25/52). `comp2` (a `boss_box` then a `mirror`, the held-out pair) dropped on every seed (0.85 / 0.81 / 0.97; v3 0.97 / 0.99 / 0.95): `hollow` mirrors `boss_box` flange pads about an origin plane, a related but different form, was the suspect. Checked on the production path (2026-10-20, 100 `comp2` goals built with `taiga_build_part.py` from an open document, as the harness does): v4 seed 2 builds 97, v2 seed 2 also 97. The suite's drop comes from its protocol (random start states, a fixed small goal set) and the usual seed-to-seed variance of this held-out pair (v1 seed 2 0.93, v2 seed 12 0.00), not from a lost skill. v4 seed 2 is to be registered with this exception noted, seed 22 (`comp2` 0.97, casing 51/52) as its fallback.
 
 ## Limits of the vocabulary found on the way
 

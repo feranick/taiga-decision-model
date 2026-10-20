@@ -104,13 +104,15 @@ A `build_parts` call with all four parts timed out in the client once, right aft
 - **Top-face features** (`boss_cyl`, `boss_box`, `hole`, `hole_std`, `pocket_rect`, `profile_boss`, `profile_pocket`) take `x`, `y` on the top face; on another face add its normal (`nx`, `ny`, `nz`) and the centre `z`; pick one of several faces with `at`; on an origin plane with an offset add `off` (extruded both ways: cross bores, cavities).
 - **Patterns and mirror** repeat the previous feature, about or along an origin axis (`ax`, `ay`, `az`).
 - **Fillets and chamfers:** whole top or vertical edges (`fillet_top`, `fillet_vertical`, `chamfer_top`), a face's edge loop or edges along an axis (`fillet_edges`, `chamfer_edges`), or, with patch 0019, chosen edges by a point on each (`pts`). **Shell** removes the top face, or with `pts` the faces named.
+- **Draft** (patch 0022): `draft` with `angle` tapers every side face about z = 0 (the part narrows upward), or only the faces named by `pts`. Put it after the features it tapers and before straight bores.
 - **One goal per solid part.** An assembly is several goals; placing the parts together is outside the harness (`../build/taiga_assemble.py` does it from an assembly spec).
 
 ## Versions
 
 | File | Version |
 |---|---|
-| `taiga_harness.py` | 2026.10.17.2 (`build` with `--no-step` / `step=false` passed the option so the runtime rejected it: every part came back "no result"; fixed) |
+| `taiga_harness.py` | 2026.10.20.1 (draft, patch 0022: kind `draft` with `angle` and optional `pts`, validated and in `goal_format` when the work folder has the patch) |
+| `taiga_harness.py` (before) | 2026.10.17.2 (`build` with `--no-step` / `step=false` passed the option so the runtime rejected it: every part came back "no result"; fixed) |
 | `taiga_harness.py` (before) | 2026.10.17.1 (angled planes, patch 0020: validated and described in `goal_format` when the work folder has the patch) |
 | `taiga_harness.py` (before) | 2026.10.15.2 (origin-plane normals and centres normalized; `pts` left out of the format without patch 0019) |
 | `taiga_mcp.py` | 2026.10.15.1 |
