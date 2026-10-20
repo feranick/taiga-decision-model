@@ -20,6 +20,17 @@ export TAIGA_WORK=$W                         # also: TAIGA_REGISTRY, TAIGA_OUT (
 
 `TAIGA_WORK` decides which code reads the goals: a model must run with the code it was trained with (v1: 0017; v2: 0019). The production model is v2 (`small-v2`): `TAIGA_WORK=~/taiga-expanded-0019` with `TAIGA_REGISTRY` pointing at a copy of `build/registry_v2.example.json`. Models of different patch series cannot share a registry (the goal encoding grows with the series). Selection by points (`pts`) needs a 0019 folder; `goal_format` says whether it is available (`selection_by_points`).
 
+## Production on every machine (`~/taiga_prod`)
+
+`../build/deploy_prod.sh MODELS_TAR [WORK]` installs the production models the same way on every machine: `~/taiga_prod/models/<name>/hf`, `~/taiga_prod/registry.json` (from `../build/registry_prod.json`), `~/taiga_prod/work` (a link to the work folder they were trained with; v4: a 0021 folder), `mcp` in that folder's venv, then a test (`models` and one build). A client then always runs the same command; a new model only changes `~/taiga_prod`:
+
+```bash
+TAIGA_WORK=~/taiga_prod/work TAIGA_REGISTRY=~/taiga_prod/registry.json \
+  ~/taiga_prod/work/taiga-s1/.venv/bin/python ~/Software/taiga-decision-model/harness/taiga_mcp.py
+```
+
+Current production (2026-10-20): `small-v4` (v4 seed 2) with `small-v4-s22` (seed 22) as fallback, patches 0001-0021.
+
 ## For LLM tools: the MCP server
 
 | Tool | What it does |

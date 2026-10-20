@@ -3,7 +3,7 @@
     {
       "name": "small-v4",
       "role": "main",
-      "path": "~/m_v4/seed2v4/hf",
+      "path": "~/taiga_prod/models/small-v4/hf",
       "params": "1.2M",
       "model_args": "--max-nodes 160 --max-goal 64 --max-ord 72 --max-pos 256 --ord-table 28 --pos-table 96 --newest-nodes",
       "freecad": "1.1.3",
@@ -14,7 +14,7 @@
     {
       "name": "small-v4-s22",
       "role": "fallback",
-      "path": "~/m_v4/seed22v4/hf",
+      "path": "~/taiga_prod/models/small-v4-s22/hf",
       "params": "1.2M",
       "model_args": "--max-nodes 160 --max-goal 64 --max-ord 72 --max-pos 256 --ord-table 28 --pos-table 96 --newest-nodes",
       "freecad": "1.1.3",
@@ -22,5 +22,6 @@
       "trained_on": "the same data, seed 22",
       "measured": "v4 seed 22: comp2 0.97, len6 1.00; S 80 guided casing 51/52 intents (whole pump 0.9983)"
     }
-  ]
+  ],
+  "_note": "Production registry, installed as ~/taiga_prod/registry.json by build/deploy_prod.sh; models from patch series 0001-0021 run with TAIGA_WORK=~/taiga_prod/work (a 0021 work folder)."
 }
