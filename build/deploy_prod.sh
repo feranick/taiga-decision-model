@@ -4,7 +4,7 @@
 #   registry.json        build/registry_prod.json (paths into models/)
 #   work -> WORK         the work folder the models were trained with
 # then install "mcp" into the work folder's venv and test the harness (models, one build).
-# Version: 2026.10.20.1
+# Version: 2026.10.20.2
 #
 # Usage:  build/deploy_prod.sh MODELS_TAR [WORK]
 #   MODELS_TAR  a tar with models/<name>/hf (see harness/README.md, "Production on every machine")
@@ -43,7 +43,12 @@ export TAIGA_WORK=$P/work TAIGA_REGISTRY=$P/registry.json
 H=$REPO/harness/taiga_harness.py
 "$PY" "$H" models | grep -E '"(name|available)"'
 echo "test build (the model first):"
-"$PY" "$H" build "$REPO/build/flange/example_goals.json" --chain main:guided,teacher --no-step \
-  | grep -E '"(built|accepted)"' | paste - - | sed 's/^ *//'
+out=$("$PY" "$H" build "$REPO/build/flange/example_goals.json" --chain main:guided,teacher --no-step)
+grep -E '"(built|accepted)"' <<<"$out" | paste - - | sed 's/^ *//'
+if grep -q '"accepted": "teacher"' <<<"$out" || grep -q '"result": "CRASH"' <<<"$out"; then
+  echo "warning: the model did not build every test part (see the newest ~/taiga_parts/build_*/runtime.log)."
+  echo "  Most often WORK has another patch series than the model (v4: patches 0001-0021, 125 setup tests):"
+  echo "  the goal kinds and commands then differ and the model crashes."
+fi
 rm -rf "$P/models.old"
 echo "deployed: $P"
