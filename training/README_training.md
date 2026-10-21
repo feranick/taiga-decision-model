@@ -463,7 +463,7 @@ sudo rm /usr/lib/freecad-python3/Mod
 
 **Cause.** A segmentation fault inside OpenCASCADE 7.9 (`BOPTools_AlgoTools3D::DoSplitSEAMOnFace`, in the boolean `common()` used to compute the IoU of the finished part), on unusual geometry left by an episode. Seen on resolute (OCCT 7.9) with seed 22's model under 20% injected random actions, in an episode where the model repeated `PartDesign_Pad` / `Std_Undo` dozens of times. FreeCAD's signal handler turns the segfault into a silent `exit(1)`, and upstream's lockstep `VecEnv` then aborts the whole evaluation.
 
-**Fix.** From version 2026.10.04.3 the scripts run upstream's training, evaluation and calibration through `taiga_run.py`, which replaces a dead worker with a fresh one and counts only the affected episode as a failure (IoU 0 when scoring crashes; "unrecoverable" when a step crashes). Each crash is printed and recorded in the run's `crashes_*.jsonl`; `eval` reports the count, and `aggregate` shows it per run (`crashes t/e/p`). A crash is a real failure of the episode, so the results stay honest. A worker that hangs instead of crashing (OpenCASCADE stuck in one operation; on the Quadro a perturbed-DAgger evaluation sat 16 hours on one step, 2026-10-13) is killed after `S1_STEP_TIMEOUT` seconds on one request (default 1800; `taiga_run.py` 2026.10.13.1) and then handled as a crash.
+**Fix.** From version 2026.10.04.3 the scripts run upstream's training, evaluation and calibration through `taiga_run.py`, which replaces a dead worker with a fresh one and counts only the affected episode as a failure (IoU 0 when scoring crashes; "unrecoverable" when a step crashes). Each crash is printed and recorded in the run's `crashes_*.jsonl`; `eval` reports the count, and `aggregate` shows it per run (`crashes t/e/p`). A crash is a real failure of the episode, so the results stay honest. A worker that hangs instead of crashing (OpenCASCADE stuck in one operation; on the Quadro a perturbed-DAgger evaluation sat 16 hours on one step, 2026-10-13) is killed after `S1_STEP_TIMEOUT` seconds on one request (default 1800; `taiga_run.py` 2026.10.13.1) and then handled as a crash. A worker that is already gone when the next request is sent (it died after its last answer) was not caught and ended the whole stage with `BrokenPipeError` (v5 seed 12's perturbed evaluation, 2026-10-21); from 2026.10.21.1 that is handled as a crash as well.
 
 **Rerunning an affected run.** Only the evaluation needs to be redone, e.g. `SEED=22 GPU=0 ./taiga_repro_Quadro6000.sh eval`.
 
@@ -520,4 +520,4 @@ Each script uses `YYYY.MM.DD.x` versioning. The version is in the script header 
 | `taiga_bench_size.py` | 2026.10.06.1 |
 | `taiga_pool_data.sh` | 2026.10.15.1 |
 | `taiga_status.sh` | 2026.10.15.1 |
-| `taiga_run.py` | 2026.10.13.1 |
+| `taiga_run.py` | 2026.10.21.1 (a worker already gone when a request is sent is a crash too, not a `BrokenPipeError` that ends the run) |

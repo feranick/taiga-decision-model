@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """taiga_run.py — run an upstream freecad_s1 module or script with FreeCAD worker-crash
 recovery and, for training, optional deterministic PyTorch.
-Version: 2026.10.13.1
+Version: 2026.10.21.1
 
     python taiga_run.py freecad_s1.evaluate --ckpt ... [args]      # a module (like python -m)
     python taiga_run.py scripts/calibrate.py --model ... [args]    # a script
@@ -13,6 +13,8 @@ the affected episode fails:
   - crash while scoring  -> IoU 0, no match (the episode counts as a failure)
   - crash during a step  -> the episode ends as "unrecoverable"
   - crash during a reset -> the reset is retried once on a fresh worker
+  - a worker already gone when a request is sent (BrokenPipeError; v5 seed 12's perturbed
+    evaluation, 2026-10-21) -> handled the same way, by phase
 A worker that hangs (OpenCASCADE stuck in one operation: a perturbed-DAgger evaluation on the
 Quadro sat 16 hours on one step at 770 % CPU, 2026-10-13) is killed after S1_STEP_TIMEOUT
 seconds (default 1800; 0: never) on one request, and then handled as a crash.
@@ -61,15 +63,31 @@ def install_crash_recovery() -> None:
         return client.Episode(goal, r["budget"], spec.get("level", goal.level), client.State.from_json(r["state"]),
                               r["actions"], r["expert"], progress=r.get("progress", -1))
 
+    def _send(env, req) -> bool:
+        """Send a request; False if the worker is already gone (it died after its last answer,
+        e.g. killed by the watchdog): the reply loop then handles it as a crash."""
+        try:
+            env.send(req)
+            return True
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return False
+
+    def _recv(env, dead: bool):
+        if dead:
+            raise client.WorkerError("FreeCAD worker exited before the request")
+        return env.recv()
+
     def reset(self, specs):
         self._s1_specs = list(specs) + [None] * (len(self.envs) - len(specs))
         self._s1_steps = [0] * len(self.envs)
-        for env, spec in zip(self.envs, specs):
-            env.send({"op": "reset", **spec})
+        dead = set()
+        for i, (env, spec) in enumerate(zip(self.envs, specs)):
+            if not _send(env, {"op": "reset", **spec}):
+                dead.add(i)
         eps = []
         for i, spec in enumerate(specs):
             try:
-                r = self.envs[i].recv()
+                r = _recv(self.envs[i], i in dead)
             except client.WorkerError:
                 record(self, i, "reset")
                 fresh(self, i)
@@ -78,14 +96,16 @@ def install_crash_recovery() -> None:
         return eps
 
     def step(self, idx, actions, reward=False):
+        dead = set()
         for i, a in zip(idx, actions):
-            self.envs[i].send({"op": "step", "action": a, "reward": reward})
+            if not _send(self.envs[i], {"op": "step", "action": a, "reward": reward}):
+                dead.add(i)
             if hasattr(self, "_s1_steps"):
                 self._s1_steps[i] += 1
         out = []
         for i in idx:
             try:
-                out.append(self.envs[i].recv())
+                out.append(_recv(self.envs[i], i in dead))
             except client.WorkerError:
                 record(self, i, "step")
                 fresh(self, i)
@@ -101,12 +121,14 @@ def install_crash_recovery() -> None:
         return out
 
     def score(self, idx):
+        dead = set()
         for i in idx:
-            self.envs[i].send({"op": "score"})
+            if not _send(self.envs[i], {"op": "score"}):
+                dead.add(i)
         out = []
         for i in idx:
             try:
-                out.append(self.envs[i].recv())
+                out.append(_recv(self.envs[i], i in dead))
             except client.WorkerError:
                 record(self, i, "score")
                 fresh(self, i)
