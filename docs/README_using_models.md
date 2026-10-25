@@ -9,7 +9,9 @@ On a Linux machine with the **work folder the model was trained in**: FreeCAD, t
 | Model | Work folder | Machines that have one |
 |---|---|---|
 | v1 (1.2M, patches 0001–0017) | `~/taiga-expanded-0017` | Spark2 (where it trains), mochi, carbonio |
-| v2 (1.2M, patches 0001–0019: + fillet, chamfer, shell on edges and faces named by points) | `~/taiga-expanded-0019` | mochi; Spark1 when set up |
+| v2 (1.2M, patches 0001–0019: + fillet, chamfer, shell on edges and faces named by points) | `~/taiga-expanded-0019` | retired |
+| v4 (1.2M, patches 0001–0021: + angled planes, hollow parts) | `~/taiga-expanded-0021` | every machine (rollback; release file `taiga_prod_v4.tar`) |
+| **v5, production** (1.2M, patches 0001–0022: + draft) | `~/taiga-expanded-0022`, through `~/taiga_prod` | every machine; a new one: `README_install.md` (GitHub release `models-2026.10.24.1`) |
 
 A v1 model does not load in a 0019 folder (the 0019 command list is two commands longer), and goals with `pts` need a 0019 folder. Models are also tied to the FreeCAD version (1.1.3 here): after a FreeCAD update, retrain and re-run the pass criteria.
 

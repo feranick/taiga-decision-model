@@ -226,3 +226,5 @@ It saves a screenshot and the `.FCStd` to `runs/gui_demo/`. `--delay` sets the p
 | `taiga_build_part.py` | 2026.10.15.2 |
 | `taiga_assemble.py` | 2026.10.05.2 |
 | `taiga_runtime.py` | 2026.10.15.1 |
+| `deploy_prod.sh` | 2026.10.24.2 (installs production models into `~/taiga_prod`; takes a release file and checks it: `../docs/README_install.md`) |
+| `package_release.sh` | 2026.10.24.1 (packages production models as a GitHub release file with manifest, checksum and notes) |

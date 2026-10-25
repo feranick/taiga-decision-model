@@ -29,6 +29,8 @@ TAIGA_WORK=~/taiga_prod/work TAIGA_REGISTRY=~/taiga_prod/registry.json \
   ~/taiga_prod/work/taiga-s1/.venv/bin/python ~/Software/taiga-decision-model/harness/taiga_mcp.py
 ```
 
+On a new machine, install from the GitHub release instead: `../docs/README_install.md` (the release file goes straight into `deploy_prod.sh`, which checks it against its manifest and the work folder's patch series).
+
 Current production (2026-10-24): `small-v5` (v5 seed 2) with `small-v5-s22` (seed 22) as fallback, patches 0001-0022 (`~/taiga_prod/work` → a 0022 folder). Before: `small-v4`, patches 0001-0021.
 
 ## For LLM tools: the MCP server

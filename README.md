@@ -98,6 +98,8 @@ The model is small, so the GPU is not the bottleneck: most of the time goes into
 
 ## Getting started
 
+0. **Use the production model** without training: install the latest release (`models-…` on GitHub) on a Linux machine, as in [`docs/README_install.md`](docs/README_install.md): set up the work folder, download, `build/deploy_prod.sh`, then call it from an MCP client or the command line.
+
 1. **Train a model** on your machine (example: PowerSpec G467):
    ```bash
    cd training
