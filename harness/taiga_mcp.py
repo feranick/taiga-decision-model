@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_mcp.py — MCP server that lets LLM-based tools build CAD parts with the Taiga models.
-Version: 2026.10.15.1
+Version: 2026.10.24.1
 
 Tools (all JSON):
   goal_format        the goal format: kinds, parameters, conventions, an example. Read it first.
@@ -17,7 +17,9 @@ Run on a Linux machine with a trained work folder, with that folder's Python:
       ~/taiga-expanded-0017/taiga-s1/.venv/bin/python <repo>/harness/taiga_mcp.py
   HTTP (clients elsewhere on the network; MCP streamable HTTP at http://<host>:<port>/mcp):
       ... taiga_mcp.py --http 8765 [--host 0.0.0.0]
-Configuration: TAIGA_WORK, TAIGA_REGISTRY, TAIGA_OUT as for taiga_harness.py.
+Configuration: TAIGA_WORK, TAIGA_REGISTRY, TAIGA_OUT, TAIGA_PERSISTENT, TAIGA_POOL_WORKERS as for
+taiga_harness.py. By default the server keeps FreeCAD workers and the models loaded for its lifetime
+(started in the background at launch), so an attempt costs only its build.
 Needs the MCP Python SDK in that venv: uv pip install --python .venv/bin/python "mcp>=1.2".
 """
 from __future__ import annotations
@@ -126,7 +128,8 @@ def get_file(path: str, max_mb: float = 20) -> dict:
 @server.tool()
 def list_models() -> dict:
     """The model registry: each model's role (main, fallback), size, FreeCAD version, training data,
-    measured results, and whether it is installed here."""
+    measured results, and whether it is installed here; and the runtime (persistent pool: FreeCAD
+    workers running, models loaded)."""
     return H.models()
 
 
@@ -135,6 +138,9 @@ def main() -> None:
     ap.add_argument("--http", type=int, help="serve MCP over streamable HTTP on this port (default: stdio)")
     ap.add_argument("--host", default="127.0.0.1", help="HTTP interface (0.0.0.0: every interface)")
     a = ap.parse_args()
+    # persistent pool (taiga_harness.pool): start the FreeCAD workers and load the models now, in the
+    # background, so the first build does not wait for them; builds then reuse them for the server's life
+    threading.Thread(target=H.warm, daemon=True, name="taiga-warm").start()
     if a.http is None:
         server.run()
     elif _V2:

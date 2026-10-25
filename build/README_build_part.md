@@ -165,6 +165,7 @@ cd ~/taiga-expanded-0017/taiga-s1 && source ../freecad.env
 - **Accepted** when the builder reports SUCCESS and the IoU with the goal's target is at least `--min-iou` (0.999). A goal whose target cannot be built (INFEASIBLE) stops at once.
 - **Parallel:** `--workers` goals at a time, each in its own `taiga_build_part.py` process (one FreeCAD worker, with its step timeout and memory limit).
 - **Output:** accepted parts as `<out>/<name>.FCStd` and `.step`; every attempt in `<out>/attempts/<name>/<attempt>/` with its log; one line per goal in `<out>/runtime_log.jsonl` (attempts, results, times, which one was accepted).
+- **Persistent pool** (`taiga_pool.py`, plan item 12): the same runtime in one long-lived process. It keeps `--workers` FreeCAD workers and every model it has used loaded, and runs each attempt in-process with the same build code (`taiga_build_part.build_goal`): same chain, loop guard, guided progress, checks, files and `runtime_log.jsonl`, every attempt with its stage times (target build, model, FreeCAD, check, save, overhead). It saves the per-attempt process start, imports, model loading and FreeCAD start, and exports the STEP file once, for the accepted part. A FreeCAD crash restarts that worker; each request keeps its time limit, each worker its memory limit, each attempt `--attempt-timeout`. The harness and the MCP server use it by default (`TAIGA_PERSISTENT=1`); from the command line: `taiga_pool.py` with `taiga_runtime.py`'s options, plus `--repeat N` to build the goals N times in one process.
 - **Registry:** `registry.example.json` (copy to `registry.json` and set the paths): each model with its role, path, size, FreeCAD version, patch series, training data and measured results. Models are tied to a FreeCAD version: after an update, retrain and re-run the pass criteria before changing the registry.
 
 ## Assembling parts
@@ -223,7 +224,8 @@ It saves a screenshot and the `.FCStd` to `runs/gui_demo/`. `--delay` sets the p
 
 | Script | Version |
 |---|---|
-| `taiga_build_part.py` | 2026.10.15.2 |
+| `taiga_build_part.py` | 2026.10.24.1 (the per-goal build is a function, `build_goal`, with a `Worker` that keeps its FreeCAD worker, for `taiga_pool.py`; the timing line adds the target build) |
+| `taiga_pool.py` | 2026.10.24.1 (persistent pool: FreeCAD workers and models kept loaded across attempts and requests) |
 | `taiga_assemble.py` | 2026.10.05.2 |
 | `taiga_runtime.py` | 2026.10.15.1 |
 | `deploy_prod.sh` | 2026.10.24.2 (installs production models into `~/taiga_prod`; takes a release file and checks it: `../docs/README_install.md`) |

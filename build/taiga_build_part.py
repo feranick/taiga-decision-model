@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """taiga_build_part.py — build a CAD part headless with a Taiga-S1 model (inference).
-Version: 2026.10.15.2
+Version: 2026.10.24.1
 
 The model drives a headless FreeCAD worker command by command toward a goal
 (an ordered feature list), then the part is checked against the goal's target
@@ -316,6 +316,196 @@ def base_scale(goal: dict) -> float:
     return max(2 * p["r"], p["h"])  # base_cyl, base_hex
 
 
+class Worker:
+    """One FreeCAD worker, started on first use and restarted after a crash. Kept across goals and,
+    in a persistent pool (taiga_pool.py), across requests: starting FreeCAD costs about a second."""
+
+    def __init__(self, mem_limit: float) -> None:
+        self.mem_limit = mem_limit
+        self.env: FreeCADEnv | None = None
+
+    def get(self) -> FreeCADEnv:
+        if self.env is None or self.env.proc.poll() is not None:
+            self.env = new_env(self.mem_limit)
+        return self.env
+
+    def restart(self) -> FreeCADEnv:
+        self.close()
+        return self.get()
+
+    def close(self) -> None:
+        if self.env is not None:
+            try:
+                self.env.close()
+            except Exception:
+                pass
+            self.env = None
+
+
+def build_goal(worker: Worker, policy, name: str, spec: dict, o, out: Path, log=print) -> dict:
+    """Build one goal (the per-goal work of main(), also called in-process by taiga_pool.py).
+    `o` has the options of the command line (teacher, check, quiet, no_loop_guard, guided_progress,
+    guard_redos, step_timeout, prefixes, no_gui_data, no_step, canon_top) and may have `deadline`
+    (time.perf_counter() value after which the build stops, counting as FAIL). Returns the result:
+    name, result (SUCCESS, FAIL, CRASH, INFEASIBLE, or OK for --check), iou, done, steps, agree,
+    guarded, files, times (reset, model, freecad, check, save, make, total, in seconds)."""
+    res = {"name": name, "result": "CRASH", "iou": 0.0, "done": False, "steps": 0, "agree": 0, "guarded": 0,
+           "files": {}, "times": {}}
+    spec = dict(spec)
+    if o.canon_top:
+        spec, n_canon = canon_top(spec)
+        if n_canon and not o.quiet:
+            log(f"{name}: --canon-top rewrote {n_canon} top-face feature(s)")
+    spec.setdefault("scale", base_scale(spec))
+    spec.setdefault("level", 3)
+    deadline = getattr(o, "deadline", None)
+    env = worker.get()
+    t_reset0 = time.perf_counter()
+    try:
+        r = call_limited(env, {"op": "reset", "goal": spec,
+                      "start": {"doc_open": True, "workbench": "PartDesignWorkbench"}},
+                         3 * o.step_timeout)  # reset also builds the target (~10 min for the casing)
+    except WorkerError as exc:
+        if env.proc.poll() is not None or "exited" in str(exc):  # the worker died: start a new one
+            worker.restart()
+        log(f"\n{name}: INFEASIBLE  {exc}")
+        res.update(result="INFEASIBLE", why=str(exc))
+        return res
+    t_reset = time.perf_counter() - t_reset0
+    res["times"]["reset"] = round(t_reset, 3)
+    goal = Goal.from_json(r["goal"])
+    if o.check:
+        log(f"{name}: OK  {len(goal.features)} features, budget {r['budget']} steps, "
+            f"target volume {goal.target.volume:.0f} mm3, bbox {tuple(round(x, 1) for x in goal.target.bbox)}")
+        res.update(result="OK", budget=r["budget"], volume=goal.target.volume, bbox=list(goal.target.bbox))
+        return res
+    steps = agree = guarded = 0
+    t_model = t_fc = 0.0
+    t0 = time.perf_counter()
+    try:
+        log(f"\n== {name}: " + " -> ".join(f"{f.kind}{json.dumps(f.params)}" for f in goal.features))
+        raw = r["state"]
+        state, actions, expert = State.from_json(raw), r["actions"], r["expert"]
+        prog = r.get("progress", -1)
+        pre_dir = out / f"{name}.prefixes" if (o.prefixes and o.teacher) else None
+        if pre_dir is not None:
+            pre_dir.mkdir(parents=True, exist_ok=True)
+        saved_prog = prog
+        tried: dict[str, set[str]] = {}  # loop guard: actions already taken from each state
+        went: dict[tuple[str, str], tuple[str, bool]] = {}  # (state, action) -> (next state, error)
+        redone: set[tuple[str, str]] = set()  # actions let through again after an undo
+        key = ""
+        done = False
+        timed_out = False
+        while steps < r["budget"]:
+            if deadline is not None and time.perf_counter() > deadline:
+                timed_out = True
+                break
+            t = time.perf_counter()
+            if o.teacher:
+                action = expert[0]
+            elif o.no_loop_guard:
+                if o.guided_progress:
+                    pr = guided_distribution(policy, state, goal, actions, prog)
+                    action = actions[int(pr.argmax())]
+                else:
+                    action = policy.act([state], [goal], [actions])[0]
+            else:
+                probs = (guided_distribution(policy, state, goal, actions, prog) if o.guided_progress
+                         else policy.distributions([state], [goal], [actions])[0])
+                ranked = [actions[j] for j in sorted(range(len(actions)), key=lambda j: -float(probs[j]))]
+                key = state_key(raw)
+                seen = tried.setdefault(key, set())
+                top = ranked[0]
+                nxt, err = went.get((key, top), ("", True))
+                if (top in seen and top != "Std_Undo" and not err and (key, top) not in redone
+                        and (o.guard_redos < 0 or len(redone) < o.guard_redos)
+                        and "Std_Undo" in tried.get(nxt, ())):
+                    action = top  # it worked and was undone: redo it; Undo stays blocked there
+                    redone.add((key, top))
+                    guarded += 1
+                    if not o.quiet:
+                        log(f"      loop guard: {top} worked before and was undone; redo it, no Undo after it")
+                else:
+                    action = next((a for a in ranked if a not in seen), top)
+                    if action != top:
+                        guarded += 1
+                        if not o.quiet:
+                            log(f"      loop guard: {top} already tried here")
+                seen.add(action)
+            t_model += time.perf_counter() - t
+            steps += 1
+            agree += action in expert
+            if not o.quiet:
+                mark = "ok" if action in expert else f"(expert: {expert[0]})"
+                log(f"{steps:3d}  {action:34s} {mark}")
+            t = time.perf_counter()
+            s = call_limited(env, {"op": "step", "action": action}, o.step_timeout)
+            t_fc += time.perf_counter() - t
+            if worker.mem_limit > 0 and tree_rss_gb(env.proc.pid) > worker.mem_limit:  # runaway part: stop it here
+                env.proc.kill()
+                env.proc.wait()
+                raise WorkerError(f"FreeCAD worker over {worker.mem_limit:.0f} GB after step {steps}")
+            if s["info"].get("error") and not o.quiet:
+                log("      error: " + str(s["info"]["error"]))
+            if key and s.get("state") is not None:
+                went[(key, action)] = (state_key(s["state"]), bool(s["info"].get("error")))
+            if s["info"]["done"] or not s["expert"]:
+                done = s["info"]["done"]
+                break
+            raw = s["state"]
+            state, actions, expert = State.from_json(raw), s["actions"], s["expert"]
+            prog = s.get("progress", -1)
+            if pre_dir is not None and prog > saved_prog >= 0:  # an intent was just finished
+                call_limited(env, {"op": "save", "fcstd": str(pre_dir / f"p{prog:03d}.FCStd")}, o.step_timeout)
+                saved_prog = prog
+        if pre_dir is not None and done and saved_prog < len(goal.features):  # the last intent, if
+            call_limited(env, {"op": "save", "fcstd": str(pre_dir / f"p{len(goal.features):03d}.FCStd")},
+                         o.step_timeout)  # it finished with the step that ended the episode
+        t_built = time.perf_counter()
+        sc = call_limited(env, {"op": "score"}, o.step_timeout)
+        t_score = time.perf_counter() - t_built
+        t_save0 = time.perf_counter()
+        fcstd = out / f"{name}.FCStd"
+        call_limited(env, {"op": "save", "fcstd": str(fcstd)}, o.step_timeout)
+        res["files"]["FCStd"] = str(fcstd)
+        extra = []
+        if timed_out:
+            extra.append("stopped: attempt time limit")
+        if not o.no_gui_data:
+            n = add_gui_document(fcstd)
+            if n == 0:
+                extra.append("no visible objects")
+        if not o.no_step:
+            err = export_step(fcstd, fcstd.with_suffix(".step"))
+            extra.append(f"STEP export failed: {err}" if err else f"{fcstd.with_suffix('.step').name}")
+            if not err:
+                res["files"]["step"] = str(fcstd.with_suffix(".step"))
+        t_save = time.perf_counter() - t_save0
+        t_make = t_built - t0
+        if not 0.0 <= sc["iou"] <= 1.001:  # malformed solid (e.g. negative volume): not a match (1 + rounding is fine)
+            extra.append(f"invalid IoU {sc['iou']:.4g}, malformed solid")
+            sc = {**sc, "match": False}
+        ok = done and sc["match"]
+        log(f"{name}: {'SUCCESS' if ok else 'FAIL'}  IoU {sc['iou']:.4f}  done {done}  steps {steps}  "
+            f"agreement {agree}/{steps}" + (f"  loop guard {guarded}x" if guarded else "")
+            + f"  -> {fcstd}" + (f" (+ {', '.join(extra)})" if extra else ""))
+        log(f"   time to make: {t_make:.2f} s  (model {t_model:.2f} s = {1000 * t_model / max(steps, 1):.1f} ms/step, "
+            f"FreeCAD {t_fc:.2f} s = {1000 * t_fc / max(steps, 1):.1f} ms/step)  |  "
+            f"check {t_score:.2f} s, save/export {t_save:.2f} s  |  total {t_make + t_score + t_save:.2f} s"
+            f"  |  target build (reset) {t_reset:.2f} s")
+        res.update(result="SUCCESS" if ok else "FAIL", iou=float(sc["iou"]), done=done)
+        res["times"].update(model=round(t_model, 3), freecad=round(t_fc, 3), check=round(t_score, 3),
+                            save=round(t_save, 3), make=round(t_make, 3), total=round(t_make + t_score + t_save, 3))
+    except WorkerError as exc:  # FreeCAD crashed on the part the model built: count it as failed, go on
+        log(f"{name}: CRASH  FreeCAD worker died ({exc}); restarting the worker")
+        res.update(result="CRASH", why=str(exc))
+        res["times"].update(model=round(t_model, 3), freecad=round(t_fc, 3), total=round(time.perf_counter() - t0, 3))
+        worker.restart()
+    res.update(steps=steps, agree=agree, guarded=guarded)
+    return res
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default="shhivv/taiga-s1")
@@ -372,157 +562,21 @@ def main() -> None:
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
 
-    env = new_env(mem_limit)
+    worker = Worker(mem_limit)
     failures = 0
-    summary = []  # (name, result, steps, model s, freecad s, save s, total s)
+    summary = []  # (name, result, steps, model s, freecad s, check+save s, total s)
     t_run = time.perf_counter()
     try:
         for name in names:
-            spec = dict(goals[name])
-            if args.canon_top:
-                spec, n_canon = canon_top(spec)
-                if n_canon and not args.quiet:
-                    print(f"{name}: --canon-top rewrote {n_canon} top-face feature(s)")
-            spec.setdefault("scale", base_scale(spec))
-            spec.setdefault("level", 3)
-            try:
-                r = call_limited(env, {"op": "reset", "goal": spec,
-                              "start": {"doc_open": True, "workbench": "PartDesignWorkbench"}},
-                                 3 * args.step_timeout)  # reset also builds the target (~10 min for the casing)
-            except WorkerError as exc:
-                failures += 1
-                if env.proc.poll() is not None or "exited" in str(exc):  # the worker died: start a new one
-                    try:
-                        env.close()
-                    except Exception:
-                        pass
-                    env = new_env(mem_limit)
-                print(f"\n{name}: INFEASIBLE  {exc}")
-                summary.append((name, "INFEASIBLE", 0, 0.0, 0.0, 0.0, 0.0))
+            r = build_goal(worker, policy, name, goals[name], args, out)
+            if r["result"] == "OK":
                 continue
-            goal = Goal.from_json(r["goal"])
-            if args.check:
-                print(f"{name}: OK  {len(goal.features)} features, budget {r['budget']} steps, "
-                      f"target volume {goal.target.volume:.0f} mm3, bbox {tuple(round(x, 1) for x in goal.target.bbox)}")
-                continue
-            try:
-                print(f"\n== {name}: " + " -> ".join(f"{f.kind}{json.dumps(f.params)}" for f in goal.features))
-                raw = r["state"]
-                state, actions, expert = State.from_json(raw), r["actions"], r["expert"]
-                prog = r.get("progress", -1)
-                pre_dir = out / f"{name}.prefixes" if (args.prefixes and args.teacher) else None
-                if pre_dir is not None:
-                    pre_dir.mkdir(parents=True, exist_ok=True)
-                saved_prog = prog
-                steps = agree = guarded = 0
-                tried: dict[str, set[str]] = {}  # loop guard: actions already taken from each state
-                went: dict[tuple[str, str], tuple[str, bool]] = {}  # (state, action) -> (next state, error)
-                redone: set[tuple[str, str]] = set()  # actions let through again after an undo
-                key = ""
-                done = False
-                t_model = t_fc = 0.0
-                t0 = time.perf_counter()
-                while steps < r["budget"]:
-                    t = time.perf_counter()
-                    if args.teacher:
-                        action = expert[0]
-                    elif args.no_loop_guard:
-                        if args.guided_progress:
-                            pr = guided_distribution(policy, state, goal, actions, prog)
-                            action = actions[int(pr.argmax())]
-                        else:
-                            action = policy.act([state], [goal], [actions])[0]
-                    else:
-                        probs = (guided_distribution(policy, state, goal, actions, prog) if args.guided_progress
-                                 else policy.distributions([state], [goal], [actions])[0])
-                        ranked = [actions[j] for j in sorted(range(len(actions)), key=lambda j: -float(probs[j]))]
-                        key = state_key(raw)
-                        seen = tried.setdefault(key, set())
-                        top = ranked[0]
-                        nxt, err = went.get((key, top), ("", True))
-                        if (top in seen and top != "Std_Undo" and not err and (key, top) not in redone
-                                and (args.guard_redos < 0 or len(redone) < args.guard_redos)
-                                and "Std_Undo" in tried.get(nxt, ())):
-                            action = top  # it worked and was undone: redo it; Undo stays blocked there
-                            redone.add((key, top))
-                            guarded += 1
-                            if not args.quiet:
-                                print(f"      loop guard: {top} worked before and was undone; redo it, no Undo after it")
-                        else:
-                            action = next((a for a in ranked if a not in seen), top)
-                            if action != top:
-                                guarded += 1
-                                if not args.quiet:
-                                    print(f"      loop guard: {top} already tried here")
-                        seen.add(action)
-                    t_model += time.perf_counter() - t
-                    steps += 1
-                    agree += action in expert
-                    if not args.quiet:
-                        mark = "ok" if action in expert else f"(expert: {expert[0]})"
-                        print(f"{steps:3d}  {action:34s} {mark}")
-                    t = time.perf_counter()
-                    s = call_limited(env, {"op": "step", "action": action}, args.step_timeout)
-                    t_fc += time.perf_counter() - t
-                    if mem_limit > 0 and tree_rss_gb(env.proc.pid) > mem_limit:  # runaway part: stop it here
-                        env.proc.kill()
-                        env.proc.wait()
-                        raise WorkerError(f"FreeCAD worker over {mem_limit:.0f} GB after step {steps}")
-                    if s["info"].get("error") and not args.quiet:
-                        print("      error:", s["info"]["error"])
-                    if key and s.get("state") is not None:
-                        went[(key, action)] = (state_key(s["state"]), bool(s["info"].get("error")))
-                    if s["info"]["done"] or not s["expert"]:
-                        done = s["info"]["done"]
-                        break
-                    raw = s["state"]
-                    state, actions, expert = State.from_json(raw), s["actions"], s["expert"]
-                    prog = s.get("progress", -1)
-                    if pre_dir is not None and prog > saved_prog >= 0:  # an intent was just finished
-                        call_limited(env, {"op": "save", "fcstd": str(pre_dir / f"p{prog:03d}.FCStd")}, args.step_timeout)
-                        saved_prog = prog
-                if pre_dir is not None and done and saved_prog < len(goal.features):  # the last intent, if
-                    call_limited(env, {"op": "save", "fcstd": str(pre_dir / f"p{len(goal.features):03d}.FCStd")},
-                                 args.step_timeout)  # it finished with the step that ended the episode
-                t_built = time.perf_counter()
-                sc = call_limited(env, {"op": "score"}, args.step_timeout)
-                t_score = time.perf_counter() - t_built
-                t_save0 = time.perf_counter()
-                fcstd = out / f"{name}.FCStd"
-                call_limited(env, {"op": "save", "fcstd": str(fcstd)}, args.step_timeout)
-                extra = []
-                if not args.no_gui_data:
-                    n = add_gui_document(fcstd)
-                    if n == 0:
-                        extra.append("no visible objects")
-                if not args.no_step:
-                    err = export_step(fcstd, fcstd.with_suffix(".step"))
-                    extra.append(f"STEP export failed: {err}" if err else f"{fcstd.with_suffix('.step').name}")
-                t_save = time.perf_counter() - t_save0
-                t_make = t_built - t0
-                if not 0.0 <= sc["iou"] <= 1.001:  # malformed solid (e.g. negative volume): not a match (1 + rounding is fine)
-                    extra.append(f"invalid IoU {sc['iou']:.4g}, malformed solid")
-                    sc = {**sc, "match": False}
-                ok = done and sc["match"]
-                failures += not ok
-                print(f"{name}: {'SUCCESS' if ok else 'FAIL'}  IoU {sc['iou']:.4f}  done {done}  steps {steps}  "
-                      f"agreement {agree}/{steps}" + (f"  loop guard {guarded}x" if guarded else "")
-                      + f"  -> {fcstd}" + (f" (+ {', '.join(extra)})" if extra else ""))
-                print(f"   time to make: {t_make:.2f} s  (model {t_model:.2f} s = {1000 * t_model / max(steps, 1):.1f} ms/step, "
-                      f"FreeCAD {t_fc:.2f} s = {1000 * t_fc / max(steps, 1):.1f} ms/step)  |  "
-                      f"check {t_score:.2f} s, save/export {t_save:.2f} s  |  total {t_make + t_score + t_save:.2f} s")
-                summary.append((name, "SUCCESS" if ok else "FAIL", steps, t_model, t_fc, t_save + t_score, t_make + t_score + t_save))
-            except WorkerError as exc:  # FreeCAD crashed on the part the model built: count it as failed, go on
-                failures += 1
-                print(f"{name}: CRASH  FreeCAD worker died ({exc}); restarting the worker")
-                summary.append((name, "CRASH", steps, t_model, t_fc, 0.0, time.perf_counter() - t0))
-                try:
-                    env.close()
-                except Exception:
-                    pass
-                env = new_env(mem_limit)
+            failures += r["result"] != "SUCCESS"
+            t = r["times"]
+            summary.append((name, r["result"], r["steps"], t.get("model", 0.0), t.get("freecad", 0.0),
+                            t.get("check", 0.0) + t.get("save", 0.0), t.get("total", 0.0)))
     finally:
-        env.close()
+        worker.close()
     if summary and not args.check:
         w = max(10, *(len(n) for n, *_ in summary))
         print(f"\n{'part':{w}s} {'result':>10s} {'steps':>6s} {'model s':>8s} {'FreeCAD s':>10s} {'make s':>8s} "

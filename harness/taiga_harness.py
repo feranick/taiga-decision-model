@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """taiga_harness.py — the interface other tools (LLM agents, scripts) use to build CAD parts
 with the Taiga models: the goal format, validation, a buildability check, builds, results.
-Version: 2026.10.20.1
+Version: 2026.10.24.1
 
 The same functions back the MCP server (taiga_mcp.py) and this command line; everything is
 JSON in, JSON out:
@@ -19,6 +19,10 @@ Configuration (environment):
                   (default ~/taiga-expanded-0017; a v2 model needs a 0019 folder)
   TAIGA_REGISTRY  models registry (default <repo>/build/registry.json)
   TAIGA_OUT       where builds go (default ~/taiga_parts); each request gets its own folder
+  TAIGA_PERSISTENT  1 (default): builds and checks run in this process, with FreeCAD workers and
+                  models kept loaded (../build/taiga_pool.py; the MCP server keeps them for its
+                  lifetime); 0: every attempt a separate process (taiga_runtime.py), as before
+  TAIGA_POOL_WORKERS  FreeCAD workers of the pool (default 4): goals built at the same time
 
 Run it with the work folder's Python (it imports the goal schema from there):
     ~/taiga-expanded-0017/taiga-s1/.venv/bin/python <repo>/harness/taiga_harness.py format
@@ -32,6 +36,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -396,12 +401,62 @@ def _prepare(goals: dict, folder: Path) -> tuple[dict, dict]:
     return ok, bad
 
 
+# ----------------------------------------------------------------------------- persistent pool
+
+_POOL = None
+_POOL_LOCK = threading.Lock()
+_POOL_ERROR = None
+
+
+def pool():
+    """The process's BuildPool (../build/taiga_pool.py): FreeCAD workers and models kept loaded
+    across requests. None when TAIGA_PERSISTENT=0, or when this Python cannot run it (not the work
+    folder's venv); builds then run as separate processes (taiga_runtime.py), as before."""
+    global _POOL, _POOL_ERROR
+    if os.environ.get("TAIGA_PERSISTENT", "1") == "0":
+        return None
+    with _POOL_LOCK:
+        if _POOL is None and _POOL_ERROR is None:
+            try:
+                _schema()  # puts the work folder's code on sys.path
+                for k, v in fc_env().items():  # FREECAD_PYTHON, FREECAD_LIB, ... from <work>/freecad.env
+                    if os.environ.get(k) != v:
+                        os.environ[k] = v
+                sys.path.insert(0, str(REPO / "build"))
+                import taiga_pool
+
+                _POOL = taiga_pool.BuildPool(workers=int(os.environ.get("TAIGA_POOL_WORKERS", "4")))
+            except Exception as exc:  # noqa: BLE001
+                _POOL_ERROR = f"{type(exc).__name__}: {exc}"
+        return _POOL
+
+
+def pool_status() -> dict:
+    p = pool()
+    return {"persistent": p is not None, **(p.status() if p else {"why": _POOL_ERROR or "TAIGA_PERSISTENT=0"})}
+
+
+def warm() -> dict:
+    """Start the pool's FreeCAD workers and load the registry's models now, so the first build
+    does not wait for them (the MCP server calls this in the background when it starts)."""
+    p = pool()
+    if p is None:
+        return pool_status()
+    import taiga_pool
+
+    reg = registry_path()
+    s = p.warm(taiga_pool.load_registry(reg) if reg.is_file() else {})
+    return {**pool_status(), "warm_s": round(s, 1)}
+
+
 def check(goals: dict, timeout_s: float = 3600) -> dict:
     """Can the scripted teacher build each goal (the target exists)? Runs FreeCAD."""
     folder = _request_dir("check")
     ok, bad = _prepare(goals, folder)
     res = {n: {"buildable": False, "why": "invalid goal", **v} for n, v in bad.items()}
-    if ok:
+    if ok and pool() is not None:
+        res.update(pool().check(ok))
+    elif ok:
         p = subprocess.run([_python(), str(BUILD), "--goals", str(folder / "goals.json"), "--check"],
                            cwd=work() / "taiga-s1", env=fc_env(), capture_output=True, text=True, timeout=timeout_s)
         for line in p.stdout.splitlines():
@@ -422,6 +477,29 @@ def build(goals: dict, chain: str = "teacher,main:guided,main,fallback:guided", 
     out = {"request": str(folder), "parts": {n: {"built": False, "why": "invalid goal", **v} for n, v in bad.items()}}
     if not ok:
         return out
+    if pool() is not None:  # persistent: workers and models already loaded
+        reg = registry_path()
+        import taiga_pool
+
+        models = taiga_pool.load_registry(reg) if reg.is_file() else {}
+        records = pool().run(ok, chain, models, folder, min_iou, step)
+        out["runtime"] = "pool"
+    else:
+        records = _build_process(ok, folder, chain, workers, min_iou, timeout_s, step)
+        out["runtime"] = "process"
+    for r in records:
+        n = r["goal"]
+        files = {ext: str(folder / f"{n}.{ext}") for ext in ("FCStd", "step") if (folder / f"{n}.{ext}").is_file()}
+        out["parts"][n] = {"built": r["accepted"] is not None, "accepted": r["accepted"], "attempts": r["attempts"],
+                           "seconds": r.get("seconds"), "files": files, **({"why": r["why"]} if "why" in r else {})}
+    for n in ok:
+        out["parts"].setdefault(n, {"built": False, "why": "no result (see runtime.log)"})
+    return out
+
+
+def _build_process(ok: dict, folder: Path, chain: str, workers: int, min_iou: float, timeout_s: float,
+                   step: bool) -> list[dict]:
+    """The builds as separate processes (taiga_runtime.py, one taiga_build_part.py per attempt)."""
     cmd = [_python(), str(RUNTIME), "--goals", str(folder / "goals.json"), "--out", str(folder),
            "--chain", chain, "--workers", str(workers), "--min-iou", str(min_iou)]
     if registry_path().is_file():
@@ -431,15 +509,7 @@ def build(goals: dict, chain: str = "teacher,main:guided,main,fallback:guided", 
     p = subprocess.run(cmd, cwd=work() / "taiga-s1", env=fc_env(), capture_output=True, text=True, timeout=timeout_s)
     (folder / "runtime.log").write_text(p.stdout + p.stderr)
     log = folder / "runtime_log.jsonl"
-    records = [json.loads(line) for line in log.read_text().splitlines()] if log.is_file() else []
-    for r in records:
-        n = r["goal"]
-        files = {ext: str(folder / f"{n}.{ext}") for ext in ("FCStd", "step") if (folder / f"{n}.{ext}").is_file()}
-        out["parts"][n] = {"built": r["accepted"] is not None, "accepted": r["accepted"], "attempts": r["attempts"],
-                           "seconds": r.get("seconds"), "files": files, **({"why": r["why"]} if "why" in r else {})}
-    for n in ok:
-        out["parts"].setdefault(n, {"built": False, "why": "no result (see runtime.log)"})
-    return out
+    return [json.loads(line) for line in log.read_text().splitlines()] if log.is_file() else []
 
 
 def read_file(path: str, max_mb: float = 20) -> dict:
@@ -460,7 +530,10 @@ def models() -> dict:
     reg = json.loads(p.read_text())
     for m in reg.get("models", []):
         m["available"] = Path(m.get("path", "")).expanduser().exists()
-    return {"registry": str(p), "work": str(work()), **reg}
+    rt = (_POOL.status() | {"persistent": True}) if _POOL is not None else \
+        {"persistent": os.environ.get("TAIGA_PERSISTENT", "1") != "0" and _POOL_ERROR is None,
+         **({"why": _POOL_ERROR} if _POOL_ERROR else {"note": "the pool starts with the first build or check"})}
+    return {"registry": str(p), "work": str(work()), **reg, "runtime": rt}
 
 
 # ----------------------------------------------------------------------------- command line

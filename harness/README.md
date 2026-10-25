@@ -67,6 +67,17 @@ $W/taiga-s1/.venv/bin/python <repo>/harness/taiga_mcp.py --http 8765 --host 0.0.
 
 For HTTP, point the client at `http://<host>:8765/mcp`. The HTTP server has no authentication: keep it on a trusted network or behind a tunnel (`ssh -L 8765:localhost:8765 nicola@mochi.mit.edu`).
 
+## Speed: the persistent pool (plan items 11 and 12)
+
+By default (`TAIGA_PERSISTENT=1`) builds and checks run inside the harness's process through `../build/taiga_pool.py`, with `TAIGA_POOL_WORKERS` (default 4) FreeCAD workers and the models kept loaded; the MCP server starts them in the background when it launches and keeps them for its lifetime. Before, every attempt was a new `taiga_build_part.py` process (Python with PyTorch, the model, a FreeCAD worker, and a second FreeCAD process for the STEP file), about 2 s per attempt and per fallback; now an attempt is the build alone and the STEP file is exported once, for the accepted part. Results are the same, with `"runtime": "pool"` and per attempt its stage times. `TAIGA_PERSISTENT=0` goes back to separate processes; `list_models` shows the pool's state (workers running, models loaded, attempts).
+
+**Timing benchmark** (`bench_timing.py`): the same goal set (the flange example, four draft parts, the S 80 parts other than the casing; `--long` adds the casing core) built model-first in three passes: separate processes, the pool cold, the pool warm. It prints per pass the time in target builds, model, FreeCAD, check, save and the rest (overhead), and per goal the time before and after, and writes `bench_timing.json`:
+
+```bash
+export TAIGA_WORK=~/taiga_prod/work TAIGA_REGISTRY=~/taiga_prod/registry.json
+$TAIGA_WORK/taiga-s1/.venv/bin/python ~/Software/taiga-decision-model/harness/bench_timing.py --rounds 2
+```
+
 ## For scripts: the command line
 
 ```bash
@@ -124,8 +135,10 @@ A `build_parts` call with all four parts timed out in the client once, right aft
 
 | File | Version |
 |---|---|
-| `taiga_harness.py` | 2026.10.20.1 (draft, patch 0022: kind `draft` with `angle` and optional `pts`, validated and in `goal_format` when the work folder has the patch) |
+| `taiga_harness.py` | 2026.10.24.1 (persistent pool: builds and checks in-process with workers and models kept loaded, `TAIGA_PERSISTENT`, `TAIGA_POOL_WORKERS`; `warm()`, the runtime in `models()`) |
+| `taiga_harness.py` (before) | 2026.10.20.1 (draft, patch 0022: kind `draft` with `angle` and optional `pts`, validated and in `goal_format` when the work folder has the patch) |
 | `taiga_harness.py` (before) | 2026.10.17.2 (`build` with `--no-step` / `step=false` passed the option so the runtime rejected it: every part came back "no result"; fixed) |
 | `taiga_harness.py` (before) | 2026.10.17.1 (angled planes, patch 0020: validated and described in `goal_format` when the work folder has the patch) |
 | `taiga_harness.py` (before) | 2026.10.15.2 (origin-plane normals and centres normalized; `pts` left out of the format without patch 0019) |
-| `taiga_mcp.py` | 2026.10.15.1 |
+| `taiga_mcp.py` | 2026.10.24.1 (warms the pool in the background at launch; `list_models` shows the runtime) |
+| `bench_timing.py` | 2026.10.24.1 |
