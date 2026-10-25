@@ -1,27 +1,27 @@
 {
   "models": [
     {
-      "name": "small-v4",
+      "name": "small-v5",
       "role": "main",
-      "path": "~/taiga_prod/models/small-v4/hf",
+      "path": "~/taiga_prod/models/small-v5/hf",
       "params": "1.2M",
       "model_args": "--max-nodes 160 --max-goal 64 --max-ord 72 --max-pos 256 --ord-table 28 --pos-table 96 --newest-nodes",
       "freecad": "1.1.3",
-      "patches": "0001-0021 (taiga-expanded); run with TAIGA_WORK set to a 0021 work folder",
-      "trained_on": "v3's 12.0M states (v2's 11.4M plus angled-only) plus a hollow-only supplement (DATA_SEED 203, DATA_SCALE 2), 4 epochs",
-      "measured": "v4 seed 2 (2026-10-20): DeepCAD test 1.000 / 0.996 / 1.000 (7,742 goals); S 80 guided whole pump 0.9987, casing 52/52 intents, core and the ten other parts exact; angled, hollow, points 1.00; perturbed len6 0.92, mixed_long 0.94; clean suites >= 0.98 except comp2 0.85 (production path: 97/100, as v2) and mixed_at_long 0.93"
+      "patches": "0001-0022 (taiga-expanded); run with TAIGA_WORK set to a 0022 work folder",
+      "trained_on": "~16.5M states: v4's pool plus 0.9M draft-only states and 2.27M states from the 135,268 DeepCAD train-split goals, 4 epochs",
+      "measured": "v5 seed 2 (2026-10-24): DeepCAD test 1.000 / 1.000 / 1.000 (7,742 goals); S 80 guided whole pump 0.9983, casing 51/52 intents, core and the ten other parts exact; draft, hollow, angled, points 1.00; perturbed len6 0.97, mixed_long 0.92; clean suites >= 0.97 except comp2 0.93, comp3 0.96 (held-out compositions)"
     },
     {
-      "name": "small-v4-s22",
+      "name": "small-v5-s22",
       "role": "fallback",
-      "path": "~/taiga_prod/models/small-v4-s22/hf",
+      "path": "~/taiga_prod/models/small-v5-s22/hf",
       "params": "1.2M",
       "model_args": "--max-nodes 160 --max-goal 64 --max-ord 72 --max-pos 256 --ord-table 28 --pos-table 96 --newest-nodes",
       "freecad": "1.1.3",
-      "patches": "0001-0021 (taiga-expanded)",
+      "patches": "0001-0022 (taiga-expanded)",
       "trained_on": "the same data, seed 22",
-      "measured": "v4 seed 22: comp2 0.97, len6 1.00; S 80 guided casing 51/52 intents (whole pump 0.9983)"
+      "measured": "v5 seed 22: DeepCAD 1.000 / 0.995 / 1.000; comp2 and comp3 1.00, len5 0.83; S 80 guided casing 51/52"
     }
   ],
-  "_note": "Production registry, installed as ~/taiga_prod/registry.json by build/deploy_prod.sh; models from patch series 0001-0021 run with TAIGA_WORK=~/taiga_prod/work (a 0021 work folder)."
+  "_note": "Production registry, installed as ~/taiga_prod/registry.json by build/deploy_prod.sh; models from patch series 0001-0022 run with TAIGA_WORK=~/taiga_prod/work (a 0022 work folder). Before: small-v4 (0001-0021)."
 }
